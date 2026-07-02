@@ -1,7 +1,9 @@
 """
 思考 / 回复
   ↓
-请求 bash 工具
+请求工具
+  ↓
+检查权限
   ↓
 执行命令
   ↓
@@ -13,9 +15,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, TextIO
+from time import perf_counter
+from typing import Any, Callable, TextIO
 
 from osc_agent.config import Settings
+from osc_agent.harness.hooks import HookContext, HookRegistry, default_hooks, elapsed_ms
 from osc_agent.tools.files import FILE_TOOLS, edit_file, glob_files, read_file, write_file
 from osc_agent.tools.git import GIT_TOOLS, git_diff, git_log, git_status
 from osc_agent.tools.repo import REPO_TOOLS, inspect_repo
@@ -46,7 +50,7 @@ def _tool_input(block: Any) -> dict[str, Any]:
 def build_tool_handlers(repo_root: Path) -> dict[str, Any]:
     """按 repo_root 绑定工具函数，主循环只负责按名称分发。"""
     return {
-        "bash": lambda command: run_bash(command, repo_root=repo_root),
+        "bash": lambda command: run_bash(command, repo_root=repo_root, enforce_permissions=False),
         "read_file": lambda path, limit=20_000, offset=0: read_file(
             repo_root=repo_root,
             path=path,
@@ -57,12 +61,14 @@ def build_tool_handlers(repo_root: Path) -> dict[str, Any]:
             repo_root=repo_root,
             path=path,
             content=content,
+            enforce_permissions=False,
         ),
         "edit_file": lambda path, old_text, new_text: edit_file(
             repo_root=repo_root,
             path=path,
             old_text=old_text,
             new_text=new_text,
+            enforce_permissions=False,
         ),
         "glob": lambda pattern: glob_files(repo_root=repo_root, pattern=pattern),
         "git_status": lambda: git_status(repo_root=repo_root),
@@ -80,10 +86,17 @@ def agent_loop(
     repo_root: Path,
     output: TextIO | None = None,
     tool_handlers: dict[str, Any] | None = None,
+    hooks: HookRegistry | None = None,
+    confirm: Callable[[str], bool] | None = None,
 ) -> Any:
     """执行 Anthropic 风格 agent loop，直到模型不再请求工具。"""
     system_prompt = SYSTEM_TEMPLATE.format(repo_root=repo_root)
     handlers = tool_handlers or build_tool_handlers(repo_root)
+    hook_registry = default_hooks()
+    if hooks is not None:
+        # 自定义 hook 只能追加，不能替换默认权限检查。
+        hook_registry.extend(hooks)
+    hook_context = HookContext(repo_root=repo_root, confirm=confirm)
 
     while True:
         response = client.messages.create(
@@ -96,6 +109,7 @@ def agent_loop(
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason != "tool_use":
+            hook_registry.run("Stop", hook_context, {"stop_reason": response.stop_reason})
             return response
 
         results: list[dict[str, str]] = []
@@ -113,10 +127,30 @@ def agent_loop(
             else:
                 if output is not None:
                     print(f"{tool_name}: {tool_args}", file=output)
-                try:
-                    tool_output = handler(**tool_args)
-                except TypeError as exc:
-                    tool_output = f"Error: invalid arguments for {tool_name}: {exc}"
+                pre_results = hook_registry.run(
+                    "PreToolUse",
+                    hook_context,
+                    {"tool_name": tool_name, "tool_args": tool_args},
+                )
+                blocked = next((result for result in pre_results if not result.allowed), None)
+                started = perf_counter()
+                if blocked is not None:
+                    tool_output = blocked.content or "Permission denied"
+                else:
+                    try:
+                        tool_output = handler(**tool_args)
+                    except TypeError as exc:
+                        tool_output = f"Error: invalid arguments for {tool_name}: {exc}"
+                hook_registry.run(
+                    "PostToolUse",
+                    hook_context,
+                    {
+                        "tool_name": tool_name,
+                        "tool_args": tool_args,
+                        "output": tool_output,
+                        "latency_ms": elapsed_ms(started),
+                    },
+                )
                 if output is not None:
                     print(str(tool_output)[:200], file=output)
 

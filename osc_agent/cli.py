@@ -59,7 +59,14 @@ def main(
             break
 
         messages.append({"role": "user", "content": query})
-        agent_loop(messages, client=client, settings=settings, repo_root=repo, output=None)
+        agent_loop(
+            messages,
+            client=client,
+            settings=settings,
+            repo_root=repo,
+            output=open("agent.log", "a"),
+            confirm=lambda prompt: typer.confirm(prompt, default=False),
+        )
         _print_final_text(messages[-1]["content"])
 
 

@@ -43,11 +43,13 @@ def run_bash(
     *,
     repo_root: Path,
     timeout_seconds: int | float = DEFAULT_TIMEOUT_SECONDS,
+    enforce_permissions: bool = True,
 ) -> str:
     """在目标 repo 内执行命令，并统一处理超时、空输出和长度截断。"""
-    decision = check_shell_command(command)
-    if not decision.allowed:
-        return format_blocked(decision)
+    if enforce_permissions:
+        decision = check_shell_command(command)
+        if not decision.allowed:
+            return format_blocked(decision)
 
     try:
         completed = subprocess.run(

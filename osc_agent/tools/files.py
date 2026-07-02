@@ -80,11 +80,12 @@ def read_file(*, repo_root: Path, path: str, limit: int = 20_000, offset: int = 
     return text[start:end]
 
 
-def write_file(*, repo_root: Path, path: str, content: str) -> str:
+def write_file(*, repo_root: Path, path: str, content: str, enforce_permissions: bool = True) -> str:
     """写入 repo 内文件；父目录不存在时按常见编辑工具行为创建。"""
-    decision = check_file_write(path, content)
-    if not decision.allowed:
-        return format_blocked(decision)
+    if enforce_permissions:
+        decision = check_file_write(path, content)
+        if not decision.allowed:
+            return format_blocked(decision)
 
     try:
         target = safe_repo_path(repo_root, path)
@@ -95,11 +96,19 @@ def write_file(*, repo_root: Path, path: str, content: str) -> str:
     return f"Wrote {path}"
 
 
-def edit_file(*, repo_root: Path, path: str, old_text: str, new_text: str) -> str:
+def edit_file(
+    *,
+    repo_root: Path,
+    path: str,
+    old_text: str,
+    new_text: str,
+    enforce_permissions: bool = True,
+) -> str:
     """只替换第一次匹配，防止模型一次调用意外改动多个位置。"""
-    decision = check_file_write(path, new_text)
-    if not decision.allowed:
-        return format_blocked(decision)
+    if enforce_permissions:
+        decision = check_file_write(path, new_text)
+        if not decision.allowed:
+            return format_blocked(decision)
 
     try:
         target = safe_repo_path(repo_root, path)
