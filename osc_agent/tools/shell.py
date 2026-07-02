@@ -17,6 +17,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from osc_agent.harness.permissions import check_shell_command, format_blocked
+
 BASH_TOOL = {
     "name": "bash",
     "description": "Run a shell command inside the target repository.",
@@ -43,6 +45,10 @@ def run_bash(
     timeout_seconds: int | float = DEFAULT_TIMEOUT_SECONDS,
 ) -> str:
     """在目标 repo 内执行命令，并统一处理超时、空输出和长度截断。"""
+    decision = check_shell_command(command)
+    if not decision.allowed:
+        return format_blocked(decision)
+
     try:
         completed = subprocess.run(
             command,

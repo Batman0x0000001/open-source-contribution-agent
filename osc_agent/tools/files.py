@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from osc_agent.harness.permissions import check_file_write, format_blocked, safe_repo_path
+
 FILE_TOOLS = [
     {
         "name": "read_file",
@@ -65,19 +67,10 @@ FILE_TOOLS = [
 ]
 
 
-def _repo_path(repo_root: Path, path: str) -> Path:
-    """解析 repo 内路径，避免文件工具误操作到仓库外。"""
-    root = repo_root.resolve()
-    target = (root / path).resolve()
-    if target != root and root not in target.parents:
-        raise ValueError(f"path escapes repository: {path}")
-    return target
-
-
 def read_file(*, repo_root: Path, path: str, limit: int = 20_000, offset: int = 0) -> str:
     """读取文件片段，offset/limit 用来控制大文件进入上下文的大小。"""
     try:
-        target = _repo_path(repo_root, path)
+        target = safe_repo_path(repo_root, path)
         text = target.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         return f"Error: {exc}"
@@ -89,8 +82,12 @@ def read_file(*, repo_root: Path, path: str, limit: int = 20_000, offset: int = 
 
 def write_file(*, repo_root: Path, path: str, content: str) -> str:
     """写入 repo 内文件；父目录不存在时按常见编辑工具行为创建。"""
+    decision = check_file_write(path, content)
+    if not decision.allowed:
+        return format_blocked(decision)
+
     try:
-        target = _repo_path(repo_root, path)
+        target = safe_repo_path(repo_root, path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     except (OSError, ValueError) as exc:
@@ -100,8 +97,12 @@ def write_file(*, repo_root: Path, path: str, content: str) -> str:
 
 def edit_file(*, repo_root: Path, path: str, old_text: str, new_text: str) -> str:
     """只替换第一次匹配，防止模型一次调用意外改动多个位置。"""
+    decision = check_file_write(path, new_text)
+    if not decision.allowed:
+        return format_blocked(decision)
+
     try:
-        target = _repo_path(repo_root, path)
+        target = safe_repo_path(repo_root, path)
         text = target.read_text(encoding="utf-8")
         if old_text not in text:
             return f"Error: old_text not found in {path}"

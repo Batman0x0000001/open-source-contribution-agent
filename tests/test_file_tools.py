@@ -93,4 +93,8 @@ def test_agent_loop_dispatches_tools_through_handler_map(tmp_path):
 
     agent_loop(messages, client=FakeClient(), settings=settings, repo_root=tmp_path)
 
-    assert messages[2]["content"][0]["content"] == "hello"
+    tool_results = messages[2]["content"]
+    assert isinstance(tool_results, list)
+    first_result = tool_results[0]
+    assert isinstance(first_result, dict)
+    assert first_result["content"] == "hello"
