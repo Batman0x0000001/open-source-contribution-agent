@@ -49,7 +49,7 @@ def test_agent_loop_appends_tool_result_and_stops(tmp_path):
         client=FakeClient(),
         settings=settings,
         repo_root=tmp_path,
-        tool_runner=lambda command: f"ran: {command}",
+        tool_handlers={"bash": lambda command: f"ran: {command}"},
     )
 
     assert response.stop_reason == "end_turn"
