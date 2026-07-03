@@ -20,22 +20,16 @@ from typing import Any, Callable, TextIO
 
 from osc_agent.config import Settings
 from osc_agent.harness.hooks import HookContext, HookRegistry, default_hooks, elapsed_ms
+from osc_agent.harness.prompt import assemble_system_prompt
 from osc_agent.harness.todo import TODO_WRITE_TOOL, todo_write
+from osc_agent.skills.registry import LOAD_SKILL_TOOL, load_skill
 from osc_agent.tools.files import FILE_TOOLS, edit_file, glob_files, read_file, write_file
 from osc_agent.tools.git import GIT_TOOLS, git_diff, git_log, git_status
 from osc_agent.tools.repo import REPO_TOOLS, inspect_repo
 from osc_agent.tools.shell import BASH_TOOL, run_bash
 from osc_agent.tools.task import TASK_TOOL, spawn_subagent
 
-SYSTEM_TEMPLATE = (
-    "You are a coding agent working inside this local repository: {repo_root}. "
-    "Use the repo, file, git, and bash tools to inspect and solve the user's contribution task. "
-    "Before modifying files for a contribution, call todo_write with a contribution plan that covers "
-    "understanding the task, reading contribution guidance, locating files, editing, testing, and drafting the PR. "
-    "Act step by step and stop when you can report the result."
-)
-
-TOOLS = [BASH_TOOL, *FILE_TOOLS, *GIT_TOOLS, *REPO_TOOLS, TODO_WRITE_TOOL, TASK_TOOL]
+TOOLS = [BASH_TOOL, *FILE_TOOLS, *GIT_TOOLS, *REPO_TOOLS, TODO_WRITE_TOOL, TASK_TOOL, LOAD_SKILL_TOOL]
 
 
 def _block_attr(block: Any, name: str, default: Any = None) -> Any:
@@ -99,6 +93,7 @@ def build_tool_handlers(
         "inspect_repo": lambda: inspect_repo(repo_root=repo_root),
         "todo_write": lambda todos: todo_write(todos, repo_root=repo_root),
         "task": task_handler,
+        "load_skill": lambda name: load_skill(name),
     }
 
 
@@ -114,7 +109,7 @@ def agent_loop(
     confirm: Callable[[str], bool] | None = None,
 ) -> Any:
     """执行 Anthropic 风格 agent loop，直到模型不再请求工具。"""
-    system_prompt = SYSTEM_TEMPLATE.format(repo_root=repo_root)
+    system_prompt = assemble_system_prompt(repo_root)
     handlers = tool_handlers or build_tool_handlers(repo_root, client=client, settings=settings, confirm=confirm)
     hook_registry = default_hooks()
     if hooks is not None:

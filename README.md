@@ -152,6 +152,48 @@ python -m pytest tests/test_subagent.py
 python -m pytest tests
 ```
 
+## S07 update: on-demand skill loading
+
+S07 adds a two-level skill loading system: the system prompt includes only a compact skill catalog, and the model can call `load_skill(name)` to fetch full instructions when needed.
+
+New in s07:
+
+- `osc_agent/skills/` contains five built-in skills:
+  - `python`
+  - `javascript`
+  - `docs`
+  - `tests`
+  - `open-source`
+- Each skill is a directory with `SKILL.md` frontmatter containing `name` and `description`.
+- `osc_agent/skills/registry.py` scans skills and implements `load_skill(name)`.
+- `osc_agent/harness/prompt.py` assembles the runtime system prompt with:
+  - repo path
+  - contribution planning instruction
+  - skill catalog
+  - suggested relevant skills
+- The prompt does not include full skill bodies.
+- `load_skill(name)` returns the full `SKILL.md` content through a tool result.
+- Adding a new skill directory does not require changing the agent loop.
+- `inspect_repo()` now reports suggested skills based on repository markers.
+
+Suggested reading order for S07:
+
+1. `learn-claude-code/coding_plan.md` section `s07`
+2. `learn-claude-code/s07_skill_loading/README.md`
+3. `osc_agent/skills/registry.py`
+4. `osc_agent/skills/*/SKILL.md`
+5. `osc_agent/harness/prompt.py`
+6. `osc_agent/agent_loop.py`
+7. `osc_agent/tools/repo.py`
+8. `tests/test_skills.py`
+
+S07 verification:
+
+```sh
+python -m pytest tests/test_skills.py
+python -m pytest tests
+```
+
 ## Project layout
 
 ```text

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from osc_agent.skills.registry import suggest_skills_for_repo
+
 REPO_TOOLS = [
     {
         "name": "inspect_repo",
@@ -45,4 +47,6 @@ def inspect_repo(*, repo_root: Path) -> str:
     lines.extend(f"- {item}" for item in sorted(set(key_files)) or ["(none)"])
     lines.append("Test entries:")
     lines.extend(f"- {item}" for item in sorted(set(test_entries)) or ["(none)"])
+    lines.append("Suggested skills:")
+    lines.extend(f"- {item}" for item in suggest_skills_for_repo(root) or ["(none)"])
     return "\n".join(lines)
