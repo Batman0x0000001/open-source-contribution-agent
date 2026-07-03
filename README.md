@@ -80,6 +80,38 @@ The `ask` policy is now completed at the hook layer.
 - Confirmation decisions are written to trace as `permission_confirmation` events.
 - Direct tool calls still enforce permissions by default; the agent loop disables duplicate tool-level checks because `PreToolUse` has already made the decision.
 
+## S05 update: contribution TodoWrite
+
+S05 adds a planning tool so the agent can maintain an explicit contribution checklist before editing files.
+
+New in s05:
+
+- `harness/todo.py` defines the in-process TODO state and `todo_write(todos)`.
+- `todo_write` accepts:
+  - a Python list
+  - a JSON array string
+  - a Python list literal string parsed with `ast.literal_eval`, not `eval`
+- Each todo contains `content`, `status`, and optional `evidence`.
+- Supported statuses are `pending`, `in_progress`, and `completed`.
+- At most one todo can be `in_progress`.
+- TODO updates are appended to `.osc_agent/traces/session.jsonl` as `todo_write` events.
+- The system prompt now asks the agent to create a contribution plan before modifying files.
+
+Suggested reading order for S05:
+
+1. `learn-claude-code/coding_plan.md` section `s05`
+2. `learn-claude-code/s05_todo_write/README.md`
+3. `osc_agent/harness/todo.py`
+4. `osc_agent/agent_loop.py`
+5. `tests/test_todo.py`
+
+S05 verification:
+
+```sh
+python -m pytest tests/test_todo.py
+python -m pytest tests
+```
+
 ## Project layout
 
 ```text

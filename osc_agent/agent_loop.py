@@ -20,6 +20,7 @@ from typing import Any, Callable, TextIO
 
 from osc_agent.config import Settings
 from osc_agent.harness.hooks import HookContext, HookRegistry, default_hooks, elapsed_ms
+from osc_agent.harness.todo import TODO_WRITE_TOOL, todo_write
 from osc_agent.tools.files import FILE_TOOLS, edit_file, glob_files, read_file, write_file
 from osc_agent.tools.git import GIT_TOOLS, git_diff, git_log, git_status
 from osc_agent.tools.repo import REPO_TOOLS, inspect_repo
@@ -28,10 +29,12 @@ from osc_agent.tools.shell import BASH_TOOL, run_bash
 SYSTEM_TEMPLATE = (
     "You are a coding agent working inside this local repository: {repo_root}. "
     "Use the repo, file, git, and bash tools to inspect and solve the user's contribution task. "
+    "Before modifying files for a contribution, call todo_write with a contribution plan that covers "
+    "understanding the task, reading contribution guidance, locating files, editing, testing, and drafting the PR. "
     "Act step by step and stop when you can report the result."
 )
 
-TOOLS = [BASH_TOOL, *FILE_TOOLS, *GIT_TOOLS, *REPO_TOOLS]
+TOOLS = [BASH_TOOL, *FILE_TOOLS, *GIT_TOOLS, *REPO_TOOLS, TODO_WRITE_TOOL]
 
 
 def _block_attr(block: Any, name: str, default: Any = None) -> Any:
@@ -75,6 +78,7 @@ def build_tool_handlers(repo_root: Path) -> dict[str, Any]:
         "git_diff": lambda: git_diff(repo_root=repo_root),
         "git_log": lambda limit=5: git_log(repo_root=repo_root, limit=limit),
         "inspect_repo": lambda: inspect_repo(repo_root=repo_root),
+        "todo_write": lambda todos: todo_write(todos, repo_root=repo_root),
     }
 
 
@@ -139,7 +143,7 @@ def agent_loop(
                 else:
                     try:
                         tool_output = handler(**tool_args)
-                    except TypeError as exc:
+                    except (TypeError, ValueError) as exc:
                         tool_output = f"Error: invalid arguments for {tool_name}: {exc}"
                 hook_registry.run(
                     "PostToolUse",

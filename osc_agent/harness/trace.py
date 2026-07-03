@@ -11,7 +11,8 @@ append_trace()
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,7 @@ def append_trace(repo_root: Path, event: str, payload: dict[str, Any]) -> None:
     path = trace_path(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(ZoneInfo("Asia/ShangHai")).isoformat(),
         "event": event,
         **payload,
     }
