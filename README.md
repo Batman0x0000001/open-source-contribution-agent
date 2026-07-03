@@ -194,6 +194,44 @@ python -m pytest tests/test_skills.py
 python -m pytest tests
 ```
 
+## S08 update: context compaction
+
+S08 adds a lightweight context compaction pipeline so long-running sessions do not keep every old message and large tool result in the active prompt.
+
+New in s08:
+
+- `osc_agent/harness/compact.py` implements:
+  - `estimate_size(messages)`
+  - `tool_result_budget(messages, repo_root)`
+  - `snip_compact(messages)`
+  - `micro_compact(messages)`
+  - `compact_history(messages, repo_root)`
+  - `reactive_compact(messages, repo_root)`
+- Every agent loop iteration now runs the cheap compaction pipeline before calling the model:
+  - persist large tool results
+  - snip old middle messages
+  - replace old tool results with previews
+  - compact history when estimated size remains too large
+- Large tool outputs are persisted under `.osc_agent/tool-results/`.
+- Full transcripts are written under `.osc_agent/transcripts/` before history compaction.
+- A `compact(reason)` tool lets the model request manual history compaction.
+- If the model API raises a prompt-too-long style error, the loop runs `reactive_compact` and retries once.
+
+Suggested reading order for S08:
+
+1. `learn-claude-code/coding_plan.md` section `s08`
+2. `learn-claude-code/s08_context_compact/README.md`
+3. `osc_agent/harness/compact.py`
+4. `osc_agent/agent_loop.py`
+5. `tests/test_compact.py`
+
+S08 verification:
+
+```sh
+python -m pytest tests/test_compact.py
+python -m pytest tests
+```
+
 ## Project layout
 
 ```text

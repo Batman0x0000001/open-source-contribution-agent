@@ -19,6 +19,7 @@ from time import perf_counter
 from typing import Any, Callable, TextIO
 
 from osc_agent.config import Settings
+from osc_agent.harness.compact import COMPACT_TOOL, apply_compaction, compact_history, reactive_compact
 from osc_agent.harness.hooks import HookContext, HookRegistry, default_hooks, elapsed_ms
 from osc_agent.harness.prompt import assemble_system_prompt
 from osc_agent.harness.todo import TODO_WRITE_TOOL, todo_write
@@ -29,7 +30,7 @@ from osc_agent.tools.repo import REPO_TOOLS, inspect_repo
 from osc_agent.tools.shell import BASH_TOOL, run_bash
 from osc_agent.tools.task import TASK_TOOL, spawn_subagent
 
-TOOLS = [BASH_TOOL, *FILE_TOOLS, *GIT_TOOLS, *REPO_TOOLS, TODO_WRITE_TOOL, TASK_TOOL, LOAD_SKILL_TOOL]
+TOOLS = [BASH_TOOL, *FILE_TOOLS, *GIT_TOOLS, *REPO_TOOLS, TODO_WRITE_TOOL, TASK_TOOL, LOAD_SKILL_TOOL, COMPACT_TOOL]
 
 
 def _block_attr(block: Any, name: str, default: Any = None) -> Any:
@@ -51,6 +52,7 @@ def build_tool_handlers(
     client: Any | None = None,
     settings: Settings | None = None,
     confirm: Callable[[str], bool] | None = None,
+    messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """按 repo_root 绑定工具函数，主循环只负责按名称分发。"""
     def task_handler(description: str, role: str) -> str:
@@ -64,6 +66,12 @@ def build_tool_handlers(
             repo_root=repo_root,
             confirm=confirm,
         )
+
+    def compact_handler(reason: str = "manual") -> str:
+        if messages is None:
+            return "Error: compact tool requires active messages"
+        messages[:] = compact_history(messages, repo_root=repo_root, reason=reason or "manual")
+        return "[Compacted. History summarized.]"
 
     return {
         "bash": lambda command: run_bash(command, repo_root=repo_root, enforce_permissions=False),
@@ -94,6 +102,7 @@ def build_tool_handlers(
         "todo_write": lambda todos: todo_write(todos, repo_root=repo_root),
         "task": task_handler,
         "load_skill": lambda name: load_skill(name),
+        "compact": compact_handler,
     }
 
 
@@ -110,21 +119,37 @@ def agent_loop(
 ) -> Any:
     """执行 Anthropic 风格 agent loop，直到模型不再请求工具。"""
     system_prompt = assemble_system_prompt(repo_root)
-    handlers = tool_handlers or build_tool_handlers(repo_root, client=client, settings=settings, confirm=confirm)
+    handlers = tool_handlers or build_tool_handlers(
+        repo_root,
+        client=client,
+        settings=settings,
+        confirm=confirm,
+        messages=messages,
+    )
     hook_registry = default_hooks()
     if hooks is not None:
         # 自定义 hook 只能追加，不能替换默认权限检查。
         hook_registry.extend(hooks)
     hook_context = HookContext(repo_root=repo_root, confirm=confirm)
 
+    reactive_retries = 0
+
     while True:
-        response = client.messages.create(
-            model=settings.model_id,
-            system=system_prompt,
-            messages=messages,
-            tools=TOOLS,
-            max_tokens=8000,
-        )
+        messages[:] = apply_compaction(messages, repo_root=repo_root)
+        try:
+            response = client.messages.create(
+                model=settings.model_id,
+                system=system_prompt,
+                messages=messages,
+                tools=TOOLS,
+                max_tokens=8000,
+            )
+        except Exception as exc:
+            if reactive_retries < 1 and _is_prompt_too_long(exc):
+                messages[:] = reactive_compact(messages, repo_root=repo_root)
+                reactive_retries += 1
+                continue
+            raise
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason != "tool_use":
@@ -183,3 +208,8 @@ def agent_loop(
 
         #Anthropic 把工具看成：用户帮模型完成了一件事，然后把结果告诉模型
         messages.append({"role": "user", "content": results})
+
+
+def _is_prompt_too_long(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "prompt_too_long" in text or "prompt too long" in text or "context length" in text
