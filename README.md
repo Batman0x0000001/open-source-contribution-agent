@@ -232,6 +232,43 @@ python -m pytest tests/test_compact.py
 python -m pytest tests
 ```
 
+## S09 update: contribution memory
+
+S09 adds a small persistent memory layer so stable project facts can survive context compaction and new sessions.
+
+New in s09:
+
+- `osc_agent/harness/memory.py` manages `.osc_agent/memory/`.
+- `ensure_memory_store(repo_root)` creates `.osc_agent/memory/MEMORY.md`.
+- Memory files are readable Markdown with YAML-style frontmatter:
+  - `name`
+  - `description`
+  - `type`
+- Supported memory types are `user`, `feedback`, `project`, and `reference`.
+- `extract_repo_memories(repo_root)` records reusable project facts such as:
+  - Python test command hints from `pyproject.toml`
+  - JavaScript workflow hints from `package.json`
+  - contribution guide references from `CONTRIBUTING*`
+  - PR template references from `.github/pull_request_template*`
+- `memory_prompt(repo_root, query, limit_chars)` injects a bounded memory index plus relevant details.
+- Sensitive terms such as secrets, tokens, passwords, API keys, and private absolute user paths are rejected.
+- `assemble_system_prompt()` now includes bounded persistent memory content.
+
+Suggested reading order for S09:
+
+1. `learn-claude-code/coding_plan.md` section `s09`
+2. `learn-claude-code/s09_memory/README.md`
+3. `osc_agent/harness/memory.py`
+4. `osc_agent/harness/prompt.py`
+5. `tests/test_memory.py`
+
+S09 verification:
+
+```sh
+python -m pytest tests/test_memory.py
+python -m pytest tests
+```
+
 ## Project layout
 
 ```text

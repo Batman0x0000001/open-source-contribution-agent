@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from osc_agent.harness.memory import memory_prompt
 from osc_agent.skills.registry import list_skill_catalog, suggest_skills_for_repo
 
 
-def assemble_system_prompt(repo_root: Path) -> str:
+def assemble_system_prompt(repo_root: Path, *, current_task: str = "") -> str:
     """只注入技能目录和建议，不把完整 SKILL.md 正文塞进 system prompt。"""
     catalog = list_skill_catalog()
     suggestions = suggest_skills_for_repo(repo_root)
     suggested_text = ", ".join(suggestions) if suggestions else "(none)"
+    memory_text = memory_prompt(repo_root, query=current_task)
     return (
         f"You are a coding agent working inside this local repository: {repo_root}. "
         "Use the repo, file, git, bash, todo, task, and skill tools to solve the user's contribution task. "
@@ -19,5 +21,7 @@ def assemble_system_prompt(repo_root: Path) -> str:
         f"{catalog}\n\n"
         f"Suggested skills for this repository: {suggested_text}.\n"
         "Use load_skill(name) to load full skill instructions only when they are relevant. "
-        "Do not assume the catalog contains the full instructions."
+        "Do not assume the catalog contains the full instructions.\n\n"
+        "Persistent memory:\n"
+        f"{memory_text}"
     )
