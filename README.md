@@ -112,6 +112,46 @@ python -m pytest tests/test_todo.py
 python -m pytest tests
 ```
 
+## S06 update: read-only subagents
+
+S06 adds a `task(description, role)` tool so the parent agent can delegate local analysis to a child agent with fresh context.
+
+New in s06:
+
+- `task` launches a synchronous subagent and returns only the final structured summary.
+- Supported roles are:
+  - `issue_analyzer`
+  - `repo_mapper`
+  - `test_analyzer`
+  - `doc_reviewer`
+- The subagent starts with a fresh `messages` list, so intermediate tool chatter does not enter the parent context.
+- The subagent cannot call `task`, `write_file`, or `edit_file`.
+- The subagent tool set is limited to:
+  - `bash`
+  - `read_file`
+  - `glob`
+  - `git_status`
+  - `inspect_repo`
+- Subagent bash commands are restricted to read-only inspection prefixes such as `git status`, `git diff`, `git log`, `rg`, `grep`, `dir`, `ls`, `type`, and `pwd`.
+- Trace now records `subagent_start`, `subagent_tool_use`, and `subagent_stop` events with `agent=subagent`.
+
+Suggested reading order for S06:
+
+1. `learn-claude-code/coding_plan.md` section `s06`
+2. `learn-claude-code/s06_subagent/README.md`
+3. `osc_agent/tools/task.py`
+4. `osc_agent/agent_loop.py`
+5. `osc_agent/harness/trace.py`
+6. `osc_agent/tools/repo.py`
+7. `tests/test_subagent.py`
+
+S06 verification:
+
+```sh
+python -m pytest tests/test_subagent.py
+python -m pytest tests
+```
+
 ## Project layout
 
 ```text

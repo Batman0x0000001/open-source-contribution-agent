@@ -25,6 +25,7 @@ from osc_agent.tools.files import FILE_TOOLS, edit_file, glob_files, read_file, 
 from osc_agent.tools.git import GIT_TOOLS, git_diff, git_log, git_status
 from osc_agent.tools.repo import REPO_TOOLS, inspect_repo
 from osc_agent.tools.shell import BASH_TOOL, run_bash
+from osc_agent.tools.task import TASK_TOOL, spawn_subagent
 
 SYSTEM_TEMPLATE = (
     "You are a coding agent working inside this local repository: {repo_root}. "
@@ -34,7 +35,7 @@ SYSTEM_TEMPLATE = (
     "Act step by step and stop when you can report the result."
 )
 
-TOOLS = [BASH_TOOL, *FILE_TOOLS, *GIT_TOOLS, *REPO_TOOLS, TODO_WRITE_TOOL]
+TOOLS = [BASH_TOOL, *FILE_TOOLS, *GIT_TOOLS, *REPO_TOOLS, TODO_WRITE_TOOL, TASK_TOOL]
 
 
 def _block_attr(block: Any, name: str, default: Any = None) -> Any:
@@ -50,8 +51,26 @@ def _tool_input(block: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def build_tool_handlers(repo_root: Path) -> dict[str, Any]:
+def build_tool_handlers(
+    repo_root: Path,
+    *,
+    client: Any | None = None,
+    settings: Settings | None = None,
+    confirm: Callable[[str], bool] | None = None,
+) -> dict[str, Any]:
     """按 repo_root 绑定工具函数，主循环只负责按名称分发。"""
+    def task_handler(description: str, role: str) -> str:
+        if client is None or settings is None:
+            return "Error: task tool requires an agent client and settings"
+        return spawn_subagent(
+            description,
+            role,
+            client=client,
+            settings=settings,
+            repo_root=repo_root,
+            confirm=confirm,
+        )
+
     return {
         "bash": lambda command: run_bash(command, repo_root=repo_root, enforce_permissions=False),
         "read_file": lambda path, limit=20_000, offset=0: read_file(
@@ -79,6 +98,7 @@ def build_tool_handlers(repo_root: Path) -> dict[str, Any]:
         "git_log": lambda limit=5: git_log(repo_root=repo_root, limit=limit),
         "inspect_repo": lambda: inspect_repo(repo_root=repo_root),
         "todo_write": lambda todos: todo_write(todos, repo_root=repo_root),
+        "task": task_handler,
     }
 
 
@@ -95,7 +115,7 @@ def agent_loop(
 ) -> Any:
     """执行 Anthropic 风格 agent loop，直到模型不再请求工具。"""
     system_prompt = SYSTEM_TEMPLATE.format(repo_root=repo_root)
-    handlers = tool_handlers or build_tool_handlers(repo_root)
+    handlers = tool_handlers or build_tool_handlers(repo_root, client=client, settings=settings, confirm=confirm)
     hook_registry = default_hooks()
     if hooks is not None:
         # 自定义 hook 只能追加，不能替换默认权限检查。
