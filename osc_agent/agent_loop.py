@@ -21,7 +21,7 @@ from typing import Any, Callable, TextIO
 from osc_agent.config import Settings
 from osc_agent.harness.compact import COMPACT_TOOL, apply_compaction, compact_history, reactive_compact
 from osc_agent.harness.hooks import HookContext, HookRegistry, default_hooks, elapsed_ms
-from osc_agent.harness.prompt import assemble_system_prompt
+from osc_agent.harness.prompt import get_system_prompt, update_context
 from osc_agent.harness.todo import TODO_WRITE_TOOL, todo_write
 from osc_agent.skills.registry import LOAD_SKILL_TOOL, load_skill
 from osc_agent.tools.files import FILE_TOOLS, edit_file, glob_files, read_file, write_file
@@ -118,7 +118,6 @@ def agent_loop(
     confirm: Callable[[str], bool] | None = None,
 ) -> Any:
     """执行 Anthropic 风格 agent loop，直到模型不再请求工具。"""
-    system_prompt = assemble_system_prompt(repo_root)
     handlers = tool_handlers or build_tool_handlers(
         repo_root,
         client=client,
@@ -136,6 +135,12 @@ def agent_loop(
 
     while True:
         messages[:] = apply_compaction(messages, repo_root=repo_root)
+        prompt_context = update_context(
+            repo_root=repo_root,
+            messages=messages,
+            enabled_tools=[tool["name"] for tool in TOOLS],
+        )
+        system_prompt = get_system_prompt(prompt_context)
         try:
             response = client.messages.create(
                 model=settings.model_id,

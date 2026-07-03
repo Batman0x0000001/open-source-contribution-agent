@@ -269,6 +269,57 @@ python -m pytest tests/test_memory.py
 python -m pytest tests
 ```
 
+## S10 update: runtime system prompt assembly
+
+S10 turns the system prompt into runtime sections built from real harness state instead of one hard-coded string.
+
+New in s10:
+
+- `osc_agent/harness/prompt.py` now defines:
+  - `PromptContext`
+  - `PROMPT_SECTIONS`
+  - `update_context(...)`
+  - `assemble_system_prompt(context)`
+  - `get_system_prompt(context)`
+- Prompt sections include:
+  - identity
+  - repo
+  - task
+  - tools
+  - permissions
+  - skills
+  - memory
+  - current todos
+  - git state
+- `update_context()` gathers real state from:
+  - target repo path
+  - current messages
+  - enabled tools
+  - repo inspection
+  - permission summary
+  - skill catalog
+  - persistent memory
+  - current todos
+  - git status
+- `get_system_prompt()` caches assembled prompt text using a stable JSON context key.
+- `agent_loop()` now rebuilds prompt context before each model call.
+- The prompt explicitly says the goal is a reviewable contribution and that the agent must not automatically `git push` or open PRs.
+
+Suggested reading order for S10:
+
+1. `learn-claude-code/coding_plan.md` section `s10`
+2. `learn-claude-code/s10_system_prompt/README.md`
+3. `osc_agent/harness/prompt.py`
+4. `osc_agent/agent_loop.py`
+5. `tests/test_prompt.py`
+
+S10 verification:
+
+```sh
+python -m pytest tests/test_prompt.py
+python -m pytest tests
+```
+
 ## Project layout
 
 ```text
