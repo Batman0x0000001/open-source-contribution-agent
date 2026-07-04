@@ -25,6 +25,7 @@ from osc_agent.harness.background import (
     start_background_task,
 )
 from osc_agent.harness.compact import COMPACT_TOOL, apply_compaction, compact_history, reactive_compact
+from osc_agent.harness.cron import CRON_TOOLS, cancel_schedule, collect_cron_notifications, list_schedules, schedule_check
 from osc_agent.harness.hooks import HookContext, HookRegistry, default_hooks, elapsed_ms
 from osc_agent.harness.prompt import get_system_prompt, update_context
 from osc_agent.harness.recovery import (
@@ -55,6 +56,7 @@ TOOLS = [
     SUBAGENT_TOOL,
     LOAD_SKILL_TOOL,
     COMPACT_TOOL,
+    *CRON_TOOLS,
     *CONTRIBUTION_TASK_TOOLS,
 ]
 
@@ -129,6 +131,14 @@ def build_tool_handlers(
         "subagent": subagent_handler,
         "load_skill": lambda name: load_skill(name),
         "compact": compact_handler,
+        "schedule_check": lambda cron, prompt, enabled=True: schedule_check(
+            repo_root=repo_root,
+            cron=cron,
+            prompt=prompt,
+            enabled=enabled,
+        ),
+        "list_schedules": lambda: list_schedules(repo_root=repo_root),
+        "cancel_schedule": lambda schedule_id: cancel_schedule(repo_root=repo_root, schedule_id=schedule_id),
         "create_task": lambda subject, description="", blockedBy=None, files=None, evidence=None, worktree=None: create_task(
             repo_root=repo_root,
             subject=subject,
@@ -181,7 +191,7 @@ def agent_loop(
     )
 
     while True:
-        notifications = collect_background_results()
+        notifications = collect_background_results() + collect_cron_notifications(repo_root)
         if notifications:
             messages.append(
                 {

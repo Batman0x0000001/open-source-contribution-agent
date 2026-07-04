@@ -516,3 +516,32 @@ S13 verification:
 python -m pytest tests/test_background.py tests/test_agent_loop.py tests/test_shell.py --basetemp .pytest-s13-focused -p no:cacheprovider
 python -m pytest tests --basetemp .pytest-s13-all -p no:cacheprovider
 ```
+
+## S14 Cron Scheduler
+
+S14 adds a minimal persisted scheduler for recurring contribution checks. The agent exposes `schedule_check(cron, prompt, enabled)`, `list_schedules()`, and `cancel_schedule(schedule_id)`. Schedules are written to `.osc_agent/scheduled_tasks.json`; each agent-loop round checks enabled schedules, injects due reminders as `<task_notification>` blocks, and records the last fired minute so the same schedule does not fire twice in one minute.
+
+This v1 follows `coding_plan.md` naming (`schedule_check`, `list_schedules`, `cancel_schedule`) while using the S14 tutorial's cron semantics. It supports five-field cron expressions with `*`, `*/N`, `N`, `N-M`, `N-M/S`, and comma-separated values. Day-of-month and day-of-week use OR semantics when both are constrained.
+
+S14 reading order:
+
+1. `learn-claude-code/coding_plan.md` section `s14`
+2. `learn-claude-code/s14_cron_scheduler/README.md`
+3. `osc_agent/harness/cron.py`
+4. `osc_agent/agent_loop.py`
+5. `tests/test_cron.py`
+
+S14 operation steps:
+
+1. Define persisted cron schedule records with `id`, `cron`, `prompt`, `enabled`, `created_at`, and `last_fired_at`.
+2. Validate five-field cron expressions before saving schedules.
+3. Register `schedule_check`, `list_schedules`, and `cancel_schedule` in the agent tool pool.
+4. At the start of each agent loop round, collect due cron notifications and inject them with background-task notifications.
+5. Keep canceled schedules disabled for auditability instead of deleting them.
+
+S14 verification:
+
+```sh
+python -m pytest tests/test_cron.py tests/test_agent_loop.py --basetemp .pytest-s14-focused -p no:cacheprovider
+python -m pytest tests --basetemp .pytest-s14-all -p no:cacheprovider
+```
