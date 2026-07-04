@@ -42,6 +42,7 @@ from osc_agent.harness.tasks import (
     load_all_tasks,
 )
 from osc_agent.harness.trace import append_trace, preview
+from osc_agent.harness.worktree import resolve_task_worktree
 from osc_agent.tools.files import FILE_TOOLS, glob_files, read_file, write_file
 from osc_agent.tools.git import GIT_TOOLS, git_status
 from osc_agent.tools.repo import REPO_TOOLS, inspect_repo
@@ -267,7 +268,13 @@ def collect_team_notifications(repo_root: Path, *, agent: str = LEAD_AGENT) -> l
     return [_format_message(message) for message in messages]
 
 
-def idle_poll(*, repo_root: Path, name: str, messages: list[dict[str, Any]]) -> str:
+def idle_poll(
+    *,
+    repo_root: Path,
+    name: str,
+    messages: list[dict[str, Any]],
+    worktree_context: dict[str, Path | None] | None = None,
+) -> str:
     """队友空闲时优先处理 inbox，其次扫描任务板并自动认领可开始任务。"""
     from osc_agent.harness.protocols import consume_inbox
 
@@ -281,7 +288,7 @@ def idle_poll(*, repo_root: Path, name: str, messages: list[dict[str, Any]]) -> 
             messages.append({"role": "user", "content": _format_inbox(inbox)})
             return "work"
 
-        claimed = claim_next_available_task(repo_root=repo_root, owner=name)
+        claimed = claim_next_available_task(repo_root=repo_root, owner=name, worktree_context=worktree_context)
         if claimed:
             messages.append({"role": "user", "content": claimed})
             return "work"
@@ -309,11 +316,18 @@ def scan_unclaimed_tasks(repo_root: Path) -> list[dict[str, Any]]:
     ]
 
 
-def claim_next_available_task(*, repo_root: Path, owner: str) -> str:
+def claim_next_available_task(
+    *,
+    repo_root: Path,
+    owner: str,
+    worktree_context: dict[str, Path | None] | None = None,
+) -> str:
     """按稳定顺序认领第一个可开始任务；失败时继续尝试下一个候选。"""
     for task in scan_unclaimed_tasks(repo_root):
         result = claim_task(repo_root=repo_root, task_id=task["id"], owner=owner)
         if result.startswith("Claimed"):
+            if worktree_context is not None:
+                worktree_context["path"] = resolve_task_worktree(repo_root, task["id"])
             append_trace(repo_root, "teammate_task_claimed", {"owner": owner, "task_id": task["id"]})
             return f"[Auto-claimed task]\n{get_task(repo_root=repo_root, task_id=task['id'])}"
     return ""
@@ -334,7 +348,8 @@ def _run_teammate_loop(
     tools = list(TEAMMATE_TOOLS)
     if allow_write:
         tools.append(FILE_TOOLS[1])
-    handlers = _teammate_handlers(repo_root, name=name, allow_write=allow_write)
+    worktree_context: dict[str, Path | None] = {"path": None}
+    handlers = _teammate_handlers(repo_root, name=name, allow_write=allow_write, worktree_context=worktree_context)
     hook_registry = default_hooks()
     hook_context = HookContext(repo_root=repo_root)
     system_prompt = (
@@ -427,7 +442,12 @@ def _run_teammate_loop(
             if not should_idle:
                 break
 
-            idle_result = idle_poll(repo_root=repo_root, name=name, messages=messages)
+            idle_result = idle_poll(
+                repo_root=repo_root,
+                name=name,
+                messages=messages,
+                worktree_context=worktree_context,
+            )
             if idle_result == "work":
                 continue
             if idle_result == "timeout":
@@ -442,18 +462,34 @@ def _run_teammate_loop(
     return f"Teammate {name} ({role}) result:\n{final_summary}".strip()
 
 
-def _teammate_handlers(repo_root: Path, *, name: str, allow_write: bool) -> dict[str, Any]:
+def _teammate_handlers(
+    repo_root: Path,
+    *,
+    name: str,
+    allow_write: bool,
+    worktree_context: dict[str, Path | None] | None = None,
+) -> dict[str, Any]:
+    def cwd() -> Path:
+        return (worktree_context or {}).get("path") or repo_root
+
+    def claim_for_teammate(task_id: str, owner: str = name) -> str:
+        result = claim_task(repo_root=repo_root, task_id=task_id, owner=owner)
+        if result.startswith("Claimed") and worktree_context is not None:
+            # 认领绑定 worktree 的任务后，后续工具自动在隔离目录执行。
+            worktree_context["path"] = resolve_task_worktree(repo_root, task_id)
+        return result
+
     handlers: dict[str, Any] = {
-        "bash": lambda command, run_in_background=False: _run_read_only_bash(command, repo_root=repo_root),
+        "bash": lambda command, run_in_background=False: _run_read_only_bash(command, repo_root=cwd()),
         "read_file": lambda path, limit=20_000, offset=0: read_file(
-            repo_root=repo_root,
+            repo_root=cwd(),
             path=path,
             limit=limit,
             offset=offset,
         ),
-        "glob": lambda pattern: glob_files(repo_root=repo_root, pattern=pattern),
-        "git_status": lambda: git_status(repo_root=repo_root),
-        "inspect_repo": lambda: inspect_repo(repo_root=repo_root),
+        "glob": lambda pattern: glob_files(repo_root=cwd(), pattern=pattern),
+        "git_status": lambda: git_status(repo_root=cwd()),
+        "inspect_repo": lambda: inspect_repo(repo_root=cwd()),
         "send_message": lambda to_agent, content, message_type="message", metadata=None: send_message(
             repo_root=repo_root,
             from_agent=name,
@@ -471,7 +507,7 @@ def _teammate_handlers(repo_root: Path, *, name: str, allow_write: bool) -> dict
         plan=plan,
     )
     handlers["list_tasks"] = lambda: list_tasks(repo_root=repo_root)
-    handlers["claim_task"] = lambda task_id, owner=name: claim_task(repo_root=repo_root, task_id=task_id, owner=owner)
+    handlers["claim_task"] = claim_for_teammate
     handlers["complete_task"] = lambda task_id, evidence=None: complete_task(
         repo_root=repo_root,
         task_id=task_id,
@@ -479,7 +515,7 @@ def _teammate_handlers(repo_root: Path, *, name: str, allow_write: bool) -> dict
     )
     if allow_write:
         handlers["write_file"] = lambda path, content: write_file(
-            repo_root=repo_root,
+            repo_root=cwd(),
             path=path,
             content=content,
             enforce_permissions=True,

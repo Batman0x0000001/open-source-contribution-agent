@@ -49,6 +49,7 @@ from osc_agent.harness.tasks import CONTRIBUTION_TASK_TOOLS, claim_task, complet
 from osc_agent.harness.teams import TEAM_TOOLS, check_inbox, collect_team_notifications, send_message, spawn_teammate
 from osc_agent.harness.todo import TODO_WRITE_TOOL, todo_write
 from osc_agent.harness.trace import append_trace
+from osc_agent.harness.worktree import WORKTREE_TOOLS, create_worktree, keep_worktree, remove_worktree
 from osc_agent.skills.registry import LOAD_SKILL_TOOL, load_skill
 from osc_agent.tools.files import FILE_TOOLS, edit_file, glob_files, read_file, write_file
 from osc_agent.tools.git import GIT_TOOLS, git_diff, git_log, git_status
@@ -67,6 +68,7 @@ TOOLS = [
     *CRON_TOOLS,
     *TEAM_TOOLS,
     *PROTOCOL_TOOLS,
+    *WORKTREE_TOOLS,
     *CONTRIBUTION_TASK_TOOLS,
 ]
 
@@ -179,6 +181,13 @@ def build_tool_handlers(
             sender=sender,
             path=path,
             reason=reason,
+        ),
+        "create_worktree": lambda name, task_id="": create_worktree(repo_root=repo_root, name=name, task_id=task_id),
+        "keep_worktree": lambda name: keep_worktree(repo_root=repo_root, name=name),
+        "remove_worktree": lambda name, discard_changes=False: remove_worktree(
+            repo_root=repo_root,
+            name=name,
+            discard_changes=discard_changes,
         ),
         "schedule_check": lambda cron, prompt, enabled=True: schedule_check(
             repo_root=repo_root,

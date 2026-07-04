@@ -643,3 +643,35 @@ S17 verification:
 python -m pytest tests/test_autonomous.py tests/test_teams.py tests/test_protocols.py --basetemp .pytest-s17-focused -p no:cacheprovider
 python -m pytest tests --basetemp .pytest-s17-all -p no:cacheprovider
 ```
+
+## S18 Worktree Isolation
+
+S18 adds git worktree isolation for parallel contribution tasks. Lead can create a named worktree under `.osc_agent/worktrees/`, optionally bind it to a task, keep it for review, or remove it after checking for dirty state. Worktree lifecycle events are appended to `.osc_agent/worktrees/events.jsonl`.
+
+When a teammate claims a task that has `task.worktree` set, its tool cwd switches to that worktree path. The teammate's `bash`, `read_file`, `write_file`, `glob`, `git_status`, and `inspect_repo` handlers then operate inside the isolated worktree, while task metadata still lives in the main repo.
+
+S18 reading order:
+
+1. `learn-claude-code/coding_plan.md` section `s18`
+2. `learn-claude-code/s18_worktree_isolation/README.md`
+3. `osc_agent/harness/worktree.py`
+4. `osc_agent/harness/tasks.py`
+5. `osc_agent/harness/teams.py`
+6. `osc_agent/agent_loop.py`
+7. `tests/test_worktree.py`
+
+S18 operation steps:
+
+1. Validate worktree names with `[A-Za-z0-9._-]{1,64}` and reject `.` / `..`.
+2. Create worktrees with `git worktree add` under `.osc_agent/worktrees/<name>`.
+3. Bind `task_id` to `task.worktree` without changing task status.
+4. Register Lead tools: `create_worktree`, `keep_worktree`, and `remove_worktree`.
+5. On teammate task claim, resolve `task.worktree` and switch teammate tool cwd to that path.
+6. Refuse to remove dirty worktrees unless `discard_changes=true`.
+
+S18 verification:
+
+```sh
+python -m pytest tests/test_worktree.py tests/test_autonomous.py tests/test_teams.py --basetemp .pytest-s18-focused -p no:cacheprovider
+python -m pytest tests --basetemp .pytest-s18-all -p no:cacheprovider
+```
