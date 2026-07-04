@@ -39,6 +39,7 @@ from osc_agent.harness.recovery import (
 )
 from osc_agent.harness.subagent import SUBAGENT_TOOL, spawn_subagent
 from osc_agent.harness.tasks import CONTRIBUTION_TASK_TOOLS, claim_task, complete_task, create_task, get_task, list_tasks
+from osc_agent.harness.teams import TEAM_TOOLS, check_inbox, collect_team_notifications, send_message, spawn_teammate
 from osc_agent.harness.todo import TODO_WRITE_TOOL, todo_write
 from osc_agent.harness.trace import append_trace
 from osc_agent.skills.registry import LOAD_SKILL_TOOL, load_skill
@@ -57,6 +58,7 @@ TOOLS = [
     LOAD_SKILL_TOOL,
     COMPACT_TOOL,
     *CRON_TOOLS,
+    *TEAM_TOOLS,
     *CONTRIBUTION_TASK_TOOLS,
 ]
 
@@ -131,6 +133,23 @@ def build_tool_handlers(
         "subagent": subagent_handler,
         "load_skill": lambda name: load_skill(name),
         "compact": compact_handler,
+        "spawn_teammate": lambda name, role, prompt, allow_write=False: spawn_teammate(
+            name=name,
+            role=role,
+            prompt=prompt,
+            allow_write=allow_write,
+            repo_root=repo_root,
+            client=client,
+            settings=settings,
+        ),
+        "send_message": lambda to_agent, content, message_type="message", metadata=None: send_message(
+            repo_root=repo_root,
+            to_agent=to_agent,
+            content=content,
+            message_type=message_type,
+            metadata=metadata,
+        ),
+        "check_inbox": lambda: check_inbox(repo_root=repo_root),
         "schedule_check": lambda cron, prompt, enabled=True: schedule_check(
             repo_root=repo_root,
             cron=cron,
@@ -191,7 +210,11 @@ def agent_loop(
     )
 
     while True:
-        notifications = collect_background_results() + collect_cron_notifications(repo_root)
+        notifications = (
+            collect_background_results()
+            + collect_cron_notifications(repo_root)
+            + collect_team_notifications(repo_root)
+        )
         if notifications:
             messages.append(
                 {

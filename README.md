@@ -545,3 +545,33 @@ S14 verification:
 python -m pytest tests/test_cron.py tests/test_agent_loop.py --basetemp .pytest-s14-focused -p no:cacheprovider
 python -m pytest tests --basetemp .pytest-s14-all -p no:cacheprovider
 ```
+
+## S15 Agent Teams
+
+S15 adds a lightweight team harness for longer-lived teammate agents. The core is a file-backed `MessageBus`: each agent has a JSONL inbox under `.osc_agent/mailboxes/`, sending appends one message, and reading consumes the inbox. The Lead agent gets three tools: `spawn_teammate(name, role, prompt, allow_write)`, `send_message(to_agent, content, message_type, metadata)`, and `check_inbox()`.
+
+Initial teammate roles are `reviewer`, `tester`, and `doc_writer`. Teammates run in daemon threads with their own messages and limited tools. By default they can inspect the repo and send messages, but they do not receive `write_file`; `allow_write=true` must be explicit for documentation or edit assignments.
+
+S15 reading order:
+
+1. `learn-claude-code/coding_plan.md` section `s15`
+2. `learn-claude-code/s15_agent_teams/README.md`
+3. `osc_agent/harness/teams.py`
+4. `osc_agent/agent_loop.py`
+5. `tests/test_teams.py`
+
+S15 operation steps:
+
+1. Create file-backed mailboxes in `.osc_agent/mailboxes/*.jsonl`.
+2. Implement `MessageBus.send(...)` and consuming `read_inbox(agent)`.
+3. Add `spawn_teammate(...)` to start a teammate thread with its own context.
+4. Add `send_message(...)` and `check_inbox()` for Lead/team communication.
+5. Automatically inject Lead inbox messages at the start of each agent-loop round.
+6. Keep teammate tools limited, with file writes disabled unless `allow_write=true`.
+
+S15 verification:
+
+```sh
+python -m pytest tests/test_teams.py tests/test_agent_loop.py --basetemp .pytest-s15-focused -p no:cacheprovider
+python -m pytest tests --basetemp .pytest-s15-all -p no:cacheprovider
+```
