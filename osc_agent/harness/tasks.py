@@ -187,6 +187,8 @@ def claim_task(*, repo_root: Path, task_id: str, owner: str = "agent") -> str:
     task = load_task(repo_root, task_id)
     if task.status != "pending":
         return f"Task {task.id} is {task.status}, cannot claim"
+    if task.owner:
+        return f"Task {task.id} already owned by {task.owner}"
 
     blocked_by = blocking_dependencies(repo_root, task)
     if blocked_by:

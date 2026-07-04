@@ -613,3 +613,33 @@ S16 verification:
 python -m pytest tests/test_protocols.py tests/test_teams.py --basetemp .pytest-s16-focused -p no:cacheprovider
 python -m pytest tests --basetemp .pytest-s16-all -p no:cacheprovider
 ```
+
+## S17 Autonomous Agents
+
+S17 lets teammates organize their own work after they become idle. A teammate now cycles through WORK and IDLE phases: WORK runs the normal LLM/tool loop, and IDLE first checks its inbox, then scans the persistent task board for unowned, unblocked pending tasks. If a task can be claimed, the teammate claims it with itself as owner and returns to WORK with the claimed task injected into context.
+
+Task claiming now rejects existing owners, so an auto-claim cannot silently overwrite another teammate's ownership. Teammate tools also include `list_tasks`, `claim_task`, and `complete_task`, while write access still requires explicit `allow_write=true`.
+
+S17 reading order:
+
+1. `learn-claude-code/coding_plan.md` section `s17`
+2. `learn-claude-code/s17_autonomous_agents/README.md`
+3. `osc_agent/harness/tasks.py`
+4. `osc_agent/harness/teams.py`
+5. `tests/test_autonomous.py`
+
+S17 operation steps:
+
+1. Add owner checks to `claim_task`.
+2. Add `scan_unclaimed_tasks(repo_root)` for pending, unowned, unblocked tasks.
+3. Add `claim_next_available_task(repo_root, owner)` for stable first-task auto-claim.
+4. Add `idle_poll(...)` so idle teammates check inbox before scanning tasks.
+5. Change teammate lifecycle to WORK -> IDLE -> WORK until shutdown or idle timeout.
+6. Re-inject teammate identity before a new WORK phase to survive compacted context.
+
+S17 verification:
+
+```sh
+python -m pytest tests/test_autonomous.py tests/test_teams.py tests/test_protocols.py --basetemp .pytest-s17-focused -p no:cacheprovider
+python -m pytest tests --basetemp .pytest-s17-all -p no:cacheprovider
+```

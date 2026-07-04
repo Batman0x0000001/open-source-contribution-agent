@@ -1,21 +1,21 @@
 """
-Lead Agent 运行 agent_loop
+Lead Agent 调用 spawn_teammate
     ↓
-决定是否 spawn teammate
+创建 teammate 独立线程
     ↓
-创建 teammate thread（_run_teammate_loop）
+teammate 启动自己的 LLM loop
     ↓
-teammate 拥有独立 inbox + tool set
+每轮先读取 inbox，并路由协议消息
     ↓
-teammate 自主执行任务（最多 10 rounds）
+LLM 根据 inbox / task / tool_result 决定行动
     ↓
-teammate 通过 message bus 与 lead 通信
+可调用工具：读文件、查仓库、发消息、提交计划审批、认领/完成任务
     ↓
-lead 每轮 agent_loop 调用 collect_team_notifications
+如果无 tool_use 且 autonomous=true，进入 idle_poll
     ↓
-读取 mailbox → 注入 <task_notification>
+idle_poll 周期性检查 inbox 或自动认领可执行 task
     ↓
-LLM 在下一轮看到队友结果
+完成 / 等审批 / 超时 / shutdown 后，把最终结果发回 lead
 """
 
 from __future__ import annotations
@@ -32,6 +32,15 @@ from typing import Any
 from osc_agent.config import Settings
 from osc_agent.harness.hooks import HookContext, default_hooks, elapsed_ms
 from osc_agent.harness.subagent import READ_ONLY_BASH_PREFIXES
+from osc_agent.harness.tasks import (
+    CONTRIBUTION_TASK_TOOLS,
+    blocking_dependencies,
+    claim_task,
+    complete_task,
+    get_task,
+    list_tasks,
+    load_all_tasks,
+)
 from osc_agent.harness.trace import append_trace, preview
 from osc_agent.tools.files import FILE_TOOLS, glob_files, read_file, write_file
 from osc_agent.tools.git import GIT_TOOLS, git_status
@@ -40,6 +49,8 @@ from osc_agent.tools.shell import BASH_TOOL, run_bash
 
 TEAM_ROLES = {"reviewer", "tester", "doc_writer"}
 TEAMMATE_MAX_ROUNDS = 10
+IDLE_POLL_INTERVAL_SECONDS = 5.0
+IDLE_TIMEOUT_SECONDS = 60.0
 LEAD_AGENT = "lead"
 
 SPAWN_TEAMMATE_TOOL = {
@@ -104,6 +115,9 @@ TEAMMATE_TOOLS = [
     REPO_TOOLS[0],
     SEND_MESSAGE_TOOL,
     SUBMIT_PLAN_TOOL,
+    CONTRIBUTION_TASK_TOOLS[1],
+    CONTRIBUTION_TASK_TOOLS[3],
+    CONTRIBUTION_TASK_TOOLS[4],
 ]
 
 _bus_lock = threading.Lock()
@@ -133,7 +147,7 @@ class MessageBus:
         message_type: str = "message",
         metadata: dict[str, Any] | None = None,
     ) -> str:
-        """发送消息就是向目标邮箱追加一行 JSONL；简单透明，方便调试。"""
+        """发送消息就是向目标邮箱追加一行 JSONL，便于跨线程观察。"""
         if not _valid_agent_name(to_agent):
             return f"Error: invalid agent name {to_agent}"
         message = TeamMessage(
@@ -152,7 +166,7 @@ class MessageBus:
         return f"Sent message to {to_agent}"
 
     def read_inbox(self, agent: str) -> list[dict[str, Any]]:
-        """消费式读取邮箱；读完即清空，避免同一条消息反复注入上下文。"""
+        """消费式读取邮箱；读完即清空，避免同一条消息反复进入上下文。"""
         path = self._inbox_path(agent)
         if not path.exists():
             return []
@@ -184,8 +198,9 @@ def spawn_teammate(
     client: Any,
     settings: Settings,
     allow_write: bool = False,
+    autonomous: bool = True,
 ) -> str:
-    """启动长期队友线程；队友通过文件邮箱和 Lead 异步通信。"""
+    """启动队友线程；S17 默认开启空闲轮询和自动认领。"""
     name = name.strip()
     if not _valid_agent_name(name):
         return "Error: teammate name must contain only letters, numbers, underscore, dot, or dash"
@@ -209,6 +224,7 @@ def spawn_teammate(
             client=client,
             settings=settings,
             allow_write=allow_write,
+            autonomous=autonomous,
         )
         bus.send(name, LEAD_AGENT, summary, "result", {"role": role})
 
@@ -228,7 +244,7 @@ def send_message(
     message_type: str = "message",
     metadata: dict[str, Any] | None = None,
 ) -> str:
-    """Lead 和队友共享的发送入口；metadata 保留给后续协议阶段扩展。"""
+    """Lead 和队友共享的发送入口；metadata 供协议阶段关联 request_id。"""
     if not content.strip():
         return "Error: content is required"
     return MessageBus(repo_root).send(from_agent, to_agent, content, message_type, metadata)
@@ -242,13 +258,65 @@ def check_inbox(*, repo_root: Path, agent: str = LEAD_AGENT) -> str:
 
 
 def collect_team_notifications(repo_root: Path, *, agent: str = LEAD_AGENT) -> list[str]:
-    """每轮主循环自动收取 Lead 邮箱，把队友消息注入为独立文本块。"""
+    """每轮主循环自动收取 Lead 邮箱，先路由协议，再注入文本块。"""
     from osc_agent.harness.protocols import consume_inbox
 
     messages = consume_inbox(repo_root, agent)
     if not messages:
         return []
     return [_format_message(message) for message in messages]
+
+
+def idle_poll(*, repo_root: Path, name: str, messages: list[dict[str, Any]]) -> str:
+    """队友空闲时优先处理 inbox，其次扫描任务板并自动认领可开始任务。"""
+    from osc_agent.harness.protocols import consume_inbox
+
+    deadline = time.monotonic() + IDLE_TIMEOUT_SECONDS
+    while time.monotonic() <= deadline:
+        time.sleep(IDLE_POLL_INTERVAL_SECONDS)
+        inbox = consume_inbox(repo_root, name)
+        if any(message.get("type") == "shutdown_request" for message in inbox):
+            return "shutdown"
+        if inbox:
+            messages.append({"role": "user", "content": _format_inbox(inbox)})
+            return "work"
+
+        claimed = claim_next_available_task(repo_root=repo_root, owner=name)
+        if claimed:
+            messages.append({"role": "user", "content": claimed})
+            return "work"
+    return "timeout"
+
+
+def scan_unclaimed_tasks(repo_root: Path) -> list[dict[str, Any]]:
+    """扫描 pending、无 owner、依赖已完成的任务，供空闲队友自动认领。"""
+    candidates = []
+    for task in load_all_tasks(repo_root):
+        if task.status != "pending" or task.owner:
+            continue
+        if blocking_dependencies(repo_root, task):
+            continue
+        candidates.append(task)
+    return [
+        {
+            "id": task.id,
+            "subject": task.subject,
+            "description": task.description,
+            "blockedBy": task.blockedBy,
+            "files": task.files,
+        }
+        for task in candidates
+    ]
+
+
+def claim_next_available_task(*, repo_root: Path, owner: str) -> str:
+    """按稳定顺序认领第一个可开始任务；失败时继续尝试下一个候选。"""
+    for task in scan_unclaimed_tasks(repo_root):
+        result = claim_task(repo_root=repo_root, task_id=task["id"], owner=owner)
+        if result.startswith("Claimed"):
+            append_trace(repo_root, "teammate_task_claimed", {"owner": owner, "task_id": task["id"]})
+            return f"[Auto-claimed task]\n{get_task(repo_root=repo_root, task_id=task['id'])}"
+    return ""
 
 
 def _run_teammate_loop(
@@ -260,6 +328,7 @@ def _run_teammate_loop(
     client: Any,
     settings: Settings,
     allow_write: bool,
+    autonomous: bool,
 ) -> str:
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     tools = list(TEAMMATE_TOOLS)
@@ -275,72 +344,97 @@ def _run_teammate_loop(
 
     final_summary = ""
     try:
-        for _round_index in range(1, TEAMMATE_MAX_ROUNDS + 1):
-            from osc_agent.harness.protocols import consume_inbox
+        while True:
+            _ensure_identity(messages, name=name, role=role)
+            should_idle = False
 
-            inbox = consume_inbox(repo_root, name)
-            if any(message.get("type") == "shutdown_request" for message in inbox):
+            for _round_index in range(1, TEAMMATE_MAX_ROUNDS + 1):
+                from osc_agent.harness.protocols import consume_inbox
+
+                inbox = consume_inbox(repo_root, name)
+                if any(message.get("type") == "shutdown_request" for message in inbox):
+                    final_summary = f"Teammate {name} shut down gracefully."
+                    should_idle = False
+                    break
+                if inbox:
+                    messages.append({"role": "user", "content": _format_inbox(inbox)})
+
+                response = client.messages.create(
+                    model=settings.model_id,
+                    system=system_prompt,
+                    messages=messages[-20:],
+                    tools=tools,
+                    max_tokens=4000,
+                )
+                messages.append({"role": "assistant", "content": response.content})
+                if response.stop_reason != "tool_use":
+                    final_summary = _extract_text(response.content)
+                    should_idle = autonomous
+                    break
+
+                results: list[dict[str, str]] = []
+                waiting_for_protocol = False
+                for block in response.content:
+                    if _block_attr(block, "type") != "tool_use":
+                        continue
+                    tool_name = _block_attr(block, "name")
+                    tool_args = _tool_input(block)
+                    handler = handlers.get(tool_name)
+                    started = perf_counter()
+                    pre_results = hook_registry.run(
+                        "PreToolUse",
+                        hook_context,
+                        {"tool_name": tool_name, "tool_args": tool_args},
+                    )
+                    blocked = next((result for result in pre_results if not result.allowed), None)
+                    if blocked is not None:
+                        output = blocked.content or "Permission denied"
+                    elif handler is None:
+                        output = f"Error: unknown teammate tool {tool_name}"
+                    else:
+                        try:
+                            output = handler(**tool_args)
+                        except (TypeError, ValueError) as exc:
+                            output = f"Error: invalid arguments for {tool_name}: {exc}"
+                    hook_registry.run(
+                        "PostToolUse",
+                        hook_context,
+                        {
+                            "tool_name": tool_name,
+                            "tool_args": tool_args,
+                            "output": output,
+                            "latency_ms": elapsed_ms(started),
+                        },
+                    )
+                    append_trace(
+                        repo_root,
+                        "teammate_tool_use",
+                        {"name": name, "role": role, "tool": tool_name, "output_preview": preview(output)},
+                    )
+                    results.append({"type": "tool_result", "tool_use_id": _block_attr(block, "id"), "content": output})
+                    if tool_name == "request_plan_review":
+                        # 计划审批是执行门：提交计划后先停下来，等待 Lead 明确审批。
+                        waiting_for_protocol = True
+                messages.append({"role": "user", "content": results})
+                if waiting_for_protocol:
+                    final_summary = f"Teammate {name} is waiting for plan approval."
+                    should_idle = False
+                    break
+            else:
+                final_summary = f"Teammate {name} stopped after {TEAMMATE_MAX_ROUNDS} rounds without a final answer."
+                should_idle = autonomous
+
+            if not should_idle:
+                break
+
+            idle_result = idle_poll(repo_root=repo_root, name=name, messages=messages)
+            if idle_result == "work":
+                continue
+            if idle_result == "timeout":
+                final_summary = f"{final_summary}\nIdle timeout: no inbox messages or claimable tasks."
+            else:
                 final_summary = f"Teammate {name} shut down gracefully."
-                break
-            if inbox:
-                messages.append({"role": "user", "content": _format_inbox(inbox)})
-
-            response = client.messages.create(
-                model=settings.model_id,
-                system=system_prompt,
-                messages=messages[-20:],
-                tools=tools,
-                max_tokens=4000,
-            )
-            messages.append({"role": "assistant", "content": response.content})
-            if response.stop_reason != "tool_use":
-                final_summary = _extract_text(response.content)
-                break
-
-            results: list[dict[str, str]] = []
-            waiting_for_protocol = False
-            for block in response.content:
-                if _block_attr(block, "type") != "tool_use":
-                    continue
-                tool_name = _block_attr(block, "name")
-                tool_args = _tool_input(block)
-                handler = handlers.get(tool_name)
-                started = perf_counter()
-                pre_results = hook_registry.run(
-                    "PreToolUse",
-                    hook_context,
-                    {"tool_name": tool_name, "tool_args": tool_args},
-                )
-                blocked = next((result for result in pre_results if not result.allowed), None)
-                if blocked is not None:
-                    output = blocked.content or "Permission denied"
-                elif handler is None:
-                    output = f"Error: unknown teammate tool {tool_name}"
-                else:
-                    try:
-                        output = handler(**tool_args)
-                    except (TypeError, ValueError) as exc:
-                        output = f"Error: invalid arguments for {tool_name}: {exc}"
-                hook_registry.run(
-                    "PostToolUse",
-                    hook_context,
-                    {"tool_name": tool_name, "tool_args": tool_args, "output": output, "latency_ms": elapsed_ms(started)},
-                )
-                append_trace(
-                    repo_root,
-                    "teammate_tool_use",
-                    {"name": name, "role": role, "tool": tool_name, "output_preview": preview(output)},
-                )
-                results.append({"type": "tool_result", "tool_use_id": _block_attr(block, "id"), "content": output})
-                if tool_name == "request_plan_review":
-                    # 计划审批是执行门：提交计划后先停下来，等待 Lead 明确审批。
-                    waiting_for_protocol = True
-            messages.append({"role": "user", "content": results})
-            if waiting_for_protocol:
-                final_summary = f"Teammate {name} is waiting for plan approval."
-                break
-        else:
-            final_summary = f"Teammate {name} stopped after {TEAMMATE_MAX_ROUNDS} rounds without a final answer."
+            break
     except Exception as exc:  # pragma: no cover - protects the main CLI from teammate thread failures
         final_summary = f"Error: teammate {name} failed: {exc}"
 
@@ -376,6 +470,13 @@ def _teammate_handlers(repo_root: Path, *, name: str, allow_write: bool) -> dict
         sender=sender,
         plan=plan,
     )
+    handlers["list_tasks"] = lambda: list_tasks(repo_root=repo_root)
+    handlers["claim_task"] = lambda task_id, owner=name: claim_task(repo_root=repo_root, task_id=task_id, owner=owner)
+    handlers["complete_task"] = lambda task_id, evidence=None: complete_task(
+        repo_root=repo_root,
+        task_id=task_id,
+        evidence=evidence,
+    )
     if allow_write:
         handlers["write_file"] = lambda path, content: write_file(
             repo_root=repo_root,
@@ -391,6 +492,12 @@ def _run_read_only_bash(command: str, *, repo_root: Path) -> str:
     if not any(normalized == prefix.strip() or normalized.startswith(prefix) for prefix in READ_ONLY_BASH_PREFIXES):
         return "Permission denied: teammate bash is read-only"
     return run_bash(command, repo_root=repo_root, enforce_permissions=True)
+
+
+def _ensure_identity(messages: list[dict[str, Any]], *, name: str, role: str) -> None:
+    identity = f"<identity>You are teammate '{name}', role: {role}. Continue autonomous team work.</identity>"
+    if not messages or messages[0].get("content") != identity:
+        messages.insert(0, {"role": "user", "content": identity})
 
 
 def _format_inbox(messages: list[dict[str, Any]]) -> str:

@@ -67,6 +67,7 @@ def test_spawn_teammate_sends_final_result_to_lead(tmp_path):
         repo_root=tmp_path,
         client=FakeClient(fake_messages),
         settings=_settings(),
+        autonomous=False,
     )
 
     for _ in range(50):
@@ -92,6 +93,7 @@ def test_spawn_teammate_can_explicitly_allow_write_tool(tmp_path):
         client=FakeClient(fake_messages),
         settings=_settings(),
         allow_write=True,
+        autonomous=False,
     )
 
     for _ in range(50):
