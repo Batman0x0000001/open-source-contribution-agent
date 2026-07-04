@@ -8,8 +8,8 @@ import pytest
 
 from osc_agent.agent_loop import TOOLS, agent_loop
 from osc_agent.config import Settings
+from osc_agent.harness.subagent import SUBAGENT_TOOLS, spawn_subagent
 from osc_agent.harness.trace import trace_path
-from osc_agent.tools.task import SUBAGENT_TOOLS, spawn_subagent
 
 
 def _settings() -> Settings:
@@ -136,7 +136,7 @@ class MainAndSubagentMessages:
                 content=[
                     SimpleNamespace(
                         type="tool_use",
-                        name="task",
+                        name="subagent",
                         id="toolu_main_1",
                         input={"description": "Map repo", "role": "repo_mapper"},
                     )
@@ -153,7 +153,7 @@ class MainAndSubagentMessages:
         )
 
 
-def test_agent_loop_exposes_task_and_parent_receives_only_summary(tmp_path):
+def test_agent_loop_exposes_subagent_and_parent_receives_only_summary(tmp_path):
     messages = [{"role": "user", "content": "delegate repo map"}]
     fake_messages = MainAndSubagentMessages()
 
@@ -168,8 +168,8 @@ def test_agent_loop_exposes_task_and_parent_receives_only_summary(tmp_path):
     tool_result = messages[2]["content"][0]["content"]
     assert "Summary only." in tool_result
     assert "toolu_main_1" not in tool_result
-    assert {tool["name"] for tool in TOOLS} >= {"task", "todo_write"}
-    assert "task" not in {tool["name"] for tool in SUBAGENT_TOOLS}
+    assert {tool["name"] for tool in TOOLS} >= {"subagent", "todo_write"}
+    assert "subagent" not in {tool["name"] for tool in SUBAGENT_TOOLS}
 
 
 def test_subagent_trace_events_include_agent_marker(tmp_path):

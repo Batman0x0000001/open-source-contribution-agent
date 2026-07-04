@@ -31,6 +31,8 @@ from osc_agent.harness.recovery import (
     is_prompt_too_long_error,
     with_retry,
 )
+from osc_agent.harness.subagent import SUBAGENT_TOOL, spawn_subagent
+from osc_agent.harness.tasks import CONTRIBUTION_TASK_TOOLS, claim_task, complete_task, create_task, get_task, list_tasks
 from osc_agent.harness.todo import TODO_WRITE_TOOL, todo_write
 from osc_agent.harness.trace import append_trace
 from osc_agent.skills.registry import LOAD_SKILL_TOOL, load_skill
@@ -38,9 +40,18 @@ from osc_agent.tools.files import FILE_TOOLS, edit_file, glob_files, read_file, 
 from osc_agent.tools.git import GIT_TOOLS, git_diff, git_log, git_status
 from osc_agent.tools.repo import REPO_TOOLS, inspect_repo
 from osc_agent.tools.shell import BASH_TOOL, run_bash
-from osc_agent.tools.task import TASK_TOOL, spawn_subagent
 
-TOOLS = [BASH_TOOL, *FILE_TOOLS, *GIT_TOOLS, *REPO_TOOLS, TODO_WRITE_TOOL, TASK_TOOL, LOAD_SKILL_TOOL, COMPACT_TOOL]
+TOOLS = [
+    BASH_TOOL,
+    *FILE_TOOLS,
+    *GIT_TOOLS,
+    *REPO_TOOLS,
+    TODO_WRITE_TOOL,
+    SUBAGENT_TOOL,
+    LOAD_SKILL_TOOL,
+    COMPACT_TOOL,
+    *CONTRIBUTION_TASK_TOOLS,
+]
 
 
 def _block_attr(block: Any, name: str, default: Any = None) -> Any:
@@ -65,9 +76,9 @@ def build_tool_handlers(
     messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """按 repo_root 绑定工具函数，主循环只负责按名称分发。"""
-    def task_handler(description: str, role: str) -> str:
+    def subagent_handler(description: str, role: str) -> str:
         if client is None or settings is None:
-            return "Error: task tool requires an agent client and settings"
+            return "Error: subagent tool requires an agent client and settings"
         return spawn_subagent(
             description,
             role,
@@ -110,9 +121,26 @@ def build_tool_handlers(
         "git_log": lambda limit=5: git_log(repo_root=repo_root, limit=limit),
         "inspect_repo": lambda: inspect_repo(repo_root=repo_root),
         "todo_write": lambda todos: todo_write(todos, repo_root=repo_root),
-        "task": task_handler,
+        "subagent": subagent_handler,
         "load_skill": lambda name: load_skill(name),
         "compact": compact_handler,
+        "create_task": lambda subject, description="", blockedBy=None, files=None, evidence=None, worktree=None: create_task(
+            repo_root=repo_root,
+            subject=subject,
+            description=description,
+            blockedBy=blockedBy,
+            files=files,
+            evidence=evidence,
+            worktree=worktree,
+        ),
+        "list_tasks": lambda: list_tasks(repo_root=repo_root),
+        "get_task": lambda task_id: get_task(repo_root=repo_root, task_id=task_id),
+        "claim_task": lambda task_id, owner="agent": claim_task(repo_root=repo_root, task_id=task_id, owner=owner),
+        "complete_task": lambda task_id, evidence=None: complete_task(
+            repo_root=repo_root,
+            task_id=task_id,
+            evidence=evidence,
+        ),
     }
 
 

@@ -114,18 +114,18 @@ python -m pytest tests
 
 ## S06 update: read-only subagents
 
-S06 adds a `task(description, role)` tool so the parent agent can delegate local analysis to a child agent with fresh context.
+S06 adds a `subagent(description, role)` tool so the parent agent can delegate local analysis to a child agent with fresh context.
 
 New in s06:
 
-- `task` launches a synchronous subagent and returns only the final structured summary.
+- `subagent` launches a synchronous child agent and returns only the final structured summary.
 - Supported roles are:
   - `issue_analyzer`
   - `repo_mapper`
   - `test_analyzer`
   - `doc_reviewer`
 - The subagent starts with a fresh `messages` list, so intermediate tool chatter does not enter the parent context.
-- The subagent cannot call `task`, `write_file`, or `edit_file`.
+- The subagent cannot call `subagent`, `write_file`, or `edit_file`.
 - The subagent tool set is limited to:
   - `bash`
   - `read_file`
@@ -139,7 +139,7 @@ Suggested reading order for S06:
 
 1. `learn-claude-code/coding_plan.md` section `s06`
 2. `learn-claude-code/s06_subagent/README.md`
-3. `osc_agent/tools/task.py`
+3. `osc_agent/harness/subagent.py`
 4. `osc_agent/agent_loop.py`
 5. `osc_agent/harness/trace.py`
 6. `osc_agent/tools/repo.py`
@@ -151,6 +151,16 @@ S06 verification:
 python -m pytest tests/test_subagent.py
 python -m pytest tests
 ```
+
+## Naming clarification: subagent, tasks, and todo
+
+The harness now uses distinct names for three different planning layers:
+
+- `subagent`: a tool-backed harness mechanism for delegating isolated read-only analysis to a child agent.
+- `tasks`: persistent contribution tasks stored as JSON under `.osc_agent/tasks/`.
+- `todo`: an in-process checklist for the current execution step.
+
+This keeps S06 subagent delegation separate from S12 persistent task graph management.
 
 ## S07 update: on-demand skill loading
 
@@ -355,6 +365,55 @@ S11 verification:
 
 ```sh
 python -m pytest tests/test_recovery.py tests/test_shell.py
+python -m pytest tests
+```
+
+## S12 update: persistent contribution task graph
+
+S12 adds a persistent task graph for contribution work that needs dependencies, ownership, and recovery across CLI restarts.
+
+New in s12:
+
+- `osc_agent/harness/tasks.py` defines `ContributionTask`.
+- Task files are stored as inspectable JSON under `.osc_agent/tasks/`.
+- Task fields include:
+  - `id`
+  - `subject`
+  - `description`
+  - `status`
+  - `owner`
+  - `blockedBy`
+  - `files`
+  - `evidence`
+  - `worktree`
+- New task tools:
+  - `create_task`
+  - `list_tasks`
+  - `get_task`
+  - `claim_task`
+  - `complete_task`
+- `claim_task` refuses blocked tasks until every `blockedBy` task is completed.
+- `complete_task` reports newly unblocked downstream tasks.
+- `create_default_task_graph()` creates the standard contribution flow:
+  - repo scan
+  - plan
+  - edit
+  - test
+  - summarize
+  - draft PR
+
+Suggested reading order for S12:
+
+1. `learn-claude-code/coding_plan.md` section `s12`
+2. `learn-claude-code/s12_task_system/README.md`
+3. `osc_agent/harness/tasks.py`
+4. `osc_agent/agent_loop.py`
+5. `tests/test_tasks.py`
+
+S12 verification:
+
+```sh
+python -m pytest tests/test_tasks.py
 python -m pytest tests
 ```
 

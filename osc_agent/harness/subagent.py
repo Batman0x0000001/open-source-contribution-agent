@@ -1,5 +1,5 @@
 """
-主 Agent 调用 task
+主 Agent 调用 subagent
     ↓
 spawn_subagent()
     ↓
@@ -44,8 +44,8 @@ READ_ONLY_BASH_PREFIXES = (
     "type ",
 )
 
-TASK_TOOL = {
-    "name": "task",
+SUBAGENT_TOOL = {
+    "name": "subagent",
     "description": "Launch a read-only subagent with fresh context and return only its final summary.",
     "input_schema": {
         "type": "object",
@@ -105,7 +105,7 @@ def _run_read_only_bash(command: str, *, repo_root: Path) -> str:
 
 
 def _subagent_handlers(repo_root: Path) -> dict[str, Any]:
-    """子 agent 只拿到只读工具；不暴露 task，防止递归委派。"""
+    """子 agent 只拿到只读工具；不暴露 subagent，防止递归委派。"""
     return {
         "bash": lambda command: _run_read_only_bash(command, repo_root=repo_root),
         "read_file": lambda path, limit=20_000, offset=0: read_file(
