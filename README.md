@@ -484,3 +484,35 @@ On Windows, if pytest temporary directories are locked by the shell, use a proje
 ```sh
 python -m pytest tests --basetemp .pytest-local -p no:cacheprovider
 ```
+
+## S13 Background Tasks
+
+S13 adds background execution for slow bash commands. The bash tool now accepts `run_in_background`; when it is true, the main loop starts a daemon background task, immediately returns a placeholder `tool_result`, and later injects a `<task_notification>` message after the task finishes. Output is written under `.osc_agent/background/`.
+
+The implementation deliberately does not auto-background every slow-looking command. `pytest`, `npm test`, `cargo test`, and build commands are recognized as slow candidates, but background execution still requires an explicit `run_in_background=true` request from the model.
+
+S13 reading order:
+
+1. `learn-claude-code/coding_plan.md` section `s13`
+2. `learn-claude-code/s13_background_tasks/README.md`
+3. `osc_agent/tools/shell.py`
+4. `osc_agent/harness/background.py`
+5. `osc_agent/agent_loop.py`
+6. `tests/test_background.py`
+7. `tests/test_agent_loop.py`
+
+S13 operation steps:
+
+1. Add `run_in_background` to the bash tool schema.
+2. Add background task lifecycle state in `osc_agent/harness/background.py`.
+3. Write command output to `.osc_agent/background/<task_id>.out`.
+4. Return a placeholder while the task is running.
+5. Inject completed background notifications at the start of later loop rounds.
+6. Keep completion delivery automatic through `collect_background_results()`, without exposing a separate background-query tool to the model.
+
+S13 verification:
+
+```sh
+python -m pytest tests/test_background.py tests/test_agent_loop.py tests/test_shell.py --basetemp .pytest-s13-focused -p no:cacheprovider
+python -m pytest tests --basetemp .pytest-s13-all -p no:cacheprovider
+```

@@ -19,6 +19,11 @@ from time import perf_counter
 from typing import Any, Callable, TextIO
 
 from osc_agent.config import Settings
+from osc_agent.harness.background import (
+    collect_background_results,
+    should_run_background,
+    start_background_task,
+)
 from osc_agent.harness.compact import COMPACT_TOOL, apply_compaction, compact_history, reactive_compact
 from osc_agent.harness.hooks import HookContext, HookRegistry, default_hooks, elapsed_ms
 from osc_agent.harness.prompt import get_system_prompt, update_context
@@ -95,7 +100,7 @@ def build_tool_handlers(
         return "[Compacted. History summarized.]"
 
     return {
-        "bash": lambda command: run_bash(command, repo_root=repo_root, enforce_permissions=False),
+        "bash": lambda command, run_in_background=False: run_bash(command, repo_root=repo_root, enforce_permissions=False),
         "read_file": lambda path, limit=20_000, offset=0: read_file(
             repo_root=repo_root,
             path=path,
@@ -176,6 +181,15 @@ def agent_loop(
     )
 
     while True:
+        notifications = collect_background_results()
+        if notifications:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": notification} for notification in notifications],
+                }
+            )
+
         messages[:] = apply_compaction(messages, repo_root=repo_root)
         prompt_context = update_context(
             repo_root=repo_root,
@@ -253,6 +267,19 @@ def agent_loop(
                 started = perf_counter()
                 if blocked is not None:
                     tool_output = blocked.content or "Permission denied"
+                elif should_run_background(tool_name, tool_args):
+                    # 后台任务只返回占位结果；真实输出由下一轮 task_notification 独立注入。
+                    foreground_args = dict(tool_args)
+                    foreground_args.pop("run_in_background", None)
+                    task_id = start_background_task(
+                        command=str(tool_args.get("command", "")),
+                        repo_root=repo_root,
+                        runner=lambda handler=handler, args=foreground_args: handler(**args),
+                    )
+                    tool_output = (
+                        f"[Background task {task_id} started] "
+                        "Result will be available in a later task_notification."
+                    )
                 else:
                     try:
                         tool_output = handler(**tool_args)

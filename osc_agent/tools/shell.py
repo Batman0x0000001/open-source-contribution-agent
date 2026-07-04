@@ -29,7 +29,14 @@ BASH_TOOL = {
             "command": {
                 "type": "string",
                 "description": "Shell command to run from the repository root.",
-            }
+            },
+            "run_in_background": {
+                "type": "boolean",
+                "description": (
+                    "Set true only for slow commands such as pytest, npm test, cargo test, or build commands "
+                    "when the agent should continue working while the command runs."
+                ),
+            },
         },
         "required": ["command"],
     },

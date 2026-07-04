@@ -64,3 +64,45 @@ def test_agent_loop_appends_tool_result_and_stops(tmp_path):
             }
         ],
     }
+
+
+def test_agent_loop_starts_background_bash(tmp_path):
+    messages = [{"role": "user", "content": "run slow test"}]
+    settings = Settings(
+        anthropic_api_key=None,
+        anthropic_base_url=None,
+        model_id="test-model",
+        fallback_model_id=None,
+    )
+
+    class BackgroundMessages(FakeMessages):
+        def create(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    stop_reason="tool_use",
+                    content=[
+                        SimpleNamespace(
+                            type="tool_use",
+                            name="bash",
+                            id="toolu_bg",
+                            input={"command": "pytest", "run_in_background": True},
+                        )
+                    ],
+                )
+            return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="done")])
+
+    class BackgroundClient:
+        def __init__(self) -> None:
+            self.messages = BackgroundMessages()
+
+    response = agent_loop(
+        messages,
+        client=BackgroundClient(),
+        settings=settings,
+        repo_root=tmp_path,
+        tool_handlers={"bash": lambda command: f"ran: {command}"},
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert "Background task bg_" in messages[2]["content"][0]["content"]
