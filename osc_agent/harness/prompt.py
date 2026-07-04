@@ -109,7 +109,8 @@ def assemble_system_prompt(context: PromptContext | Path, *, current_task: str =
         (
             "Contribution rule: before modifying files, call todo_write with a plan that covers understanding "
             "the task, reading contribution guidance, locating files, editing, testing, and drafting the PR. "
-            "Do not run git push or open pull requests automatically."
+            "Before the final answer, report todo status, modified files, test commands and results, risks, "
+            "and a PR title/body draft. Do not run git push or open pull requests automatically."
         ),
     ]
     return "\n\n".join(rendered)

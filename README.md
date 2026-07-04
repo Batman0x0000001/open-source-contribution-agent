@@ -711,3 +711,55 @@ S19 verification:
 python -m pytest tests/test_mcp.py tests/test_agent_loop.py --basetemp .pytest-s19-focused -p no:cacheprovider
 python -m pytest tests --basetemp .pytest-s19-all -p no:cacheprovider
 ```
+
+## S20 Comprehensive CLI Harness
+
+S20 closes the teaching harness into a usable local CLI. The main agent loop remains the single place where model calls, dynamic tool pools, hooks, permission checks, background notifications, compaction, recovery, MCP tools, teammate notifications, and tool results flow together. New CLI commands expose the final v1 surface without adding a Web UI or real GitHub write operations.
+
+Implemented S20 CLI surfaces:
+
+1. `osc-agent --repo <path>` starts the interactive contribution harness.
+2. `osc-agent --repo <path> --task "<task>"` runs one contribution task and exits.
+3. `osc-agent inspect --repo <path>` prints a lightweight repository map.
+4. `osc-agent draft-pr --repo <path>` generates a local PR title/body draft from the current diff.
+
+The PR draft logic lives in `osc_agent/tools/pr.py` instead of the CLI or agent loop. It reads local `git diff` and `git status`, then emits structured Markdown with `Title`, `Summary`, `Tests`, and `Risk`. The same `draft_pr` capability is registered in the agent tool pool, so the LLM can call it before finalizing a contribution summary.
+
+S20 code style and responsibility review:
+
+1. Code style is consistent with the existing tool-schema plus handler-map pattern.
+2. New names are explicit: `draft_pr`, `PRDraft`, `build_pr_draft`, and `format_pr_draft`.
+3. Module boundaries remain separated: `cli.py` handles I/O, `agent_loop.py` dispatches tools, `tools/repo.py` inspects repositories, and `tools/pr.py` drafts PR text.
+4. No module takes on work outside its role; PR formatting is not embedded in `agent_loop.py`, and CLI commands call tool modules directly.
+5. The prompt now reminds the model to include todo status, modified files, test commands/results, risks, and a PR title/body draft before the final answer.
+
+S20 reading order:
+
+1. `learn-claude-code/coding_plan.md` section `s20`
+2. `learn-claude-code/s20_comprehensive/README.md`
+3. `osc_agent/agent_loop.py`
+4. `osc_agent/cli.py`
+5. `osc_agent/tools/pr.py`
+6. `osc_agent/harness/prompt.py`
+7. `tests/test_cli.py`
+8. `tests/test_pr_draft.py`
+9. `examples/demo_repo_task.md`
+
+S20 operation steps:
+
+1. Review the comprehensive loop placement from the tutorial.
+2. Add PR draft generation as a normal tool module.
+3. Register `draft_pr` through the existing handler map.
+4. Update CLI entry points for interactive, one-shot, inspect, and draft-pr modes.
+5. Extend the final prompt rule so the model reports the expected contribution summary fields.
+6. Add a demo task document for the small local Python repo acceptance scenario.
+7. Add focused tests for CLI routing and PR draft structure.
+8. Run focused and full verification.
+
+S20 verification:
+
+```sh
+python -m pytest tests/test_cli.py tests/test_pr_draft.py tests/test_prompt.py tests/test_agent_loop.py --basetemp .pytest-s20-focused -p no:cacheprovider
+python -m py_compile osc_agent/cli.py osc_agent/agent_loop.py osc_agent/tools/pr.py
+python -m pytest tests --basetemp .pytest-s20-all -p no:cacheprovider
+```

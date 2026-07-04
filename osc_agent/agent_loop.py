@@ -54,6 +54,7 @@ from osc_agent.harness.worktree import WORKTREE_TOOLS, create_worktree, keep_wor
 from osc_agent.skills.registry import LOAD_SKILL_TOOL, load_skill
 from osc_agent.tools.files import FILE_TOOLS, edit_file, glob_files, read_file, write_file
 from osc_agent.tools.git import GIT_TOOLS, git_diff, git_log, git_status
+from osc_agent.tools.pr import PR_TOOLS, draft_pr
 from osc_agent.tools.repo import REPO_TOOLS, inspect_repo
 from osc_agent.tools.shell import BASH_TOOL, run_bash
 
@@ -61,6 +62,7 @@ TOOLS = [
     BASH_TOOL,
     *FILE_TOOLS,
     *GIT_TOOLS,
+    *PR_TOOLS,
     *REPO_TOOLS,
     TODO_WRITE_TOOL,
     SUBAGENT_TOOL,
@@ -140,6 +142,7 @@ def build_tool_handlers(
         "git_status": lambda: git_status(repo_root=repo_root),
         "git_diff": lambda: git_diff(repo_root=repo_root),
         "git_log": lambda limit=5: git_log(repo_root=repo_root, limit=limit),
+        "draft_pr": lambda: draft_pr(repo_root=repo_root),
         "inspect_repo": lambda: inspect_repo(repo_root=repo_root),
         "todo_write": lambda todos: todo_write(todos, repo_root=repo_root),
         "subagent": subagent_handler,
