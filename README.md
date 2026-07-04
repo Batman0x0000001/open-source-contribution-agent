@@ -575,3 +575,41 @@ S15 verification:
 python -m pytest tests/test_teams.py tests/test_agent_loop.py --basetemp .pytest-s15-focused -p no:cacheprovider
 python -m pytest tests --basetemp .pytest-s15-all -p no:cacheprovider
 ```
+
+## S16 Team Protocols
+
+S16 adds structured request/response protocols on top of the S15 mailbox system. Protocol state is persisted in `.osc_agent/protocols.json` as `ProtocolState` records with `request_id`, `type`, `sender`, `target`, `status`, `payload`, and timestamps. Responses must match both `request_id` and the expected response type before a request can move from `pending` to `approved` or `rejected`.
+
+Implemented protocol tools:
+
+1. `request_shutdown(target, reason)` asks a teammate to shut down gracefully.
+2. `request_plan_review(sender, plan)` submits a teammate plan to Lead for approval.
+3. `review_plan(request_id, approve, feedback)` approves or rejects a pending plan request.
+4. `request_write_approval(sender, path, reason)` records a write-approval request without automatically granting write execution.
+
+Lead inbox consumption now routes protocol messages before injecting them into context. Teammates also route their own inbox messages; when a teammate receives `shutdown_request`, it sends `shutdown_response` and exits. When a teammate calls `request_plan_review`, it stops further execution and reports that it is waiting for approval.
+
+S16 reading order:
+
+1. `learn-claude-code/coding_plan.md` section `s16`
+2. `learn-claude-code/s16_team_protocols/README.md`
+3. `osc_agent/harness/protocols.py`
+4. `osc_agent/harness/teams.py`
+5. `osc_agent/agent_loop.py`
+6. `tests/test_protocols.py`
+
+S16 operation steps:
+
+1. Define persisted `ProtocolState` records.
+2. Create request helpers for shutdown, plan review, and write approval.
+3. Match responses by `request_id` and expected response type.
+4. Route protocol messages during inbox consumption.
+5. Add protocol tools to the Lead tool pool and `request_plan_review` to teammate tools.
+6. Stop teammate execution after submitting a plan review request until Lead responds.
+
+S16 verification:
+
+```sh
+python -m pytest tests/test_protocols.py tests/test_teams.py --basetemp .pytest-s16-focused -p no:cacheprovider
+python -m pytest tests --basetemp .pytest-s16-all -p no:cacheprovider
+```

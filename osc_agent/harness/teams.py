@@ -82,6 +82,19 @@ CHECK_INBOX_TOOL = {
     "input_schema": {"type": "object", "properties": {}},
 }
 
+SUBMIT_PLAN_TOOL = {
+    "name": "request_plan_review",
+    "description": "Submit a plan to lead for approval before continuing risky teammate work.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "sender": {"type": "string"},
+            "plan": {"type": "string"},
+        },
+        "required": ["sender", "plan"],
+    },
+}
+
 TEAM_TOOLS = [SPAWN_TEAMMATE_TOOL, SEND_MESSAGE_TOOL, CHECK_INBOX_TOOL]
 TEAMMATE_TOOLS = [
     BASH_TOOL,
@@ -90,6 +103,7 @@ TEAMMATE_TOOLS = [
     GIT_TOOLS[0],
     REPO_TOOLS[0],
     SEND_MESSAGE_TOOL,
+    SUBMIT_PLAN_TOOL,
 ]
 
 _bus_lock = threading.Lock()
@@ -221,13 +235,17 @@ def send_message(
 
 
 def check_inbox(*, repo_root: Path, agent: str = LEAD_AGENT) -> str:
-    messages = MessageBus(repo_root).read_inbox(agent)
+    from osc_agent.harness.protocols import consume_inbox
+
+    messages = consume_inbox(repo_root, agent)
     return _format_inbox(messages) if messages else "(inbox empty)"
 
 
 def collect_team_notifications(repo_root: Path, *, agent: str = LEAD_AGENT) -> list[str]:
     """每轮主循环自动收取 Lead 邮箱，把队友消息注入为独立文本块。"""
-    messages = MessageBus(repo_root).read_inbox(agent)
+    from osc_agent.harness.protocols import consume_inbox
+
+    messages = consume_inbox(repo_root, agent)
     if not messages:
         return []
     return [_format_message(message) for message in messages]
@@ -258,7 +276,12 @@ def _run_teammate_loop(
     final_summary = ""
     try:
         for _round_index in range(1, TEAMMATE_MAX_ROUNDS + 1):
-            inbox = MessageBus(repo_root).read_inbox(name)
+            from osc_agent.harness.protocols import consume_inbox
+
+            inbox = consume_inbox(repo_root, name)
+            if any(message.get("type") == "shutdown_request" for message in inbox):
+                final_summary = f"Teammate {name} shut down gracefully."
+                break
             if inbox:
                 messages.append({"role": "user", "content": _format_inbox(inbox)})
 
@@ -275,6 +298,7 @@ def _run_teammate_loop(
                 break
 
             results: list[dict[str, str]] = []
+            waiting_for_protocol = False
             for block in response.content:
                 if _block_attr(block, "type") != "tool_use":
                     continue
@@ -308,7 +332,13 @@ def _run_teammate_loop(
                     {"name": name, "role": role, "tool": tool_name, "output_preview": preview(output)},
                 )
                 results.append({"type": "tool_result", "tool_use_id": _block_attr(block, "id"), "content": output})
+                if tool_name == "request_plan_review":
+                    # 计划审批是执行门：提交计划后先停下来，等待 Lead 明确审批。
+                    waiting_for_protocol = True
             messages.append({"role": "user", "content": results})
+            if waiting_for_protocol:
+                final_summary = f"Teammate {name} is waiting for plan approval."
+                break
         else:
             final_summary = f"Teammate {name} stopped after {TEAMMATE_MAX_ROUNDS} rounds without a final answer."
     except Exception as exc:  # pragma: no cover - protects the main CLI from teammate thread failures
@@ -339,6 +369,13 @@ def _teammate_handlers(repo_root: Path, *, name: str, allow_write: bool) -> dict
             metadata=metadata,
         ),
     }
+    from osc_agent.harness.protocols import request_plan_review
+
+    handlers["request_plan_review"] = lambda sender=name, plan="": request_plan_review(
+        repo_root=repo_root,
+        sender=sender,
+        plan=plan,
+    )
     if allow_write:
         handlers["write_file"] = lambda path, content: write_file(
             repo_root=repo_root,

@@ -28,6 +28,13 @@ from osc_agent.harness.compact import COMPACT_TOOL, apply_compaction, compact_hi
 from osc_agent.harness.cron import CRON_TOOLS, cancel_schedule, collect_cron_notifications, list_schedules, schedule_check
 from osc_agent.harness.hooks import HookContext, HookRegistry, default_hooks, elapsed_ms
 from osc_agent.harness.prompt import get_system_prompt, update_context
+from osc_agent.harness.protocols import (
+    PROTOCOL_TOOLS,
+    request_plan_review,
+    request_shutdown,
+    request_write_approval,
+    review_plan,
+)
 from osc_agent.harness.recovery import (
     CONTINUATION_PROMPT,
     DEFAULT_MAX_TOKENS,
@@ -59,6 +66,7 @@ TOOLS = [
     COMPACT_TOOL,
     *CRON_TOOLS,
     *TEAM_TOOLS,
+    *PROTOCOL_TOOLS,
     *CONTRIBUTION_TASK_TOOLS,
 ]
 
@@ -150,6 +158,28 @@ def build_tool_handlers(
             metadata=metadata,
         ),
         "check_inbox": lambda: check_inbox(repo_root=repo_root),
+        "request_shutdown": lambda target, reason="": request_shutdown(
+            repo_root=repo_root,
+            target=target,
+            reason=reason,
+        ),
+        "request_plan_review": lambda sender, plan: request_plan_review(
+            repo_root=repo_root,
+            sender=sender,
+            plan=plan,
+        ),
+        "review_plan": lambda request_id, approve, feedback="": review_plan(
+            repo_root=repo_root,
+            request_id=request_id,
+            approve=approve,
+            feedback=feedback,
+        ),
+        "request_write_approval": lambda sender, path, reason: request_write_approval(
+            repo_root=repo_root,
+            sender=sender,
+            path=path,
+            reason=reason,
+        ),
         "schedule_check": lambda cron, prompt, enabled=True: schedule_check(
             repo_root=repo_root,
             cron=cron,
