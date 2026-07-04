@@ -27,7 +27,8 @@ from osc_agent.harness.background import (
 from osc_agent.harness.compact import COMPACT_TOOL, apply_compaction, compact_history, reactive_compact
 from osc_agent.harness.cron import CRON_TOOLS, cancel_schedule, collect_cron_notifications, list_schedules, schedule_check
 from osc_agent.harness.hooks import HookContext, HookRegistry, default_hooks, elapsed_ms
-from osc_agent.harness.prompt import get_system_prompt, update_context
+from osc_agent.harness.mcp import CONNECT_MCP_TOOL, assemble_tool_handlers, assemble_tool_pool, connect_mcp
+from osc_agent.harness.prompt import assemble_system_prompt, update_context
 from osc_agent.harness.protocols import (
     PROTOCOL_TOOLS,
     request_plan_review,
@@ -65,6 +66,7 @@ TOOLS = [
     SUBAGENT_TOOL,
     LOAD_SKILL_TOOL,
     COMPACT_TOOL,
+    CONNECT_MCP_TOOL,
     *CRON_TOOLS,
     *TEAM_TOOLS,
     *PROTOCOL_TOOLS,
@@ -143,6 +145,7 @@ def build_tool_handlers(
         "subagent": subagent_handler,
         "load_skill": lambda name: load_skill(name),
         "compact": compact_handler,
+        "connect_mcp": lambda server_name: connect_mcp(server_name),
         "spawn_teammate": lambda name, role, prompt, allow_write=False: spawn_teammate(
             name=name,
             role=role,
@@ -263,19 +266,22 @@ def agent_loop(
             )
 
         messages[:] = apply_compaction(messages, repo_root=repo_root)
+        active_tools = assemble_tool_pool(TOOLS)
+        active_handlers = assemble_tool_handlers(handlers)
         prompt_context = update_context(
             repo_root=repo_root,
             messages=messages,
-            enabled_tools=[tool["name"] for tool in TOOLS],
+            enabled_tools=[tool["name"] for tool in active_tools],
         )
-        system_prompt = get_system_prompt(prompt_context)
+        # MCP 工具池会在 agent_loop 运行中动态变化，因此这里每轮直接重组 system prompt。
+        system_prompt = assemble_system_prompt(prompt_context)
         try:
             response = with_retry(
                 lambda model_id: client.messages.create(
                     model=model_id,
                     system=system_prompt,
                     messages=messages,
-                    tools=TOOLS,
+                    tools=active_tools,
                     max_tokens=recovery_state.max_tokens,
                 ),
                 state=recovery_state,
@@ -324,7 +330,7 @@ def agent_loop(
             tool_use_id = _block_attr(block, "id")
             tool_args = _tool_input(block)
 
-            handler = handlers.get(tool_name)
+            handler = active_handlers.get(tool_name)
             if handler is None:
                 tool_output = f"Error: unknown tool {tool_name}"
             else:

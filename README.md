@@ -675,3 +675,39 @@ S18 verification:
 python -m pytest tests/test_worktree.py tests/test_autonomous.py tests/test_teams.py --basetemp .pytest-s18-focused -p no:cacheprovider
 python -m pytest tests --basetemp .pytest-s18-all -p no:cacheprovider
 ```
+
+## S19 MCP Tools
+
+S19 adds a mock MCP plugin layer for dynamic external tools. The Lead agent now has `connect_mcp(server_name)`. Connecting a mock server discovers its tools, normalizes names, prefixes them as `mcp__server__tool`, and adds them to the next agent-loop tool pool. Teammates keep their fixed tool subset and do not inherit MCP tools in this teaching version.
+
+Implemented mock servers:
+
+1. `docs`: `mcp__docs__search`, `mcp__docs__read_page`
+2. `deploy`: `mcp__deploy__trigger`, `mcp__deploy__logs`
+3. `issues`: `mcp__issues__lookup`
+
+MCP names are normalized by replacing characters outside `[A-Za-z0-9_-]` with `_`. Tool descriptions include `(readOnly)` or `(destructive)` markers from mock annotations. The agent loop rebuilds `active_tools` and `active_handlers` every round so a newly connected MCP server is visible in the following model call.
+
+S19 reading order:
+
+1. `learn-claude-code/coding_plan.md` section `s19`
+2. `learn-claude-code/s19_mcp_plugin/README.md`
+3. `osc_agent/harness/mcp.py`
+4. `osc_agent/agent_loop.py`
+5. `tests/test_mcp.py`
+
+S19 operation steps:
+
+1. Add `MCPClient` to simulate MCP `tools/list` and `tools/call`.
+2. Add `connect_mcp(server_name)` for mock server discovery.
+3. Normalize server/tool names and expose tools as `mcp__server__tool`.
+4. Assemble dynamic tool pools each agent-loop round.
+5. Merge dynamic MCP handlers with builtin handlers.
+6. Keep MCP tools Lead-only for this phase.
+
+S19 verification:
+
+```sh
+python -m pytest tests/test_mcp.py tests/test_agent_loop.py --basetemp .pytest-s19-focused -p no:cacheprovider
+python -m pytest tests --basetemp .pytest-s19-all -p no:cacheprovider
+```
