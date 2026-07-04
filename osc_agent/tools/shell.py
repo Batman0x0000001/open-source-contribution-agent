@@ -14,6 +14,7 @@ subprocess.run() 执行命令
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -61,11 +62,32 @@ def run_bash(
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired:
-        return f"Error: command timed out after {timeout_seconds} seconds"
+        return _structured_error("timeout", f"command timed out after {timeout_seconds} seconds")
     except OSError as exc:
-        return f"Error: {exc}"
+        return _structured_error("os_error", str(exc))
 
     output = (completed.stdout or "") + (completed.stderr or "")
     output = output.strip() or "(no output)"
+    if completed.returncode != 0:
+        output = (
+            _structured_error("nonzero_exit", f"command exited with code {completed.returncode}")
+            + "\n"
+            + output
+        )
+        if _looks_like_test_command(command):
+            output += (
+                "\n\nRecovery guidance: tests failed. Read the failure summary, locate related files, "
+                "update todo status, then rerun the narrowest relevant test."
+            )
 
     return output[:MAX_OUTPUT_CHARS]
+
+
+def _structured_error(kind: str, message: str) -> str:
+    """把 shell 错误转成稳定文本结构，方便 agent 按 kind 做恢复判断。"""
+    return "Error: " + json.dumps({"kind": kind, "message": message}, ensure_ascii=False)
+
+
+def _looks_like_test_command(command: str) -> bool:
+    lowered = command.lower()
+    return any(marker in lowered for marker in ("pytest", "npm test", "pnpm test", "yarn test", "cargo test"))

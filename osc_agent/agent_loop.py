@@ -22,7 +22,17 @@ from osc_agent.config import Settings
 from osc_agent.harness.compact import COMPACT_TOOL, apply_compaction, compact_history, reactive_compact
 from osc_agent.harness.hooks import HookContext, HookRegistry, default_hooks, elapsed_ms
 from osc_agent.harness.prompt import get_system_prompt, update_context
+from osc_agent.harness.recovery import (
+    CONTINUATION_PROMPT,
+    DEFAULT_MAX_TOKENS,
+    ESCALATED_MAX_TOKENS,
+    MAX_CONTINUATIONS,
+    RecoveryState,
+    is_prompt_too_long_error,
+    with_retry,
+)
 from osc_agent.harness.todo import TODO_WRITE_TOOL, todo_write
+from osc_agent.harness.trace import append_trace
 from osc_agent.skills.registry import LOAD_SKILL_TOOL, load_skill
 from osc_agent.tools.files import FILE_TOOLS, edit_file, glob_files, read_file, write_file
 from osc_agent.tools.git import GIT_TOOLS, git_diff, git_log, git_status
@@ -131,7 +141,11 @@ def agent_loop(
         hook_registry.extend(hooks)
     hook_context = HookContext(repo_root=repo_root, confirm=confirm)
 
-    reactive_retries = 0
+    recovery_state = RecoveryState(
+        current_model=settings.model_id,
+        fallback_model_id=settings.fallback_model_id,
+        max_tokens=DEFAULT_MAX_TOKENS,
+    )
 
     while True:
         messages[:] = apply_compaction(messages, repo_root=repo_root)
@@ -142,19 +156,45 @@ def agent_loop(
         )
         system_prompt = get_system_prompt(prompt_context)
         try:
-            response = client.messages.create(
-                model=settings.model_id,
-                system=system_prompt,
-                messages=messages,
-                tools=TOOLS,
-                max_tokens=8000,
+            response = with_retry(
+                lambda model_id: client.messages.create(
+                    model=model_id,
+                    system=system_prompt,
+                    messages=messages,
+                    tools=TOOLS,
+                    max_tokens=recovery_state.max_tokens,
+                ),
+                state=recovery_state,
+                repo_root=repo_root,
             )
         except Exception as exc:
-            if reactive_retries < 1 and _is_prompt_too_long(exc):
+            if not recovery_state.attempted_reactive_compact and is_prompt_too_long_error(exc):
                 messages[:] = reactive_compact(messages, repo_root=repo_root)
-                reactive_retries += 1
+                recovery_state.attempted_reactive_compact = True
+                append_trace(repo_root, "prompt_too_long_recovery", {"action": "reactive_compact"})
                 continue
             raise
+
+        if response.stop_reason == "max_tokens":
+            if not recovery_state.has_escalated_tokens:
+                recovery_state.max_tokens = ESCALATED_MAX_TOKENS
+                recovery_state.has_escalated_tokens = True
+                append_trace(repo_root, "max_tokens_recovery", {"action": "escalate", "max_tokens": ESCALATED_MAX_TOKENS})
+                continue
+
+            messages.append({"role": "assistant", "content": response.content})
+            if recovery_state.continuation_count < MAX_CONTINUATIONS:
+                messages.append({"role": "user", "content": CONTINUATION_PROMPT})
+                recovery_state.continuation_count += 1
+                append_trace(
+                    repo_root,
+                    "max_tokens_recovery",
+                    {"action": "continue", "count": recovery_state.continuation_count},
+                )
+                continue
+            append_trace(repo_root, "max_tokens_recovery", {"action": "stop", "count": recovery_state.continuation_count})
+            return response
+
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason != "tool_use":
@@ -213,8 +253,3 @@ def agent_loop(
 
         #Anthropic 把工具看成：用户帮模型完成了一件事，然后把结果告诉模型
         messages.append({"role": "user", "content": results})
-
-
-def _is_prompt_too_long(exc: Exception) -> bool:
-    text = str(exc).lower()
-    return "prompt_too_long" in text or "prompt too long" in text or "context length" in text

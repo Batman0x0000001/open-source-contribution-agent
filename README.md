@@ -320,6 +320,44 @@ python -m pytest tests/test_prompt.py
 python -m pytest tests
 ```
 
+## S11 update: error recovery
+
+S11 adds recovery paths for common model and command failures so the CLI does not stop at the first transient error.
+
+New in s11:
+
+- `osc_agent/harness/recovery.py` defines:
+  - `RecoveryState`
+  - `with_retry(...)`
+  - `retry_delay(...)`
+  - `is_prompt_too_long_error(...)`
+  - `is_rate_limit_error(...)`
+  - `is_overloaded_error(...)`
+- LLM calls now retry 429 and 529 style transient errors with exponential backoff.
+- Repeated 529 overloaded errors can switch to `FALLBACK_MODEL_ID` when configured.
+- Prompt-too-long errors trigger `reactive_compact` and retry once.
+- `max_tokens` responses first retry with `64000` max tokens.
+- If output is still truncated after escalation, the loop appends a continuation prompt.
+- Shell timeout, OS, and non-zero exit errors now return structured `Error: {...}` text.
+- Failed test commands include recovery guidance asking the agent to read the failure, locate files, update todos, and rerun focused tests.
+- Recovery events are written to trace.
+
+Suggested reading order for S11:
+
+1. `learn-claude-code/coding_plan.md` section `s11`
+2. `learn-claude-code/s11_error_recovery/README.md`
+3. `osc_agent/harness/recovery.py`
+4. `osc_agent/agent_loop.py`
+5. `osc_agent/tools/shell.py`
+6. `tests/test_recovery.py`
+
+S11 verification:
+
+```sh
+python -m pytest tests/test_recovery.py tests/test_shell.py
+python -m pytest tests
+```
+
 ## Project layout
 
 ```text
