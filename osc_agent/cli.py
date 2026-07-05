@@ -9,11 +9,13 @@ from osc_agent.agent_loop import agent_loop
 from osc_agent.config import Settings, create_anthropic_client, load_settings
 from osc_agent.harness.contribution_workflow import (
     ContributionRun,
+    attach_design_agent_review,
+    attach_discover_agent_review,
     design_stage,
     discover_stage,
     draft_pr_stage,
-    implement_stage,
-    implementation_prompt_for_run,
+    prepare_implementation_stage,
+    record_implementation_result,
 )
 from osc_agent.tools.git import git_status
 from osc_agent.tools.pr import draft_pr
@@ -77,9 +79,13 @@ def contribute_discover(
         Path | None,
         typer.Option("--issues-file", exists=True, file_okay=True, dir_okay=False, resolve_path=True),
     ] = None,
+    agent_review: Annotated[bool, typer.Option("--agent-review/--no-agent-review")] = False,
 ) -> None:
     """执行 OpenSourcePR 第 1 步，生成贡献切入点分析。"""
     run = discover_stage(repo_root=repo, repo_url=repo_url, issues_file=issues_file)
+    if agent_review:
+        review = _run_single_task_capture(repo=repo, task=_artifact_text(run, "01_discover_agent_prompt.md"))
+        run = attach_discover_agent_review(repo_root=repo, run_id=run.run_id, review=_content_to_text(review))
     _print_artifact(run, "01_discover.md")
 
 
@@ -91,9 +97,13 @@ def contribute_design(
     ],
     run_id: Annotated[str, typer.Option("--run-id")],
     direction: Annotated[str | None, typer.Option("--direction")] = None,
+    agent_review: Annotated[bool, typer.Option("--agent-review/--no-agent-review")] = False,
 ) -> None:
     """执行 OpenSourcePR 第 2 步，生成技术方案设计。"""
     run = design_stage(repo_root=repo, run_id=run_id, direction=direction)
+    if agent_review:
+        review = _run_single_task_capture(repo=repo, task=_artifact_text(run, "02_design_agent_prompt.md"))
+        run = attach_design_agent_review(repo_root=repo, run_id=run.run_id, review=_content_to_text(review))
     _print_artifact(run, "02_design.md")
 
 
@@ -105,11 +115,11 @@ def contribute_implement(
     ],
     run_id: Annotated[str, typer.Option("--run-id")],
 ) -> None:
-    """执行 OpenSourcePR 第 3 步，调用现有 agent loop 推进实现。"""
+    """执行 OpenSourcePR 第 3 步，先准备 todo/task，再调用现有 agent loop 推进实现。"""
     _confirm_clean_or_continue(repo)
-    prompt = implementation_prompt_for_run(repo_root=repo, run_id=run_id)
-    response_text = _run_single_task_capture(repo=repo, task=prompt)
-    run = implement_stage(repo_root=repo, run_id=run_id, agent_output=response_text)
+    _, prompt = prepare_implementation_stage(repo_root=repo, run_id=run_id)
+    response = _run_single_task_capture(repo=repo, task=prompt)
+    run = record_implementation_result(repo_root=repo, run_id=run_id, agent_output=_content_to_text(response))
     _print_artifact(run, "03_implementation_report.md")
 
 
@@ -137,21 +147,31 @@ def contribute_run(
         Path | None,
         typer.Option("--issues-file", exists=True, file_okay=True, dir_okay=False, resolve_path=True),
     ] = None,
+    agent_review: Annotated[bool, typer.Option("--agent-review/--no-agent-review")] = True,
 ) -> None:
     """按 discover -> design -> implement -> draft-pr 串行执行，阶段之间保留人工确认。"""
     run = discover_stage(repo_root=repo, repo_url=repo_url, issues_file=issues_file)
+    if agent_review:
+        review = _run_single_task_capture(repo=repo, task=_artifact_text(run, "01_discover_agent_prompt.md"))
+        run = attach_discover_agent_review(repo_root=repo, run_id=run.run_id, review=_content_to_text(review))
     _print_artifact(run, "01_discover.md")
+
     direction = typer.prompt("Choose one contribution direction")
     run = design_stage(repo_root=repo, run_id=run.run_id, direction=direction)
+    if agent_review:
+        review = _run_single_task_capture(repo=repo, task=_artifact_text(run, "02_design_agent_prompt.md"))
+        run = attach_design_agent_review(repo_root=repo, run_id=run.run_id, review=_content_to_text(review))
     _print_artifact(run, "02_design.md")
+
     if not typer.confirm("Proceed to implementation?", default=False):
         typer.echo(f"Stopped after design. Resume with run id: {run.run_id}")
         return
     _confirm_clean_or_continue(repo)
-    prompt = implementation_prompt_for_run(repo_root=repo, run_id=run.run_id)
-    response_text = _run_single_task_capture(repo=repo, task=prompt)
-    run = implement_stage(repo_root=repo, run_id=run.run_id, agent_output=response_text)
+    _, prompt = prepare_implementation_stage(repo_root=repo, run_id=run.run_id)
+    response = _run_single_task_capture(repo=repo, task=prompt)
+    run = record_implementation_result(repo_root=repo, run_id=run.run_id, agent_output=_content_to_text(response))
     _print_artifact(run, "03_implementation_report.md")
+
     run = draft_pr_stage(repo_root=repo, run_id=run.run_id)
     _print_artifact(run, "04_pr_draft.md")
 
@@ -184,7 +204,7 @@ def _run_single_task(*, repo: Path, task: str) -> None:
 
 
 def _run_single_task_capture(*, repo: Path, task: str) -> object:
-    """执行一次 agent loop 并返回最终文本内容，供 workflow implement 阶段落盘。"""
+    """执行一次 agent loop 并返回最终内容，供 workflow 阶段落盘。"""
     settings = load_settings()
     client = create_anthropic_client(settings)
     messages: list[dict[str, object]] = []
@@ -227,21 +247,29 @@ def _print_artifact(run: ContributionRun, name: str) -> None:
     typer.echo(f"\n[artifact] {path}")
 
 
+def _artifact_text(run: ContributionRun, name: str) -> str:
+    return (Path(run.artifacts_dir) / name).read_text(encoding="utf-8")
+
+
+def _content_to_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            parts.append(str(block.get("text", "")))
+        elif getattr(block, "type", None) == "text":
+            parts.append(str(getattr(block, "text", "")))
+    return "\n".join(part for part in parts if part)
+
+
 def _print_final_text(content: object) -> None:
     """打印模型最终文本；tool_use block 会被忽略。"""
-    if isinstance(content, str):
-        typer.echo(content)
-        return
-
-    if not isinstance(content, list):
-        return
-
-    for block in content:
-        if isinstance(block, dict):
-            if block.get("type") == "text":
-                typer.echo(block.get("text", ""))
-        elif getattr(block, "type", None) == "text":
-            typer.echo(getattr(block, "text", ""))
+    text = _content_to_text(content)
+    if text:
+        typer.echo(text)
 
 
 if __name__ == "__main__":

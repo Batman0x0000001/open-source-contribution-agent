@@ -30,18 +30,15 @@ def draft_pr(*, repo_root: Path, run_id: str | None = None) -> str:
         return _draft_from_workflow(repo_root=repo_root, run_id=run_id)
     diff = git_diff(repo_root=repo_root)
     status = git_status(repo_root=repo_root)
-    draft = build_pr_draft(diff=diff, status=status)
-    return format_pr_draft(draft)
+    return format_pr_draft(build_pr_draft(diff=diff, status=status))
 
 
 def build_pr_draft(*, diff: str, status: str) -> PRDraft:
     """把 git diff/status 提炼成稳定结构，便于 CLI 和测试复用同一套 PR 草稿逻辑。"""
     changed_files = _changed_files(diff, status)
-    title = _title_for_files(changed_files)
-    summary = _summary_for_files(changed_files)
     return PRDraft(
-        title=title,
-        summary=summary,
+        title=_title_for_files(changed_files),
+        summary=_summary_for_files(changed_files),
         tests=["Not run (not provided)."],
         risk=_risk_for_files(changed_files),
     )
@@ -59,6 +56,33 @@ def format_pr_draft(draft: PRDraft) -> str:
         f"{tests}\n\n"
         "## Risk\n"
         f"- {draft.risk}"
+    )
+
+
+def _draft_from_workflow(*, repo_root: Path, run_id: str) -> str:
+    artifacts_dir = repo_root / ".osc_agent" / "contribution_runs" / run_id
+    discover = _read_artifact_json(artifacts_dir / "01_discover.json")
+    design = _read_artifact_json(artifacts_dir / "02_design.json")
+    implementation = _read_artifact_text(artifacts_dir / "03_implementation_report.md")
+    changed_files = _changed_files(git_diff(repo_root=repo_root), git_status(repo_root=repo_root))
+    selected = str(design.get("selected_direction") or _first_direction_name(discover))
+    changes = "\n".join(f"- Updated `{path}`" for path in changed_files) or "- No local file changes detected yet."
+    testing = _extract_section(implementation, "Testing") or "No explicit test result captured. Run focused tests before submitting."
+    solution = design.get("agent_design") or design.get("recommended") or "Use the recommended scoped implementation plan."
+    notes = _reviewer_notes(design, implementation)
+    return (
+        "标题：\n"
+        f"`{_workflow_title(selected, changed_files)}`\n\n"
+        "**Problem**\n"
+        f"{design.get('problem_boundary', selected)}\n\n"
+        "**Solution**\n"
+        f"{solution}\n\n"
+        "**Changes**\n"
+        f"{changes}\n\n"
+        "**Testing**\n"
+        f"{testing}\n\n"
+        "**Notes for Reviewer**\n"
+        f"{notes}"
     )
 
 
@@ -108,37 +132,6 @@ def _is_doc_file(path: str) -> bool:
     return lower.endswith((".md", ".rst", ".txt")) or lower.startswith("docs/")
 
 
-def _draft_from_workflow(*, repo_root: Path, run_id: str) -> str:
-    artifacts_dir = repo_root / ".osc_agent" / "contribution_runs" / run_id
-    discover = _read_artifact_json(artifacts_dir / "01_discover.json")
-    design = _read_artifact_json(artifacts_dir / "02_design.json")
-    implementation = _read_artifact_text(artifacts_dir / "03_implementation_report.md")
-    changed_files = _changed_files(git_diff(repo_root=repo_root), git_status(repo_root=repo_root))
-    selected = str(design.get("selected_direction") or _first_direction_name(discover))
-    title = _workflow_title(selected, changed_files)
-    changes = "\n".join(f"- Updated `{path}`" for path in changed_files) or "- No local file changes detected yet."
-    artifact_path = artifacts_dir / "03_implementation_report.md"
-    return (
-        "标题：\n"
-        f"`{title}`\n\n"
-        "**Problem**\n"
-        f"{design.get('problem_boundary', selected)}\n\n"
-        "**Solution**\n"
-        f"{design.get('recommended', 'Use the recommended scoped implementation plan.')} "
-        "The implementation keeps the change local and reviewable.\n\n"
-        "**Changes**\n"
-        f"{changes}\n\n"
-        "**Testing**\n"
-        "- Review the implementation report and run the focused tests listed there.\n"
-        f"- Current implementation artifact: `{artifact_path}`\n\n"
-        "**Notes for Reviewer**\n"
-        "This draft was generated from the OpenSourcePR workflow artifacts. "
-        "Please pay attention to the chosen scope and whether the implementation matches the proposed design.\n\n"
-        "<!-- Implementation context preview -->\n"
-        f"<!-- {implementation[:500].replace('--', '- -')} -->"
-    )
-
-
 def _read_artifact_json(path: Path) -> dict:
     if not path.exists():
         raise ValueError(f"required workflow artifact missing: {path.name}")
@@ -146,9 +139,7 @@ def _read_artifact_json(path: Path) -> dict:
 
 
 def _read_artifact_text(path: Path) -> str:
-    if not path.exists():
-        return "Implementation report not found."
-    return path.read_text(encoding="utf-8")
+    return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
 def _first_direction_name(discover: dict) -> str:
@@ -163,3 +154,21 @@ def _workflow_title(selected: str, changed_files: list[str]) -> str:
     text = re.sub(r"[^A-Za-z0-9一-龥 ]+", " ", selected).strip()
     words = " ".join(text.split()[:8]) or "update contribution workflow"
     return f"feat({scope}): {words}"
+
+
+def _extract_section(markdown: str, heading: str) -> str:
+    pattern = re.compile(rf"^## {re.escape(heading)}\s*\n(.*?)(?=^## |\Z)", re.M | re.S)
+    match = pattern.search(markdown)
+    return match.group(1).strip() if match else ""
+
+
+def _reviewer_notes(design: dict, implementation: str) -> str:
+    notes = [
+        "Review whether the implementation remains within the selected OpenSourcePR scope.",
+        "Check that the code changes match the saved technical design artifact.",
+    ]
+    if design.get("agent_design"):
+        notes.append("The design was refined by an agent review artifact; compare the implementation against that section.")
+    if "No explicit test" in implementation:
+        notes.append("Testing evidence is incomplete and should be filled before opening the PR.")
+    return "\n".join(f"- {note}" for note in notes)
