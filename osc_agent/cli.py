@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import shutil
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -9,14 +11,17 @@ from osc_agent.agent_loop import agent_loop
 from osc_agent.config import Settings, create_anthropic_client, load_settings
 from osc_agent.harness.contribution_workflow import (
     ContributionRun,
-    attach_design_agent_review,
-    attach_discover_agent_review,
+    build_edit_prompt,
+    build_understanding_prompt,
+    build_verification_prompt,
     design_stage,
     discover_stage,
     draft_pr_stage,
     prepare_implementation_stage,
     record_implementation_result,
 )
+from osc_agent.harness.gates import GateResult, gate_design, gate_discover, gate_implementation
+from osc_agent.harness.worktree import create_worktree, worktree_path
 from osc_agent.tools.git import git_status
 from osc_agent.tools.pr import draft_pr
 from osc_agent.tools.repo import inspect_repo
@@ -35,7 +40,6 @@ def main(
     ] = None,
     task: Annotated[str | None, typer.Option("--task", help="Run one contribution task and exit.")] = None,
 ) -> None:
-    """启动交互或单次任务模式；子命令由各自命令函数处理。"""
     if ctx.invoked_subcommand is not None:
         return
     if repo is None:
@@ -53,7 +57,6 @@ def inspect_command(
         typer.Option("--repo", exists=True, file_okay=False, dir_okay=True, resolve_path=True),
     ],
 ) -> None:
-    """输出目标仓库的轻量项目地图。"""
     typer.echo(inspect_repo(repo_root=repo))
 
 
@@ -64,7 +67,6 @@ def draft_pr_command(
         typer.Option("--repo", exists=True, file_okay=False, dir_okay=True, resolve_path=True),
     ],
 ) -> None:
-    """基于当前本地 diff 生成 PR 标题和正文草稿，不提交、不推送、不打开 PR。"""
     typer.echo(draft_pr(repo_root=repo))
 
 
@@ -79,13 +81,10 @@ def contribute_discover(
         Path | None,
         typer.Option("--issues-file", exists=True, file_okay=True, dir_okay=False, resolve_path=True),
     ] = None,
-    agent_review: Annotated[bool, typer.Option("--agent-review/--no-agent-review")] = False,
+    use_llm: Annotated[bool, typer.Option("--llm/--no-llm")] = True,
 ) -> None:
-    """执行 OpenSourcePR 第 1 步，生成贡献切入点分析。"""
-    run = discover_stage(repo_root=repo, repo_url=repo_url, issues_file=issues_file)
-    if agent_review:
-        review = _run_single_task_capture(repo=repo, task=_artifact_text(run, "01_discover_agent_prompt.md"))
-        run = attach_discover_agent_review(repo_root=repo, run_id=run.run_id, review=_content_to_text(review))
+    client, settings = _stage_client() if use_llm else (None, None)
+    run = discover_stage(repo_root=repo, repo_url=repo_url, issues_file=issues_file, client=client, settings=settings)
     _print_artifact(run, "01_discover.md")
 
 
@@ -97,13 +96,10 @@ def contribute_design(
     ],
     run_id: Annotated[str, typer.Option("--run-id")],
     direction: Annotated[str | None, typer.Option("--direction")] = None,
-    agent_review: Annotated[bool, typer.Option("--agent-review/--no-agent-review")] = False,
+    use_llm: Annotated[bool, typer.Option("--llm/--no-llm")] = True,
 ) -> None:
-    """执行 OpenSourcePR 第 2 步，生成技术方案设计。"""
-    run = design_stage(repo_root=repo, run_id=run_id, direction=direction)
-    if agent_review:
-        review = _run_single_task_capture(repo=repo, task=_artifact_text(run, "02_design_agent_prompt.md"))
-        run = attach_design_agent_review(repo_root=repo, run_id=run.run_id, review=_content_to_text(review))
+    client, settings = _stage_client() if use_llm else (None, None)
+    run = design_stage(repo_root=repo, run_id=run_id, direction=direction, client=client, settings=settings)
     _print_artifact(run, "02_design.md")
 
 
@@ -115,11 +111,21 @@ def contribute_implement(
     ],
     run_id: Annotated[str, typer.Option("--run-id")],
 ) -> None:
-    """执行 OpenSourcePR 第 3 步，先准备 todo/task，再调用现有 agent loop 推进实现。"""
     _confirm_clean_or_continue(repo)
-    _, prompt = prepare_implementation_stage(repo_root=repo, run_id=run_id)
-    response = _run_single_task_capture(repo=repo, task=prompt)
-    run = record_implementation_result(repo_root=repo, run_id=run_id, agent_output=_content_to_text(response))
+    work_repo = _create_run_worktree(repo=repo, run_id=run_id)
+    run, prompt = prepare_implementation_stage(repo_root=work_repo, run_id=run_id)
+    understanding = _run_single_task_capture(repo=work_repo, task=_understanding_prompt(work_repo, run))
+    implementation_prompt = _edit_prompt(work_repo, run, _content_to_text(understanding)) or prompt
+    response = _run_single_task_capture(repo=work_repo, task=implementation_prompt)
+    verification = _run_single_task_capture(repo=work_repo, task=_verification_prompt(work_repo, run))
+    run = record_implementation_result(
+        repo_root=work_repo,
+        run_id=run_id,
+        understanding_output=_content_to_text(understanding),
+        agent_output=_content_to_text(response),
+        verification_output=_content_to_text(verification),
+    )
+    _print_gate(gate_implementation(Path(run.artifacts_dir), work_repo))
     _print_artifact(run, "03_implementation_report.md")
 
 
@@ -130,9 +136,10 @@ def contribute_draft_pr(
         typer.Option("--repo", exists=True, file_okay=False, dir_okay=True, resolve_path=True),
     ],
     run_id: Annotated[str, typer.Option("--run-id")],
+    use_llm: Annotated[bool, typer.Option("--llm/--no-llm")] = True,
 ) -> None:
-    """执行 OpenSourcePR 第 4 步，生成完整 PR 草稿。"""
-    run = draft_pr_stage(repo_root=repo, run_id=run_id)
+    client, settings = _stage_client() if use_llm else (None, None)
+    run = draft_pr_stage(repo_root=repo, run_id=run_id, client=client, settings=settings)
     _print_artifact(run, "04_pr_draft.md")
 
 
@@ -147,37 +154,45 @@ def contribute_run(
         Path | None,
         typer.Option("--issues-file", exists=True, file_okay=True, dir_okay=False, resolve_path=True),
     ] = None,
-    agent_review: Annotated[bool, typer.Option("--agent-review/--no-agent-review")] = True,
+    use_llm: Annotated[bool, typer.Option("--llm/--no-llm")] = True,
 ) -> None:
-    """按 discover -> design -> implement -> draft-pr 串行执行，阶段之间保留人工确认。"""
-    run = discover_stage(repo_root=repo, repo_url=repo_url, issues_file=issues_file)
-    if agent_review:
-        review = _run_single_task_capture(repo=repo, task=_artifact_text(run, "01_discover_agent_prompt.md"))
-        run = attach_discover_agent_review(repo_root=repo, run_id=run.run_id, review=_content_to_text(review))
+    client, settings = _stage_client() if use_llm else (None, None)
+
+    run = discover_stage(repo_root=repo, repo_url=repo_url, issues_file=issues_file, client=client, settings=settings)
+    _require_gate(gate_discover(Path(run.artifacts_dir)))
     _print_artifact(run, "01_discover.md")
 
-    direction = typer.prompt("Choose one contribution direction")
-    run = design_stage(repo_root=repo, run_id=run.run_id, direction=direction)
-    if agent_review:
-        review = _run_single_task_capture(repo=repo, task=_artifact_text(run, "02_design_agent_prompt.md"))
-        run = attach_design_agent_review(repo_root=repo, run_id=run.run_id, review=_content_to_text(review))
+    direction = typer.prompt("Choose one contribution direction", default=_default_direction_label(run))
+    run = design_stage(repo_root=repo, run_id=run.run_id, direction=direction, client=client, settings=settings)
+    _require_gate(gate_design(Path(run.artifacts_dir)))
     _print_artifact(run, "02_design.md")
 
     if not typer.confirm("Proceed to implementation?", default=False):
         typer.echo(f"Stopped after design. Resume with run id: {run.run_id}")
         return
+
     _confirm_clean_or_continue(repo)
-    _, prompt = prepare_implementation_stage(repo_root=repo, run_id=run.run_id)
-    response = _run_single_task_capture(repo=repo, task=prompt)
-    run = record_implementation_result(repo_root=repo, run_id=run.run_id, agent_output=_content_to_text(response))
+    work_repo = _create_run_worktree(repo=repo, run_id=run.run_id)
+    run, prompt = prepare_implementation_stage(repo_root=work_repo, run_id=run.run_id)
+    understanding = _run_single_task_capture(repo=work_repo, task=_understanding_prompt(work_repo, run))
+    implementation_prompt = _edit_prompt(work_repo, run, _content_to_text(understanding)) or prompt
+    response = _run_single_task_capture(repo=work_repo, task=implementation_prompt)
+    verification = _run_single_task_capture(repo=work_repo, task=_verification_prompt(work_repo, run))
+    run = record_implementation_result(
+        repo_root=work_repo,
+        run_id=run.run_id,
+        understanding_output=_content_to_text(understanding),
+        agent_output=_content_to_text(response),
+        verification_output=_content_to_text(verification),
+    )
+    _require_gate(gate_implementation(Path(run.artifacts_dir), work_repo))
     _print_artifact(run, "03_implementation_report.md")
 
-    run = draft_pr_stage(repo_root=repo, run_id=run.run_id)
+    run = draft_pr_stage(repo_root=work_repo, run_id=run.run_id, client=client, settings=settings)
     _print_artifact(run, "04_pr_draft.md")
 
 
 def _run_interactive(repo: Path) -> None:
-    """维持多轮消息历史，让用户在同一仓库里持续推进贡献任务。"""
     settings = load_settings()
     client = create_anthropic_client(settings)
     messages: list[dict[str, object]] = []
@@ -204,7 +219,6 @@ def _run_single_task(*, repo: Path, task: str) -> None:
 
 
 def _run_single_task_capture(*, repo: Path, task: str) -> object:
-    """执行一次 agent loop 并返回最终内容，供 workflow 阶段落盘。"""
     settings = load_settings()
     client = create_anthropic_client(settings)
     messages: list[dict[str, object]] = []
@@ -220,7 +234,6 @@ def _run_agent_turn(
     client: Any,
     settings: Settings,
 ) -> None:
-    """追加用户输入并调用主循环；CLI 只处理 I/O，不实现任何工具细节。"""
     messages.append({"role": "user", "content": query})
     log_dir = repo / ".osc_agent"
     log_dir.mkdir(exist_ok=True)
@@ -235,10 +248,79 @@ def _run_agent_turn(
         )
 
 
+def _stage_client() -> tuple[Any | None, Settings | None]:
+    settings = load_settings()
+    if not settings.anthropic_api_key:
+        typer.echo("[llm:fallback] ANTHROPIC_API_KEY is not set; using deterministic local fallback.")
+        return None, None
+    try:
+        return create_anthropic_client(settings), settings
+    except RuntimeError as exc:
+        typer.echo(f"[llm:fallback] {exc}; using deterministic local fallback.")
+        return None, None
+
+
+def _run_design_payload(repo: Path, run: ContributionRun) -> dict[str, Any]:
+    path = Path(run.artifacts_dir) / "02_design.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _understanding_prompt(repo: Path, run: ContributionRun) -> str:
+    return build_understanding_prompt(run, _run_design_payload(repo, run))
+
+
+def _edit_prompt(repo: Path, run: ContributionRun, understanding: str) -> str:
+    return build_edit_prompt(run, _run_design_payload(repo, run), understanding)
+
+
+def _verification_prompt(repo: Path, run: ContributionRun) -> str:
+    return build_verification_prompt(run, _run_design_payload(repo, run))
+
+
 def _confirm_clean_or_continue(repo: Path) -> None:
     status = git_status(repo_root=repo)
     if status != "(no output)" and not typer.confirm("Working tree has local changes. Continue?", default=False):
         raise typer.Abort()
+
+
+def _create_run_worktree(*, repo: Path, run_id: str) -> Path:
+    name = f"contribution-{run_id}"[:64]
+    result = create_worktree(repo_root=repo, name=name, task_id="")
+    if result.startswith("Error:") or result.startswith("Git error:"):
+        raise typer.BadParameter(f"Could not create implementation worktree: {result}")
+    path = worktree_path(repo, name)
+    _copy_run_artifacts(repo, path, run_id)
+    typer.echo(f"[worktree] {path}")
+    return path
+
+
+def _copy_run_artifacts(source_repo: Path, work_repo: Path, run_id: str) -> None:
+    source = source_repo / ".osc_agent" / "contribution_runs" / run_id
+    target = work_repo / ".osc_agent" / "contribution_runs" / run_id
+    if not source.exists():
+        raise typer.BadParameter(f"Contribution run artifacts not found: {run_id}")
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, target)
+
+    run_path = target / "run.json"
+    payload = json.loads(run_path.read_text(encoding="utf-8"))
+    payload["repo_root"] = str(work_repo.resolve())
+    payload["artifacts_dir"] = str(target.resolve())
+    run_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _require_gate(result: GateResult) -> None:
+    _print_gate(result)
+    if not result.passed:
+        raise typer.Abort()
+
+
+def _print_gate(result: GateResult) -> None:
+    status = "passed" if result.passed else "failed"
+    typer.echo(f"[gate:{status}] {result.reason}")
+    for warning in result.warnings:
+        typer.echo(f"[gate:warning] {warning}")
 
 
 def _print_artifact(run: ContributionRun, name: str) -> None:
@@ -247,8 +329,16 @@ def _print_artifact(run: ContributionRun, name: str) -> None:
     typer.echo(f"\n[artifact] {path}")
 
 
-def _artifact_text(run: ContributionRun, name: str) -> str:
-    return (Path(run.artifacts_dir) / name).read_text(encoding="utf-8")
+def _default_direction_label(run: ContributionRun) -> str:
+    path = Path(run.artifacts_dir) / "01_discover.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    directions = payload.get("top_directions") or []
+    if not directions:
+        return ""
+    return str(directions[0].get("name", ""))
 
 
 def _content_to_text(content: object) -> str:
@@ -266,7 +356,6 @@ def _content_to_text(content: object) -> str:
 
 
 def _print_final_text(content: object) -> None:
-    """打印模型最终文本；tool_use block 会被忽略。"""
     text = _content_to_text(content)
     if text:
         typer.echo(text)

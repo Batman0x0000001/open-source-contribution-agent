@@ -119,6 +119,31 @@ def filter_candidate_issues(
     return candidates
 
 
+def apply_issue_scores(
+    candidates: list[dict[str, Any]],
+    scores: list[dict[str, Any]],
+    *,
+    minimum_score: int = 50,
+) -> list[dict[str, Any]]:
+    """合并 LLM 二次评分结果，并优先保留可行、分数高的 issue。"""
+    by_number = {score.get("number"): score for score in scores if isinstance(score, dict)}
+    ranked: list[dict[str, Any]] = []
+    for issue in candidates:
+        score = by_number.get(issue.get("number"))
+        if score:
+            issue = {
+                **issue,
+                "llm_score": score.get("score"),
+                "llm_feasible": score.get("feasible"),
+                "llm_reason": score.get("reason", ""),
+                "llm_risk": score.get("risk", ""),
+            }
+            if score.get("feasible") is False or int(score.get("score") or 0) < minimum_score:
+                continue
+        ranked.append(issue)
+    return sorted(ranked, key=lambda item: int(item.get("llm_score") or 0), reverse=True)
+
+
 def load_issues_file(path: str) -> tuple[list[dict[str, Any]], dict[int | str, list[dict[str, Any]]]]:
     """读取离线 issue 文件；支持纯数组或包含 issues/comments_by_issue 的对象。"""
     text = open(path, encoding="utf-8").read()

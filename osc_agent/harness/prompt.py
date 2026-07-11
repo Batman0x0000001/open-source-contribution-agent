@@ -112,6 +112,7 @@ def assemble_system_prompt(context: PromptContext | Path, *, current_task: str =
             "Before the final answer, report todo status, modified files, test commands and results, risks, "
             "and a PR title/body draft. Do not run git push or open pull requests automatically."
         ),
+        _stage_rule(context.current_task),
     ]
     return "\n\n".join(rendered)
 
@@ -156,3 +157,24 @@ def _permission_summary() -> str:
         "gh pr create, sudo, shutdown, reboot, mkfs, and dd if= are denied. Destructive or dependency-changing "
         "commands require explicit confirmation."
     )
+
+
+def _stage_rule(current_task: str) -> str:
+    text = current_task.lower()
+    if "opensourcepr implementation step 3a" in text:
+        return (
+            "Stage rule: this is the understanding checkpoint. Read files and summarize scope only; "
+            "do not edit files, run broad tests, commit, push, or draft a PR. End with READY_TO_EDIT "
+            "only when the plan is concrete."
+        )
+    if "opensourcepr implementation step 3b" in text:
+        return (
+            "Stage rule: this is the editing checkpoint. Modify only files required by the saved design, "
+            "keep the diff reviewable, and stop if the implementation requires a new dependency or broad refactor."
+        )
+    if "opensourcepr implementation step 3c" in text:
+        return (
+            "Stage rule: this is the verification checkpoint. Prefer focused tests, inspect git status/diff, "
+            "and report exact commands and results. Do not keep editing unless verification exposes a small fix."
+        )
+    return "Stage rule: no specialized OpenSourcePR stage is active."

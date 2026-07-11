@@ -6,6 +6,7 @@ import json
 from osc_agent.harness.contribution_workflow import (
     attach_design_agent_review,
     attach_discover_agent_review,
+    build_design_review_prompt,
     design_stage,
     discover_stage,
     draft_pr_stage,
@@ -130,3 +131,32 @@ def test_design_requires_discover_artifact(tmp_path):
         assert "required artifact missing" in str(exc)
     else:
         raise AssertionError("design_stage should require discover artifact")
+
+
+def test_design_review_prompt_focuses_selected_issue_only():
+    discover = {
+        "repo_url": "https://github.com/acme/demo",
+        "top_directions": [
+            {"name": "Issue #7: Add checkpoint docs", "entry": "docs/checkpoint.md"},
+            {"name": "Issue #9: Add unrelated metrics", "entry": "metrics.py"},
+        ],
+        "candidate_issues": [
+            {"number": 7, "title": "Add checkpoint docs", "body": "selected"},
+            {"number": 9, "title": "Add unrelated metrics", "body": "not selected"},
+        ],
+        "issue_scores": [
+            {"number": 7, "score": 90},
+            {"number": 9, "score": 80},
+        ],
+        "architecture_dimensions": [{"dimension": "docs", "location": "docs/checkpoint.md"}],
+        "evidence_pack": {"symbols": {"tool": [{"file": "tool.py"} for _ in range(20)]}},
+        "agent_review": "x" * 5000,
+    }
+
+    prompt = build_design_review_prompt(discover=discover, selected="Issue #7: Add checkpoint docs")
+
+    assert "Issue #7: Add checkpoint docs" in prompt
+    assert "Add checkpoint docs" in prompt
+    assert "Add unrelated metrics" not in prompt
+    assert len(prompt) < 14_000
+    build_design_review_prompt,

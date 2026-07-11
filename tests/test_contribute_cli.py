@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+from pathlib import Path
 
 from typer.testing import CliRunner
 
 import osc_agent.cli as cli
-from osc_agent.harness.contribution_workflow import design_stage, discover_stage, implement_stage
+from osc_agent.harness.contribution_workflow import design_stage, discover_stage, implement_stage, load_run
 
 runner = CliRunner()
 
@@ -80,3 +81,18 @@ def test_contribute_design_and_draft_pr_commands_read_run(tmp_path):
     assert draft_result.exit_code == 0
     assert "**Problem**" in draft_result.output
     assert "**Notes for Reviewer**" in draft_result.output
+
+
+def test_copy_run_artifacts_rebinds_run_to_worktree(tmp_path):
+    source_repo = tmp_path / "source"
+    work_repo = tmp_path / "worktree"
+    source_repo.mkdir()
+    work_repo.mkdir()
+    run = discover_stage(repo_root=source_repo, repo_url="https://github.com/acme/demo")
+
+    cli._copy_run_artifacts(source_repo, work_repo, run.run_id)
+
+    copied = load_run(repo_root=work_repo, run_id=run.run_id)
+    expected_artifacts = work_repo / ".osc_agent" / "contribution_runs" / run.run_id
+    assert Path(copied.repo_root) == work_repo.resolve()
+    assert Path(copied.artifacts_dir) == expected_artifacts.resolve()

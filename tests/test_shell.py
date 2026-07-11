@@ -28,3 +28,11 @@ def test_run_bash_reports_timeout(tmp_path):
     output = run_bash(command, repo_root=tmp_path, timeout_seconds=0.1)
 
     assert "timed out" in output
+
+
+def test_run_bash_replaces_invalid_utf8_output(tmp_path):
+    command = f'{sys.executable} -c "import sys; sys.stdout.buffer.write(bytes([0x94]))"'
+
+    output = run_bash(command, repo_root=tmp_path)
+
+    assert output

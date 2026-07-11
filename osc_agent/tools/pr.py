@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from osc_agent.tools.git import git_diff, git_status
 
@@ -24,10 +25,16 @@ class PRDraft:
     risk: str
 
 
-def draft_pr(*, repo_root: Path, run_id: str | None = None) -> str:
+def draft_pr(
+    *,
+    repo_root: Path,
+    run_id: str | None = None,
+    client: Any | None = None,
+    settings: Any | None = None,
+) -> str:
     """生成 PR 草稿；传入 run_id 时读取工作流上下文，但始终不提交、不推送、不创建 PR。"""
     if run_id:
-        return _draft_from_workflow(repo_root=repo_root, run_id=run_id)
+        return _draft_from_workflow(repo_root=repo_root, run_id=run_id, client=client, settings=settings)
     diff = git_diff(repo_root=repo_root)
     status = git_status(repo_root=repo_root)
     return format_pr_draft(build_pr_draft(diff=diff, status=status))
@@ -59,12 +66,32 @@ def format_pr_draft(draft: PRDraft) -> str:
     )
 
 
-def _draft_from_workflow(*, repo_root: Path, run_id: str) -> str:
+def _draft_from_workflow(
+    *,
+    repo_root: Path,
+    run_id: str,
+    client: Any | None = None,
+    settings: Any | None = None,
+) -> str:
     artifacts_dir = repo_root / ".osc_agent" / "contribution_runs" / run_id
     discover = _read_artifact_json(artifacts_dir / "01_discover.json")
     design = _read_artifact_json(artifacts_dir / "02_design.json")
     implementation = _read_artifact_text(artifacts_dir / "03_implementation_report.md")
-    changed_files = _changed_files(git_diff(repo_root=repo_root), git_status(repo_root=repo_root))
+    diff = git_diff(repo_root=repo_root)
+    status = git_status(repo_root=repo_root)
+    changed_files = _changed_files(diff, status)
+    llm_draft = _try_llm_pr_draft(
+        repo_root=repo_root,
+        client=client,
+        settings=settings,
+        selected_direction=str(design.get("selected_direction") or _first_direction_name(discover)),
+        design=design,
+        implementation=implementation,
+        diff=diff,
+        changed_files=changed_files,
+    )
+    if llm_draft:
+        return llm_draft
     selected = str(design.get("selected_direction") or _first_direction_name(discover))
     changes = "\n".join(f"- Updated `{path}`" for path in changed_files) or "- No local file changes detected yet."
     testing = _extract_section(implementation, "Testing") or "No explicit test result captured. Run focused tests before submitting."
@@ -81,6 +108,55 @@ def _draft_from_workflow(*, repo_root: Path, run_id: str) -> str:
         f"{changes}\n\n"
         "**Testing**\n"
         f"{testing}\n\n"
+        "**Notes for Reviewer**\n"
+        f"{notes}"
+    )
+
+
+def _try_llm_pr_draft(
+    *,
+    repo_root: Path,
+    client: Any | None,
+    settings: Any | None,
+    selected_direction: str,
+    design: dict,
+    implementation: str,
+    diff: str,
+    changed_files: list[str],
+) -> str | None:
+    if client is None or settings is None:
+        return None
+    try:
+        from osc_agent.harness.stage_agents import run_pr_draft_generation
+    except ImportError:
+        return None
+    result = run_pr_draft_generation(
+        client,
+        settings,
+        {
+            "selected_direction": selected_direction,
+            "design_summary": json.dumps(design, ensure_ascii=False, indent=2),
+            "implementation_report": implementation,
+            "git_diff": diff,
+            "changed_files": changed_files,
+        },
+        repo_root=repo_root,
+    )
+    if not result:
+        return None
+    changes = "\n".join(f"- {item}" for item in result.get("changes", [])) or "- No local file changes detected yet."
+    notes = "\n".join(f"- {item}" for item in result.get("reviewer_notes", [])) or "- Review the saved workflow artifacts."
+    return (
+        "Title:\n"
+        f"`{result.get('title', _workflow_title(selected_direction, changed_files))}`\n\n"
+        "**Problem**\n"
+        f"{result.get('problem', selected_direction)}\n\n"
+        "**Solution**\n"
+        f"{result.get('solution', 'See the saved implementation report.')}\n\n"
+        "**Changes**\n"
+        f"{changes}\n\n"
+        "**Testing**\n"
+        f"{result.get('testing', 'No explicit test result captured.')}\n\n"
         "**Notes for Reviewer**\n"
         f"{notes}"
     )

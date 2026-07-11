@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
+import re
 import secrets
 from pathlib import Path
 from typing import Any
@@ -11,15 +12,17 @@ from osc_agent.harness.tasks import create_default_task_graph
 from osc_agent.harness.todo import todo_write
 from osc_agent.tools.github import (
     CANDIDATE_LABELS,
+    apply_issue_scores,
     fetch_issue_comments,
     fetch_issues,
     filter_candidate_issues,
     load_issues_file,
 )
-from osc_agent.tools.git import git_diff, git_status
+from osc_agent.tools.git import git_status
 from osc_agent.tools.pr import draft_pr
 from osc_agent.tools.repo import (
     analyze_architecture_dimensions,
+    collect_repo_evidence_pack,
     detect_entrypoints,
     find_functions,
     inspect_repo,
@@ -40,7 +43,6 @@ class ContributionRun:
 
 
 def create_run(*, repo_root: Path, repo_url: str) -> ContributionRun:
-    """创建一次可恢复工作流，并把 run.json 作为后续阶段的唯一恢复入口。"""
     run_id = f"run_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(3)}"
     run = ContributionRun(
         run_id=run_id,
@@ -55,7 +57,6 @@ def create_run(*, repo_root: Path, repo_url: str) -> ContributionRun:
 
 
 def load_run(*, repo_root: Path, run_id: str) -> ContributionRun:
-    """从 run.json 恢复阶段状态，避免用户在 1-4 步之间反复粘贴上下文。"""
     path = _runs_dir(repo_root) / run_id / "run.json"
     if not path.exists():
         raise ValueError(f"contribution run not found: {run_id}")
@@ -73,26 +74,65 @@ def discover_stage(
     repo_root: Path,
     repo_url: str,
     issues_file: Path | None = None,
+    client: Any | None = None,
+    settings: Any | None = None,
     agent_review: str | None = None,
 ) -> ContributionRun:
-    """执行第 1 步：读取仓库/Issue/源码证据，生成贡献切入点和可交给 LLM 深挖的提示。"""
     run = create_run(repo_root=repo_root, repo_url=repo_url)
     issues, comments_by_issue, issue_error = _collect_issues(repo_url=repo_url, issues_file=issues_file)
     candidates = filter_candidate_issues(issues, comments_by_issue)
     dimensions = analyze_architecture_dimensions(repo_root=repo_root)
     evidence_pack = build_discover_evidence(repo_root=repo_root)
-    directions = _top_directions(candidates, dimensions)
+    issue_scores: list[dict[str, Any]] = []
+
+    llm_result = None
+    stage_agents = _try_import_stage_agents()
+    if client is not None and settings is not None and stage_agents is not None:
+        issue_scores = stage_agents.score_candidate_issues(
+            client,
+            settings,
+            candidates,
+            comments_by_issue,
+            repo_root=repo_root,
+        )
+        candidates = apply_issue_scores(candidates, issue_scores)
+        llm_result = stage_agents.run_discover_analysis(
+            client,
+            settings,
+            {
+                "repo_url": repo_url,
+                "repo_overview": inspect_repo(repo_root=repo_root),
+                "tree": repo_tree(repo_root=repo_root, depth=3),
+                "entrypoints": detect_entrypoints(repo_root=repo_root),
+                "candidate_issues": candidates,
+                "issue_scores": issue_scores,
+                "architecture_dimensions": dimensions,
+                "evidence_pack": evidence_pack,
+            },
+            repo_root=repo_root,
+        )
+
+    if llm_result:
+        directions = _normalize_directions(llm_result.get("top_directions")) or _top_directions(candidates, dimensions)
+        architecture_dimensions = llm_result.get("architecture_insights") or dimensions
+        analysis_summary = llm_result.get("analysis_summary") or ""
+    else:
+        directions = _top_directions(candidates, dimensions)
+        architecture_dimensions = dimensions
+        analysis_summary = agent_review or ""
+
     payload = {
         "repo_url": repo_url,
         "repo_overview": inspect_repo(repo_root=repo_root),
         "tree": repo_tree(repo_root=repo_root, depth=3),
         "entrypoints": detect_entrypoints(repo_root=repo_root),
         "candidate_issues": candidates,
-        "architecture_dimensions": dimensions,
+        "issue_scores": issue_scores,
+        "architecture_dimensions": architecture_dimensions,
         "top_directions": directions,
         "issue_error": issue_error,
         "evidence_pack": evidence_pack,
-        "agent_review": agent_review,
+        "agent_review": analysis_summary,
         "agent_review_prompt": build_discover_review_prompt(
             repo_url=repo_url,
             candidates=candidates,
@@ -108,7 +148,6 @@ def discover_stage(
 
 
 def attach_discover_agent_review(*, repo_root: Path, run_id: str, review: str) -> ContributionRun:
-    """把 LLM 对第 1 步的深度分析追加进 artifact，用于后续方案设计。"""
     run = load_run(repo_root=repo_root, run_id=run_id)
     payload = _read_json(run, "01_discover.json")
     payload["agent_review"] = review
@@ -122,35 +161,29 @@ def design_stage(
     repo_root: Path,
     run_id: str,
     direction: str | None = None,
+    client: Any | None = None,
+    settings: Any | None = None,
     agent_design: str | None = None,
 ) -> ContributionRun:
-    """执行第 2 步：基于 discover 产物和选定方向，生成方案，并保存可恢复设计上下文。"""
     run = load_run(repo_root=repo_root, run_id=run_id)
     discover = _read_json(run, "01_discover.json")
     selected = direction or run.selected_direction or _default_direction(discover)
     _ensure_direction_is_known(selected, discover)
     run.selected_direction = selected
     run.stage = "design"
-    payload = {
-        "selected_direction": selected,
-        "problem_boundary": f"围绕“{selected}”完成一个小而可审查的开源贡献。",
-        "out_of_scope": [
-            "不自动 push、commit 或 open PR。",
-            "不引入真实 GitHub 写操作。",
-            "不做跨模块大规模重构。",
-        ],
-        "success_criteria": [
-            "改动范围控制在 1-3 个核心文件附近。",
-            "有 focused tests 或明确手动验证步骤。",
-            "PR 草稿能说明 Problem、Solution、Testing 和 reviewer 关注点。",
-        ],
-        "options": _design_options(selected, discover),
-        "recommended": "方案 1：最小可审查扩展",
-        "maintainer_comment": _maintainer_comment(selected),
-        "interview_story": _interview_story(selected),
-        "agent_design": agent_design,
-        "agent_design_prompt": build_design_review_prompt(discover=discover, selected=selected),
-    }
+
+    stage_agents = _try_import_stage_agents()
+    llm_design = None
+    if client is not None and settings is not None and stage_agents is not None:
+        llm_design = stage_agents.run_design_generation(client, settings, discover, selected, repo_root=repo_root)
+
+    payload = _design_payload_from_result(
+        repo_root=repo_root,
+        discover=discover,
+        selected=selected,
+        llm_design=llm_design,
+        agent_design=agent_design,
+    )
     _write_json(run, "02_design.json", payload)
     _write_text(run, "02_design.md", render_design(payload))
     _write_text(run, "02_design_agent_prompt.md", payload["agent_design_prompt"])
@@ -159,7 +192,6 @@ def design_stage(
 
 
 def attach_design_agent_review(*, repo_root: Path, run_id: str, review: str) -> ContributionRun:
-    """把 LLM 生成的具体技术方案写回第 2 步 artifact，后续实现和 PR 草稿都会读取它。"""
     run = load_run(repo_root=repo_root, run_id=run_id)
     payload = _read_json(run, "02_design.json")
     payload["agent_design"] = review
@@ -169,16 +201,15 @@ def attach_design_agent_review(*, repo_root: Path, run_id: str, review: str) -> 
 
 
 def prepare_implementation_stage(*, repo_root: Path, run_id: str) -> tuple[ContributionRun, str]:
-    """在调用 agent_loop 前先创建 todo/task 和实现提示，保证第 3 步不是事后补记录。"""
     run = load_run(repo_root=repo_root, run_id=run_id)
     design = _read_json(run, "02_design.json")
     run.stage = "implement"
     todo_write(
         [
-            {"content": "阅读方案中涉及的核心文件并确认代码风格", "status": "in_progress"},
-            {"content": "按推荐方案实现最小可审查改动", "status": "pending"},
-            {"content": "运行 focused tests 或手动验证", "status": "pending"},
-            {"content": "整理 PR 草稿所需的 Problem/Solution/Testing 信息", "status": "pending"},
+            {"content": "Read the selected design and confirm implementation scope", "status": "in_progress"},
+            {"content": "Implement the smallest reviewable change", "status": "pending"},
+            {"content": "Run focused tests or document manual verification", "status": "pending"},
+            {"content": "Summarize files, tests, risks, and PR notes", "status": "pending"},
         ],
         repo_root=repo_root,
     )
@@ -205,8 +236,9 @@ def record_implementation_result(
     run_id: str,
     agent_output: str | None = None,
     test_summary: str | None = None,
+    understanding_output: str | None = None,
+    verification_output: str | None = None,
 ) -> ContributionRun:
-    """实现完成后只更新执行结果，不再创建 todo/task，避免流程顺序被反转。"""
     run = load_run(repo_root=repo_root, run_id=run_id)
     design = _read_json(run, "02_design.json")
     existing = _read_text(run, "03_implementation_report.md", default="")
@@ -215,10 +247,12 @@ def record_implementation_result(
         "recommended": design.get("recommended"),
         "implementation_prompt": build_implementation_prompt(run, design),
         "created_tasks": [],
+        "understanding_output": understanding_output or "",
         "agent_output": agent_output or "Implementation finished without captured output.",
+        "verification_output": verification_output or "",
         "git_status_before": _extract_code_block(existing) or "",
         "git_status_after": git_status(repo_root=repo_root),
-        "test_summary": test_summary or _infer_test_summary(agent_output or ""),
+        "test_summary": test_summary or _infer_test_summary("\n".join([agent_output or "", verification_output or ""])),
     }
     _write_text(run, "03_implementation_report.md", render_implementation_report(report))
     save_run(run)
@@ -226,32 +260,28 @@ def record_implementation_result(
 
 
 def implement_stage(*, repo_root: Path, run_id: str, agent_output: str | None = None) -> ContributionRun:
-    """兼容旧调用：无输出时准备实现，有输出时记录实现结果。"""
     if agent_output is None:
         run, _ = prepare_implementation_stage(repo_root=repo_root, run_id=run_id)
         return run
     return record_implementation_result(repo_root=repo_root, run_id=run_id, agent_output=agent_output)
 
 
-def draft_pr_stage(*, repo_root: Path, run_id: str) -> ContributionRun:
-    """执行第 4 步：读取 workflow artifact 和当前 diff，生成只读 PR 草稿。"""
+def draft_pr_stage(
+    *,
+    repo_root: Path,
+    run_id: str,
+    client: Any | None = None,
+    settings: Any | None = None,
+) -> ContributionRun:
     run = load_run(repo_root=repo_root, run_id=run_id)
     run.stage = "draft_pr"
-    _write_text(run, "04_pr_draft.md", draft_pr(repo_root=repo_root, run_id=run_id))
+    _write_text(run, "04_pr_draft.md", draft_pr(repo_root=repo_root, run_id=run_id, client=client, settings=settings))
     save_run(run)
     return run
 
 
 def build_discover_evidence(*, repo_root: Path) -> dict[str, Any]:
-    """收集源码证据包，让 LLM 深度分析时有具体文件和符号，而不是凭空判断。"""
-    return {
-        "entrypoints": detect_entrypoints(repo_root=repo_root),
-        "planning_symbols": find_functions(repo_root=repo_root, query="plan")[:10],
-        "task_symbols": find_functions(repo_root=repo_root, query="task")[:10],
-        "tool_symbols": find_functions(repo_root=repo_root, query="tool")[:10],
-        "context_symbols": find_functions(repo_root=repo_root, query="context")[:10],
-        "trace_symbols": find_functions(repo_root=repo_root, query="trace")[:10],
-    }
+    return collect_repo_evidence_pack(repo_root=repo_root)
 
 
 def build_discover_review_prompt(
@@ -261,137 +291,177 @@ def build_discover_review_prompt(
     dimensions: list[dict[str, str]],
     evidence_pack: dict[str, Any],
 ) -> str:
-    """生成第 1 步深度分析提示，要求模型按 4 个 md 的标准补足证据和 Top 3。"""
     return (
-        "你正在执行 OpenSourcePR 第 1 步：寻找贡献切入点。\n"
-        f"GitHub 地址：{repo_url}\n"
-        "请基于下面的候选 issue、7 个架构维度和源码证据包，输出严谨分析。\n"
-        "要求：每个架构维度必须定位到文件和函数；不能定位时写“未定位到具体实现”；"
-        "最后给出 Top 3 贡献建议，说明工作量、风险、面试叙事价值。\n\n"
-        f"候选 issue JSON：\n{json.dumps(candidates, ensure_ascii=False, indent=2)}\n\n"
-        f"架构维度初筛：\n{json.dumps(dimensions, ensure_ascii=False, indent=2)}\n\n"
-        f"源码证据包：\n{json.dumps(evidence_pack, ensure_ascii=False, indent=2)}\n"
+        "OpenSourcePR step 1: find contribution entry points.\n"
+        f"Repository: {repo_url}\n\n"
+        f"Candidate issues:\n{json.dumps(candidates, ensure_ascii=False, indent=2)}\n\n"
+        f"Architecture dimensions:\n{json.dumps(dimensions, ensure_ascii=False, indent=2)}\n\n"
+        f"Evidence pack:\n{json.dumps(evidence_pack, ensure_ascii=False, indent=2)}\n"
     )
 
 
 def build_design_review_prompt(*, discover: dict[str, Any], selected: str) -> str:
-    """生成第 2 步方案设计提示，要求模型重新利用 discover 证据给出具体方案。"""
+    focused = _focused_discover_for_design(discover, selected)
     return (
-        "你正在执行 OpenSourcePR 第 2 步：技术方案设计。\n"
-        f"选定贡献方向：{selected}\n"
-        "请基于 discover artifact，输出：问题边界、2-3 个方案、方案对比矩阵、推荐方案、"
-        "文件级实现计划、验证策略、维护者沟通评论、面试叙事框架。\n"
-        "要求方案必须具体到核心文件/函数，单个 PR 尽量控制在 300 行以内。\n\n"
-        f"discover artifact：\n{json.dumps(discover, ensure_ascii=False, indent=2)[:20000]}"
+        "OpenSourcePR step 2: produce a concrete technical design.\n"
+        f"Selected direction: {selected}\n\n"
+        "Only use evidence relevant to the selected direction. Ignore other candidate issues unless they "
+        "directly explain the selected one.\n\n"
+        f"Focused discover evidence:\n{json.dumps(focused, ensure_ascii=False, indent=2)[:12000]}"
+    )
+
+
+def build_understanding_prompt(run: ContributionRun, design: dict[str, Any]) -> str:
+    return (
+        "OpenSourcePR implementation step 3a: understand the task before editing.\n"
+        "Do not modify files in this step.\n"
+        f"Selected direction: {run.selected_direction}\n"
+        f"Files to inspect: {', '.join(design.get('files_to_modify') or ['not specified'])}\n"
+        "Read the referenced files, summarize the implementation boundary, and explicitly say READY_TO_EDIT "
+        "only if the plan is concrete enough."
+    )
+
+
+def build_edit_prompt(run: ContributionRun, design: dict[str, Any], understanding: str) -> str:
+    return (
+        "OpenSourcePR implementation step 3b: edit the code.\n"
+        "Before editing, verify the referenced files and local style one more time.\n"
+        "Keep changes within the approved scope unless the repository proves the design inaccurate.\n"
+        f"Repository: {run.repo_url}\n"
+        f"Selected direction: {run.selected_direction}\n"
+        f"Recommended approach: {design.get('recommended')}\n\n"
+        f"Understanding checkpoint:\n{understanding}\n\n"
+        f"Detailed design:\n{design.get('agent_design') or render_design(design)}"
+    )
+
+
+def build_verification_prompt(run: ContributionRun, design: dict[str, Any]) -> str:
+    tests = design.get("tests_to_run") or ["run the narrowest relevant pytest command or document why none applies"]
+    return (
+        "OpenSourcePR implementation step 3c: verify the change.\n"
+        "Run focused verification, inspect git diff/status, and report exact commands and results.\n"
+        f"Expected tests: {json.dumps(tests, ensure_ascii=False)}\n"
+        "Do not open a PR, push, or commit."
     )
 
 
 def build_implementation_prompt(run: ContributionRun, design: dict[str, Any]) -> str:
-    """把第 2 步方案转换成 agent_loop 可执行的实现任务提示。"""
-    agent_design = design.get("agent_design") or ""
-    return (
-        "Follow the OpenSourcePR implementation workflow.\n"
-        f"Repository: {run.repo_url}\n"
-        f"Selected direction: {run.selected_direction}\n"
-        f"Recommended approach: {design.get('recommended')}\n"
-        "Before editing, read all files referenced by the design, inspect style/config, and keep changes scoped.\n"
-        "Then implement, run focused verification, and report modified files, tests, risks, and PR notes.\n\n"
-        f"Detailed design from artifact:\n{agent_design or render_design(design)}"
-    )
+    return build_edit_prompt(run, design, understanding="Prepared from saved workflow artifacts.")
 
 
 def implementation_prompt_for_run(*, repo_root: Path, run_id: str) -> str:
-    """只读取已保存 artifact 来恢复实现提示，供 CLI 调用 agent_loop 前使用。"""
     run = load_run(repo_root=repo_root, run_id=run_id)
     return build_implementation_prompt(run, _read_json(run, "02_design.json"))
 
 
+def validate_design_files(repo_root: Path, design: dict[str, Any]) -> dict[str, Any]:
+    files = _extract_design_files(design)
+    missing = [path for path in files if not (repo_root / path).exists()]
+    return {
+        "ok": not missing,
+        "files": files,
+        "missing_files": missing,
+    }
+
+
 def render_discover(payload: dict[str, Any]) -> str:
     issue_rows = "\n".join(
-        f"| #{issue['number']} | {issue['title']} | {', '.join(issue['labels'])} | TBD | 小/中 | 符合筛选条件 |"
+        f"| #{issue.get('number')} | {issue.get('title', '')} | {', '.join(issue.get('labels', []))} |"
         for issue in payload["candidate_issues"]
-    ) or "| - | 未找到符合条件的 issue | - | - | - | 建议从架构维度选择 |"
-    dimensions = "\n".join(
+    ) or "| - | No matching issue found | - |"
+    directions = "\n\n".join(
         "\n".join(
             [
-                f"### {item['dimension']}",
-                f"**现状描述：** {item['current']}",
-                f"**缺陷 / 缺失：** {item['gap']}",
-                f"**影响程度：** {item['impact']}",
-                f"**改进方向：** {item['improvement']}",
-                f"**改动范围：** {item['scope']}",
-                f"**面试叙事角度：** {item['interview_angle']}",
+                f"**Rank {index}: {item.get('name', 'Untitled direction')}**",
+                f"- Description: {item.get('description', '')}",
+                f"- Source: {item.get('source', '')}",
+                f"- Entry: {item.get('entry', '')}",
+                f"- Effort: {item.get('effort', '')}",
+                f"- Interview value: {item.get('interview', '')}",
+                f"- Risk: {item.get('risk', 'Needs maintainer confirmation')}",
+            ]
+        )
+        for index, item in enumerate(payload["top_directions"], start=1)
+    )
+    dimensions = "\n\n".join(
+        "\n".join(
+            [
+                f"### {item.get('dimension', 'Dimension')}",
+                f"- Current: {item.get('current', '')}",
+                f"- Gap: {item.get('gap', '')}",
+                f"- Impact: {item.get('impact', '')}",
+                f"- Improvement: {item.get('improvement', '')}",
+                f"- Location: {item.get('location', '')}",
             ]
         )
         for item in payload["architecture_dimensions"]
     )
-    directions = "\n".join(
-        f"**第 {index} 名：{item['name']}**\n"
-        f"- 一句话描述：{item['description']}\n"
-        f"- 来源维度：{item['source']}\n"
-        f"- 入口文件：{item['entry']}\n"
-        "- 为什么适合我：匹配 Python/TypeScript/Agent 工程分析能力。\n"
-        f"- 预计工作量：{item['effort']}\n"
-        f"- 面试中能讲什么：{item['interview']}\n"
-        "- 风险点：需要维护者确认范围。"
-        for index, item in enumerate(payload["top_directions"], start=1)
-    )
-    review = f"\n## Agent 深度分析\n\n{payload['agent_review']}\n" if payload.get("agent_review") else ""
+    review = f"\n## Agent Analysis\n\n{payload['agent_review']}\n" if payload.get("agent_review") else ""
     return (
-        "# 开源项目贡献分析\n\n"
-        f"## 项目信息\nGitHub 地址：{payload['repo_url']}\n\n"
-        "## 准备工作\n"
-        f"```text\n{payload['repo_overview']}\n\n{payload['tree']}\n```\n\n"
-        f"入口文件：{', '.join(payload['entrypoints']) or '未定位到具体实现'}\n\n"
-        "## Issue 列表筛选\n\n"
-        "| Issue # | 标题 | 类型 | 所需技能 | 预估工作量 | 推荐理由 |\n"
-        "|---|---|---|---|---|---|\n"
+        "# Open Source Contribution Analysis\n\n"
+        f"## Project\nRepository: {payload['repo_url']}\n\n"
+        f"## Preparation\n```text\n{payload['repo_overview']}\n\n{payload['tree']}\n```\n\n"
+        f"Entrypoints: {', '.join(payload['entrypoints']) or 'not found'}\n\n"
+        "## Issue Candidates\n"
+        "| Issue | Title | Labels |\n|---|---|---|\n"
         f"{issue_rows}\n\n"
-        "## 架构层缺陷分析\n\n"
+        "## Architecture Gap Analysis\n"
         f"{dimensions}\n"
         f"{review}\n"
-        "## Top 3 贡献建议\n\n"
+        "## Top 3 Contribution Suggestions\n\n"
         f"{directions}\n"
     )
 
 
 def render_design(payload: dict[str, Any]) -> str:
     options = "\n\n".join(
-        f"### {option['name']}\n**核心思路：** {option['idea']}\n**优点：** {option['pros']}\n**缺点 / 风险：** {option['cons']}"
+        f"### {option.get('name', 'Option')}\n"
+        f"**Idea:** {option.get('idea', '')}\n"
+        f"**Pros:** {option.get('pros', '')}\n"
+        f"**Cons:** {option.get('cons', '')}"
         for option in payload["options"]
     )
-    agent_design = f"\n## Agent 具体方案\n\n{payload['agent_design']}\n" if payload.get("agent_design") else ""
+    validation = payload.get("validation", {})
+    missing = ", ".join(validation.get("missing_files", [])) if isinstance(validation, dict) else ""
     return (
         "# 技术方案设计\n\n"
-        "## 问题边界定义\n"
-        f"**要解决的核心问题：** {payload['problem_boundary']}\n"
-        f"**不在本次 PR 范围内的问题：** {'；'.join(payload['out_of_scope'])}\n"
-        f"**成功标准：** {'；'.join(payload['success_criteria'])}\n\n"
-        "## 方案设计\n"
+        "## Problem Boundary\n"
+        f"**Core problem:** {payload['problem_boundary']}\n"
+        f"**Out of scope:** {'; '.join(payload['out_of_scope'])}\n"
+        f"**Success criteria:** {'; '.join(payload['success_criteria'])}\n\n"
+        "## Design Options\n"
         f"{options}\n\n"
-        f"**推荐方案：** {payload['recommended']}\n"
-        f"{agent_design}\n"
-        "## 与维护者沟通前的准备\n"
+        f"**Recommended:** {payload['recommended']}\n\n"
+        "## Implementation Plan\n"
+        f"{payload.get('agent_design') or 'Use the recommended scoped implementation.'}\n\n"
+        f"**Files to modify:** {', '.join(payload.get('files_to_modify') or ['not specified'])}\n"
+        f"**Tests to run:** {', '.join(payload.get('tests_to_run') or ['not specified'])}\n"
+        f"**Missing file warnings:** {missing or 'none'}\n\n"
+        "## Maintainer Comment\n"
         f"{payload['maintainer_comment']}\n\n"
-        "## 面试叙事框架\n"
+        "## Interview Story\n"
         f"{payload['interview_story']}\n"
     )
 
 
 def render_implementation_report(report: dict[str, Any]) -> str:
     return (
-        "# 技术方案实现\n\n"
-        f"## 选定方向\n{report['selected_direction']}\n\n"
-        f"## 推荐方案\n{report['recommended']}\n\n"
-        "## 实现提示\n"
+        "# Implementation Report\n\n"
+        f"## Selected Direction\n{report['selected_direction']}\n\n"
+        f"## Recommended Approach\n{report['recommended']}\n\n"
+        "## Implementation Prompt\n"
         f"```text\n{report['implementation_prompt']}\n```\n\n"
-        "## Agent 输出\n"
+        "## Understanding\n"
+        f"{report.get('understanding_output', '')}\n\n"
+        "## Agent Output\n"
         f"{report['agent_output']}\n\n"
+        "## Verification\n"
+        f"{report.get('verification_output', '')}\n\n"
         "## Testing\n"
         f"{report['test_summary']}\n\n"
-        "## Git 状态（执行前）\n"
+        "## Git Status Before\n"
         f"```text\n{report.get('git_status_before', '')}\n```\n\n"
-        "## Git 状态（执行后）\n"
+        "## Git Status After\n"
         f"```text\n{report.get('git_status_after', '')}\n```\n"
     )
 
@@ -423,11 +493,12 @@ def _top_directions(candidates: list[dict[str, Any]], dimensions: list[dict[str,
         directions.append(
             {
                 "name": f"Issue #{issue['number']}: {issue['title']}",
-                "description": "围绕已有 issue 做小范围修复或增强。",
+                "description": "Small scoped fix or enhancement from an existing issue.",
                 "source": f"Issue #{issue['number']}",
                 "entry": issue.get("url") or "issue",
-                "effort": "小/中",
-                "interview": "体现需求澄清、范围控制和测试验证能力。",
+                "effort": "small",
+                "interview": "Shows requirement clarification, scope control, and verification.",
+                "risk": "Needs maintainer confirmation.",
             }
         )
     for item in dimensions:
@@ -435,15 +506,160 @@ def _top_directions(candidates: list[dict[str, Any]], dimensions: list[dict[str,
             break
         directions.append(
             {
-                "name": f"改进{item['dimension']}",
+                "name": f"Improve {item['dimension']}",
                 "description": item["improvement"],
-                "source": f"代码分析-{item['dimension']}",
+                "source": f"Code analysis - {item['dimension']}",
                 "entry": item["location"],
-                "effort": "中",
+                "effort": "medium",
                 "interview": item["interview_angle"],
+                "risk": "Scope must be validated against maintainer expectations.",
             }
         )
     return directions[:3]
+
+
+def _design_payload_from_result(
+    *,
+    repo_root: Path,
+    discover: dict[str, Any],
+    selected: str,
+    llm_design: dict[str, Any] | None,
+    agent_design: str | None,
+) -> dict[str, Any]:
+    template = _template_design(selected, discover, agent_design)
+    if llm_design:
+        payload = {
+            **template,
+            "problem_boundary": llm_design.get("problem_boundary") or template["problem_boundary"],
+            "out_of_scope": llm_design.get("out_of_scope") or template["out_of_scope"],
+            "success_criteria": llm_design.get("success_criteria") or template["success_criteria"],
+            "options": llm_design.get("options") or template["options"],
+            "recommended": llm_design.get("recommended") or template["recommended"],
+            "maintainer_comment": llm_design.get("maintainer_comment") or template["maintainer_comment"],
+            "interview_story": llm_design.get("interview_story") or template["interview_story"],
+            "agent_design": llm_design.get("implementation_plan") or template["agent_design"],
+            "files_to_modify": llm_design.get("files_to_modify") or _extract_design_files(llm_design),
+            "tests_to_run": llm_design.get("tests_to_run") or _extract_tests_to_run(llm_design),
+        }
+    else:
+        payload = template
+    payload["validation"] = validate_design_files(repo_root, payload)
+    return payload
+
+
+def _focused_discover_for_design(discover: dict[str, Any], selected: str) -> dict[str, Any]:
+    directions = discover.get("top_directions") or []
+    selected_direction = next((item for item in directions if item.get("name") == selected), None)
+    selected_issue = _issue_from_selected_direction(selected)
+    candidate_issues = discover.get("candidate_issues") or []
+    issue_scores = discover.get("issue_scores") or []
+    if selected_issue is not None:
+        candidate_issues = [issue for issue in candidate_issues if issue.get("number") == selected_issue]
+        issue_scores = [score for score in issue_scores if score.get("number") == selected_issue]
+    else:
+        candidate_issues = [
+            issue for issue in candidate_issues
+            if str(issue.get("title", "")).lower() in selected.lower()
+            or selected.lower() in str(issue.get("title", "")).lower()
+        ][:1]
+    return {
+        "repo_url": discover.get("repo_url"),
+        "selected_direction": selected_direction or {"name": selected},
+        "candidate_issues": candidate_issues,
+        "issue_scores": issue_scores,
+        "entrypoints": discover.get("entrypoints", []),
+        "architecture_dimensions": discover.get("architecture_dimensions", [])[:7],
+        "evidence_pack": _compact_evidence_pack(discover.get("evidence_pack") or {}),
+        "agent_review": str(discover.get("agent_review") or "")[:2000],
+    }
+
+
+def _issue_from_selected_direction(selected: str) -> int | None:
+    match = re.search(r"Issue\s*#(\d+)", selected, flags=re.I)
+    return int(match.group(1)) if match else None
+
+
+def _compact_evidence_pack(evidence_pack: dict[str, Any]) -> dict[str, Any]:
+    symbols = evidence_pack.get("symbols") if isinstance(evidence_pack, dict) else {}
+    if isinstance(symbols, dict):
+        symbols = {name: values[:5] if isinstance(values, list) else values for name, values in symbols.items()}
+    return {
+        "entrypoints": evidence_pack.get("entrypoints", []),
+        "symbols": symbols,
+    }
+
+
+def _template_design(selected: str, discover: dict[str, Any], agent_design: str | None) -> dict[str, Any]:
+    return {
+        "selected_direction": selected,
+        "problem_boundary": f'Complete a small, reviewable open source contribution around "{selected}".',
+        "out_of_scope": [
+            "Do not push, commit, or open a PR automatically.",
+            "Do not introduce GitHub write operations.",
+            "Do not perform broad cross-module refactors.",
+        ],
+        "success_criteria": [
+            "Changes stay near 1-3 core files.",
+            "Focused tests or clear manual verification are provided.",
+            "The PR draft explains Problem, Solution, Testing, and reviewer notes.",
+        ],
+        "options": _design_options(selected, discover),
+        "recommended": "Option 1: smallest reviewable extension",
+        "maintainer_comment": _maintainer_comment(selected),
+        "interview_story": _interview_story(selected),
+        "agent_design": agent_design or "",
+        "files_to_modify": [],
+        "tests_to_run": [],
+        "agent_design_prompt": build_design_review_prompt(discover=discover, selected=selected),
+    }
+
+
+def _design_options(selected: str, discover: dict[str, Any]) -> list[dict[str, str]]:
+    entry = next((item["entry"] for item in discover.get("top_directions", []) if item["name"] == selected), "TBD")
+    return [
+        {
+            "name": "Option 1: smallest reviewable extension",
+            "idea": f"Start near {entry}, reuse existing abstractions, and add only necessary code and tests.",
+            "pros": "Small diff and easy review.",
+            "cons": "Limited coverage; follow-up PRs may be needed.",
+        },
+        {
+            "name": "Option 2: strategy extraction",
+            "idea": "Extract related behavior into a helper or strategy for future extension.",
+            "pros": "More extensible.",
+            "cons": "Higher implementation and review complexity.",
+        },
+        {
+            "name": "Option 3: tests and docs first",
+            "idea": "Add focused tests or docs before broader functionality.",
+            "pros": "Low risk and maintainer-friendly.",
+            "cons": "Less feature depth.",
+        },
+    ]
+
+
+def _normalize_directions(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict) and item.get("name") and item.get("description")]
+
+
+def _extract_design_files(design: dict[str, Any]) -> list[str]:
+    explicit = design.get("files_to_modify")
+    if isinstance(explicit, list):
+        return sorted({str(item).strip() for item in explicit if str(item).strip()})
+    text = json.dumps(design, ensure_ascii=False, default=str)
+    matches = re.findall(r"(?<![\w./-])([A-Za-z0-9_./-]+\.(?:py|ts|tsx|js|jsx|md|toml|json|yaml|yml))(?![\w./-])", text)
+    return sorted(set(matches))
+
+
+def _extract_tests_to_run(design: dict[str, Any]) -> list[str]:
+    explicit = design.get("tests_to_run")
+    if isinstance(explicit, list):
+        return [str(item) for item in explicit if str(item).strip()]
+    text = str(design.get("implementation_plan") or "")
+    commands = re.findall(r"(?:python -m pytest|pytest)[^\n`]*", text)
+    return [command.strip() for command in commands]
 
 
 def _default_direction(discover: dict[str, Any]) -> str:
@@ -456,32 +672,7 @@ def _default_direction(discover: dict[str, Any]) -> str:
 def _ensure_direction_is_known(selected: str, discover: dict[str, Any]) -> None:
     known = {item["name"] for item in discover.get("top_directions", [])}
     if known and selected not in known:
-        # 允许用户自定义方向，但把偏离 Top 3 明确留在 artifact 的输入中，不静默替换。
         return
-
-
-def _design_options(selected: str, discover: dict[str, Any]) -> list[dict[str, str]]:
-    entry = next((item["entry"] for item in discover.get("top_directions", []) if item["name"] == selected), "核心文件待确认")
-    return [
-        {
-            "name": "方案 1：最小可审查扩展",
-            "idea": f"围绕“{selected}”从 {entry} 附近切入，优先复用现有抽象，只新增必要接口和测试。",
-            "pros": "改动小，容易 review，适合 first PR。",
-            "cons": "覆盖面有限，需要后续 PR 继续完善。",
-        },
-        {
-            "name": "方案 2：策略化增强",
-            "idea": "把相关行为抽成策略或 helper，降低后续扩展成本。",
-            "pros": "扩展性更好。",
-            "cons": "实现复杂度更高，可能超过单个 PR 范围。",
-        },
-        {
-            "name": "方案 3：测试和文档先行",
-            "idea": "先补最小复现、测试或文档，为后续功能 PR 降低维护成本。",
-            "pros": "风险低，适合与维护者建立信任。",
-            "cons": "技术深度相对有限。",
-        },
-    ]
 
 
 def _maintainer_comment(selected: str) -> str:
@@ -494,8 +685,9 @@ def _maintainer_comment(selected: str) -> str:
 
 def _interview_story(selected: str) -> str:
     return (
-        f"我先从 issue 和架构维度定位到“{selected}”，再比较最小扩展、策略化和测试文档优先三种方案，"
-        "最终选择最小可审查方案来体现范围控制、接口设计和验证驱动实现能力。"
+        f"I first used issue context and architecture evidence to identify {selected}, then compared a minimal "
+        "extension, a strategy extraction, and a tests/docs-first approach. I chose the smallest reviewable path "
+        "to demonstrate scope control, API design, and verification-driven implementation."
     )
 
 
@@ -514,6 +706,15 @@ def _extract_code_block(text: str) -> str:
     start += len(marker)
     end = text.find("```", start)
     return text[start:end].strip() if end != -1 else ""
+
+
+def _try_import_stage_agents():
+    try:
+        from osc_agent.harness import stage_agents
+
+        return stage_agents
+    except ImportError:
+        return None
 
 
 def _runs_dir(repo_root: Path) -> Path:
@@ -537,7 +738,7 @@ def _read_json(run: ContributionRun, name: str) -> dict[str, Any]:
 
 
 def _read_text(run: ContributionRun, name: str, default: str = "") -> str:
-    path = Path(run.artifacts_dir, name)
+    path = Path(run.artifacts_dir) / name
     return path.read_text(encoding="utf-8") if path.exists() else default
 
 

@@ -147,6 +147,23 @@ def analyze_architecture_dimensions(*, repo_root: Path) -> list[dict[str, str]]:
     return rows
 
 
+def collect_repo_evidence_pack(*, repo_root: Path) -> dict[str, object]:
+    """收集供 LLM 分析消费的结构化仓库证据包。"""
+    return {
+        "overview": inspect_repo(repo_root=repo_root),
+        "tree": repo_tree(repo_root=repo_root, depth=3),
+        "entrypoints": detect_entrypoints(repo_root=repo_root),
+        "architecture_dimensions": analyze_architecture_dimensions(repo_root=repo_root),
+        "symbols": {
+            "planning": find_functions(repo_root=repo_root, query="plan")[:10],
+            "task": find_functions(repo_root=repo_root, query="task")[:10],
+            "tool": find_functions(repo_root=repo_root, query="tool")[:10],
+            "context": find_functions(repo_root=repo_root, query="context")[:10],
+            "trace": find_functions(repo_root=repo_root, query="trace")[:10],
+        },
+    }
+
+
 _SKIP_DIRS = {".git", ".osc_agent", ".pytest_cache", "__pycache__", "node_modules", ".venv", "dist", "build"}
 
 
