@@ -41,12 +41,38 @@ def test_new_skill_can_be_added_without_agent_loop_changes(tmp_path):
     skill_dir = tmp_path / "security"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text(
-        "---\nname: security\ndescription: Security review guidance.\n---\n\n# Security\n",
+        "---\nschema_version: 1\nname: security\ndescription: Security review guidance.\n"
+        "version: 1.0.0\napplies_to: [security]\nrequired_tools: [read_file]\n"
+        "permissions: [read]\ninput_contract: Repository evidence.\noutput_contract: Review guidance.\n"
+        "---\n\n# Security\n",
         encoding="utf-8",
     )
 
     assert "- security: Security review guidance." in list_skill_catalog(tmp_path)
     assert "# Security" in load_skill("security", skills_root=tmp_path)
+
+
+def test_invalid_skill_contract_reports_missing_fields(tmp_path):
+    skill_dir = tmp_path / "invalid"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: invalid\n---\n", encoding="utf-8")
+
+    try:
+        scan_skills(tmp_path)
+    except ValueError as exc:
+        assert "missing fields" in str(exc)
+        assert "schema_version" in str(exc)
+    else:
+        raise AssertionError("invalid skill must be rejected")
+
+
+def test_skill_contract_cannot_grant_missing_tool_or_permission():
+    assert "missing tools" in load_skill("python", available_tools=set(), granted_permissions={"read"})
+    assert "permissions not granted" in load_skill(
+        "python",
+        available_tools={"read_file", "glob", "bash"},
+        granted_permissions={"read"},
+    )
 
 
 def test_system_prompt_contains_catalog_not_full_skill_body(tmp_path):

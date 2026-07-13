@@ -82,6 +82,48 @@ def fetch_issue_comments(repo_url: str, issue_number: int) -> dict[str, Any]:
     return {"ok": True, "comments": result["data"]}
 
 
+def fetch_issue_activity(repo_url: str, issue_number: int) -> dict[str, Any]:
+    """只读检查 Issue 时间线中的关联 PR，并附带仓库近期提交摘要。"""
+    try:
+        owner, repo = parse_github_repo(repo_url)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc), "linked_pull_requests": [], "recent_commits": []}
+    timeline = _github_get_json(
+        f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/timeline?per_page=100"
+    )
+    commits = _github_get_json(f"https://api.github.com/repos/{owner}/{repo}/commits?per_page=20")
+    linked: list[dict[str, Any]] = []
+    if timeline.get("ok"):
+        for event in timeline.get("data") or []:
+            source = event.get("source") or {}
+            issue = source.get("issue") or {}
+            if issue.get("pull_request"):
+                linked.append(
+                    {
+                        "number": issue.get("number"),
+                        "state": issue.get("state"),
+                        "url": issue.get("html_url"),
+                        "title": issue.get("title"),
+                    }
+                )
+    recent = []
+    if commits.get("ok"):
+        for item in commits.get("data") or []:
+            commit = item.get("commit") or {}
+            recent.append(
+                {
+                    "sha": item.get("sha"),
+                    "message": str((commit.get("message") or "").splitlines()[0]),
+                    "url": item.get("html_url"),
+                }
+            )
+    return {
+        "ok": bool(timeline.get("ok") and commits.get("ok")),
+        "linked_pull_requests": linked,
+        "recent_commits": recent,
+    }
+
+
 def filter_candidate_issues(
     issues: list[dict[str, Any]],
     comments_by_issue: dict[int | str, list[dict[str, Any]]],
@@ -106,6 +148,9 @@ def filter_candidate_issues(
         comments = comments_by_issue.get(issue_number, comments_by_issue.get(str(issue_number), []))
         if _has_claim_comment(comments):
             continue
+        linked_pull_requests = (issue.get("activity") or {}).get("linked_pull_requests") or []
+        if any(str(item.get("state", "")).lower() == "open" for item in linked_pull_requests):
+            continue
         candidates.append(
             {
                 "number": issue_number,
@@ -114,6 +159,7 @@ def filter_candidate_issues(
                 "url": issue.get("html_url", ""),
                 "updated_at": issue.get("updated_at", ""),
                 "body": issue.get("body") or "",
+                "activity": issue.get("activity") or {},
             }
         )
     return candidates
@@ -122,26 +168,26 @@ def filter_candidate_issues(
 def apply_issue_scores(
     candidates: list[dict[str, Any]],
     scores: list[dict[str, Any]],
-    *,
-    minimum_score: int = 50,
 ) -> list[dict[str, Any]]:
-    """合并 LLM 二次评分结果，并优先保留可行、分数高的 issue。"""
+    """合并可解释等级；未标定数据前不输出伪精确的百分制分数。"""
+    rank = {"HIGH": 3, "MEDIUM": 2, "LOW": 1, "REJECT": 0}
     by_number = {score.get("number"): score for score in scores if isinstance(score, dict)}
     ranked: list[dict[str, Any]] = []
     for issue in candidates:
         score = by_number.get(issue.get("number"))
         if score:
+            level = str(score.get("level") or "REJECT").upper()
             issue = {
                 **issue,
-                "llm_score": score.get("score"),
-                "llm_feasible": score.get("feasible"),
-                "llm_reason": score.get("reason", ""),
-                "llm_risk": score.get("risk", ""),
+                "review_level": level,
+                "review_dimensions": score.get("dimensions") or {},
+                "review_reason": score.get("reason", ""),
+                "rejection_reason": score.get("rejection_reason", ""),
             }
-            if score.get("feasible") is False or int(score.get("score") or 0) < minimum_score:
+            if level in {"LOW", "REJECT"}:
                 continue
         ranked.append(issue)
-    return sorted(ranked, key=lambda item: int(item.get("llm_score") or 0), reverse=True)
+    return sorted(ranked, key=lambda item: rank.get(str(item.get("review_level", "MEDIUM")), 2), reverse=True)
 
 
 def load_issues_file(path: str) -> tuple[list[dict[str, Any]], dict[int | str, list[dict[str, Any]]]]:

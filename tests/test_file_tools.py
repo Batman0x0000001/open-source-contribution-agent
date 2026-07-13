@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from types import SimpleNamespace
 
 from osc_agent.agent_loop import agent_loop
@@ -97,4 +99,4 @@ def test_agent_loop_dispatches_tools_through_handler_map(tmp_path):
     assert isinstance(tool_results, list)
     first_result = tool_results[0]
     assert isinstance(first_result, dict)
-    assert first_result["content"] == "hello"
+    assert json.loads(first_result["content"])["summary"] == "hello"

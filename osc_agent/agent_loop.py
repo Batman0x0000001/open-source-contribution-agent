@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import Any, Callable, TextIO
 
 from osc_agent.config import Settings
@@ -25,6 +25,13 @@ from osc_agent.harness.background import (
     start_background_task,
 )
 from osc_agent.harness.compact import COMPACT_TOOL, apply_compaction, compact_history, reactive_compact
+from osc_agent.harness.contracts import (
+    AgentRunResult,
+    RunMetrics,
+    RunStatus,
+    action_fingerprint,
+    normalize_tool_result,
+)
 from osc_agent.harness.cron import CRON_TOOLS, cancel_schedule, collect_cron_notifications, list_schedules, schedule_check
 from osc_agent.harness.hooks import HookContext, HookRegistry, default_hooks, elapsed_ms
 from osc_agent.harness.mcp import CONNECT_MCP_TOOL, assemble_tool_handlers, assemble_tool_pool, connect_mcp
@@ -45,6 +52,7 @@ from osc_agent.harness.recovery import (
     is_prompt_too_long_error,
     with_retry,
 )
+from osc_agent.harness.runtime_state import record_tool_observation
 from osc_agent.harness.subagent import SUBAGENT_TOOL, spawn_subagent
 from osc_agent.harness.tasks import CONTRIBUTION_TASK_TOOLS, claim_task, complete_task, create_task, get_task, list_tasks
 from osc_agent.harness.teams import TEAM_TOOLS, check_inbox, collect_team_notifications, send_message, spawn_teammate
@@ -75,6 +83,28 @@ TOOLS = [
     *WORKTREE_TOOLS,
     *CONTRIBUTION_TASK_TOOLS,
 ]
+
+SIDE_EFFECT_TOOLS = {
+    "bash",
+    "write_file",
+    "edit_file",
+    "todo_write",
+    "connect_mcp",
+    "spawn_teammate",
+    "send_message",
+    "request_shutdown",
+    "request_plan_review",
+    "review_plan",
+    "request_write_approval",
+    "create_worktree",
+    "keep_worktree",
+    "remove_worktree",
+    "schedule_check",
+    "cancel_schedule",
+    "create_task",
+    "claim_task",
+    "complete_task",
+}
 
 
 def _block_attr(block: Any, name: str, default: Any = None) -> Any:
@@ -233,7 +263,7 @@ def agent_loop(
     tool_handlers: dict[str, Any] | None = None,
     hooks: HookRegistry | None = None,
     confirm: Callable[[str], bool] | None = None,
-) -> Any:
+) -> AgentRunResult:
     """执行 Anthropic 风格 agent loop，直到模型不再请求工具。"""
     handlers = tool_handlers or build_tool_handlers(
         repo_root,
@@ -253,8 +283,20 @@ def agent_loop(
         fallback_model_id=settings.fallback_model_id,
         max_tokens=DEFAULT_MAX_TOKENS,
     )
+    metrics = RunMetrics()
+    started_at = monotonic()
+    previous_fingerprint: str | None = None
+    repeated_actions = 0
+    consecutive_failures = 0
+    seen_fingerprints: set[str] = set()
+    no_progress_calls = 0
 
     while True:
+        metrics.elapsed_ms = int((monotonic() - started_at) * 1000)
+        budget_reason = _budget_reason(metrics, settings)
+        if budget_reason:
+            return _finish_run(repo_root, RunStatus.FAILED_BUDGET, budget_reason, metrics, None)
+
         notifications = (
             collect_background_results()
             + collect_cron_notifications(repo_root)
@@ -279,6 +321,7 @@ def agent_loop(
         # MCP 工具池会在 agent_loop 运行中动态变化，因此这里每轮直接重组 system prompt。
         system_prompt = assemble_system_prompt(prompt_context)
         try:
+            metrics.model_calls += 1
             response = with_retry(
                 lambda model_id: client.messages.create(
                     model=model_id,
@@ -298,6 +341,16 @@ def agent_loop(
                 continue
             raise
 
+        metrics.retries = recovery_state.retry_count
+        input_tokens, output_tokens = _response_usage(response)
+        metrics.input_tokens += input_tokens
+        metrics.output_tokens += output_tokens
+        metrics.elapsed_ms = int((monotonic() - started_at) * 1000)
+        budget_reason = _budget_reason(metrics, settings, check_rounds=False)
+        if budget_reason:
+            messages.append({"role": "assistant", "content": response.content})
+            return _finish_run(repo_root, RunStatus.FAILED_BUDGET, budget_reason, metrics, response)
+
         if response.stop_reason == "max_tokens":
             if not recovery_state.has_escalated_tokens:
                 recovery_state.max_tokens = ESCALATED_MAX_TOKENS
@@ -316,13 +369,19 @@ def agent_loop(
                 )
                 continue
             append_trace(repo_root, "max_tokens_recovery", {"action": "stop", "count": recovery_state.continuation_count})
-            return response
+            return _finish_run(
+                repo_root,
+                RunStatus.FAILED_BUDGET,
+                "model output continuation budget exhausted",
+                metrics,
+                response,
+            )
 
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason != "tool_use":
             hook_registry.run("Stop", hook_context, {"stop_reason": response.stop_reason})
-            return response
+            return _finish_run(repo_root, RunStatus.SUCCESS, "model completed without tool requests", metrics, response)
 
         results: list[dict[str, str]] = []
         for block in response.content:
@@ -332,10 +391,25 @@ def agent_loop(
             tool_name = _block_attr(block, "name")
             tool_use_id = _block_attr(block, "id")
             tool_args = _tool_input(block)
+            fingerprint = action_fingerprint(str(tool_name), tool_args)
+            if fingerprint == previous_fingerprint:
+                repeated_actions += 1
+            else:
+                previous_fingerprint = fingerprint
+                repeated_actions = 1
+            if repeated_actions >= settings.repeat_action_limit:
+                return _finish_run(
+                    repo_root,
+                    RunStatus.BLOCKED_NEEDS_USER,
+                    f"tool action repeated {repeated_actions} times: {tool_name}",
+                    metrics,
+                    response,
+                )
 
             handler = active_handlers.get(tool_name)
+            started = perf_counter()
             if handler is None:
-                tool_output = f"Error: unknown tool {tool_name}"
+                raw_output = f"Error: unknown tool {tool_name}"
             else:
                 if output is not None:
                     print(f"{tool_name}: {tool_args}", file=output)
@@ -345,9 +419,8 @@ def agent_loop(
                     {"tool_name": tool_name, "tool_args": tool_args},
                 )
                 blocked = next((result for result in pre_results if not result.allowed), None)
-                started = perf_counter()
                 if blocked is not None:
-                    tool_output = blocked.content or "Permission denied"
+                    raw_output = blocked.content or "Permission denied"
                 elif should_run_background(tool_name, tool_args):
                     # 后台任务只返回占位结果；真实输出由下一轮 task_notification 独立注入。
                     foreground_args = dict(tool_args)
@@ -357,27 +430,69 @@ def agent_loop(
                         repo_root=repo_root,
                         runner=lambda handler=handler, args=foreground_args: handler(**args),
                     )
-                    tool_output = (
+                    raw_output = (
                         f"[Background task {task_id} started] "
                         "Result will be available in a later task_notification."
                     )
                 else:
                     try:
-                        tool_output = handler(**tool_args)
+                        raw_output = handler(**tool_args)
                     except (TypeError, ValueError) as exc:
-                        tool_output = f"Error: invalid arguments for {tool_name}: {exc}"
-                hook_registry.run(
-                    "PostToolUse",
-                    hook_context,
-                    {
-                        "tool_name": tool_name,
-                        "tool_args": tool_args,
-                        "output": tool_output,
-                        "latency_ms": elapsed_ms(started),
-                    },
+                        raw_output = f"Error: invalid arguments for {tool_name}: {exc}"
+                    except Exception as exc:  # noqa: BLE001 - 工具失败必须转成可审计结果
+                        raw_output = f"Error: tool {tool_name} failed: {exc}"
+
+            tool_result = normalize_tool_result(
+                raw_output,
+                tool_name=str(tool_name),
+                arguments=tool_args,
+                call_id=str(tool_use_id) if tool_use_id is not None else None,
+                latency_ms=elapsed_ms(started),
+                side_effect=str(tool_name) in SIDE_EFFECT_TOOLS,
+            )
+            tool_output = tool_result.to_model_content()
+            record_tool_observation(repo_root, str(tool_name), tool_args, tool_result)
+            metrics.tool_calls += 1
+            if tool_result.ok:
+                consecutive_failures = 0
+                if fingerprint in seen_fingerprints and not tool_result.side_effect:
+                    no_progress_calls += 1
+                else:
+                    no_progress_calls = 0
+                seen_fingerprints.add(fingerprint)
+            else:
+                metrics.tool_failures += 1
+                consecutive_failures += 1
+                no_progress_calls += 1
+            hook_registry.run(
+                "PostToolUse",
+                hook_context,
+                {
+                    "tool_name": tool_name,
+                    "tool_args": tool_args,
+                    "output": tool_result.to_dict(),
+                    "latency_ms": tool_result.latency_ms,
+                },
+            )
+            if output is not None:
+                print(str(tool_output)[:200], file=output)
+
+            if consecutive_failures >= settings.consecutive_failure_limit:
+                return _finish_run(
+                    repo_root,
+                    RunStatus.FAILED_TOOL,
+                    f"{consecutive_failures} consecutive tool failures",
+                    metrics,
+                    response,
                 )
-                if output is not None:
-                    print(str(tool_output)[:200], file=output)
+            if no_progress_calls >= settings.no_progress_limit:
+                return _finish_run(
+                    repo_root,
+                    RunStatus.BLOCKED_NEEDS_USER,
+                    f"no new evidence or state change after {no_progress_calls} tool calls",
+                    metrics,
+                    response,
+                )
 
             results.append(
                 {
@@ -389,3 +504,39 @@ def agent_loop(
 
         #Anthropic 把工具看成：用户帮模型完成了一件事，然后把结果告诉模型
         messages.append({"role": "user", "content": results})
+
+
+def _response_usage(response: Any) -> tuple[int, int]:
+    usage = getattr(response, "usage", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage")
+    if usage is None:
+        return 0, 0
+    if isinstance(usage, dict):
+        return int(usage.get("input_tokens") or 0), int(usage.get("output_tokens") or 0)
+    return int(getattr(usage, "input_tokens", 0) or 0), int(getattr(usage, "output_tokens", 0) or 0)
+
+
+def _budget_reason(metrics: RunMetrics, settings: Settings, *, check_rounds: bool = True) -> str | None:
+    if check_rounds and metrics.model_calls >= settings.max_agent_rounds:
+        return f"maximum model rounds reached ({settings.max_agent_rounds})"
+    if metrics.total_tokens >= settings.max_total_tokens:
+        return f"maximum token budget reached ({settings.max_total_tokens})"
+    if metrics.elapsed_ms >= settings.agent_deadline_seconds * 1000:
+        return f"agent deadline reached ({settings.agent_deadline_seconds}s)"
+    return None
+
+
+def _finish_run(
+    repo_root: Path,
+    status: RunStatus,
+    reason: str,
+    metrics: RunMetrics,
+    response: Any | None,
+) -> AgentRunResult:
+    append_trace(
+        repo_root,
+        "agent_run_finished",
+        {"status": status.value, "reason": reason, "metrics": metrics.to_dict()},
+    )
+    return AgentRunResult(status=status, response=response, reason=reason, metrics=metrics)

@@ -30,6 +30,27 @@ class Settings:
     anthropic_base_url: str | None
     model_id: str
     fallback_model_id: str | None
+    max_agent_rounds: int = 30
+    max_total_tokens: int = 200_000
+    agent_deadline_seconds: int = 1_800
+    repeat_action_limit: int = 3
+    consecutive_failure_limit: int = 3
+    no_progress_limit: int = 6
+    max_changed_files: int = 5
+    max_diff_lines: int = 400
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be greater than zero")
+    return value
 
 
 def load_settings() -> Settings:
@@ -42,6 +63,14 @@ def load_settings() -> Settings:
         anthropic_base_url=os.getenv("ANTHROPIC_BASE_URL") or None,
         model_id=os.getenv("MODEL_ID", "claude-3-5-sonnet-latest"),
         fallback_model_id=os.getenv("FALLBACK_MODEL_ID") or None,
+        max_agent_rounds=_env_int("OSC_AGENT_MAX_ROUNDS", 30),
+        max_total_tokens=_env_int("OSC_AGENT_MAX_TOKENS", 200_000),
+        agent_deadline_seconds=_env_int("OSC_AGENT_DEADLINE_SECONDS", 1_800),
+        repeat_action_limit=_env_int("OSC_AGENT_REPEAT_ACTION_LIMIT", 3),
+        consecutive_failure_limit=_env_int("OSC_AGENT_FAILURE_LIMIT", 3),
+        no_progress_limit=_env_int("OSC_AGENT_NO_PROGRESS_LIMIT", 6),
+        max_changed_files=_env_int("OSC_AGENT_MAX_CHANGED_FILES", 5),
+        max_diff_lines=_env_int("OSC_AGENT_MAX_DIFF_LINES", 400),
     )
 
 

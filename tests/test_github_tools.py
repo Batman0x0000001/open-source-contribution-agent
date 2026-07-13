@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 
-from osc_agent.tools.github import filter_candidate_issues, load_issues_file, parse_github_repo
+from osc_agent.tools.github import apply_issue_scores, filter_candidate_issues, load_issues_file, parse_github_repo
 
 
 def test_parse_github_repo_accepts_standard_url():
@@ -43,6 +43,17 @@ def test_filter_candidate_issues_rejects_assigned_and_claimed():
             "assignees": [{"login": "maintainer"}],
             "body": "Expected behavior is clear and steps to reproduce are provided.",
         },
+        {
+            "number": 4,
+            "title": "Already has a PR",
+            "state": "open",
+            "labels": [{"name": "bug"}],
+            "updated_at": now,
+            "assignee": None,
+            "assignees": [],
+            "body": "Expected behavior is clear and steps to reproduce are provided.",
+            "activity": {"linked_pull_requests": [{"number": 99, "state": "open"}]},
+        },
     ]
 
     candidates = filter_candidate_issues(issues, {2: [{"body": "I'll take this"}]})
@@ -58,3 +69,17 @@ def test_load_issues_file_supports_object_shape(tmp_path):
 
     assert issues == [{"number": 1}]
     assert comments == {"1": []}
+
+
+def test_issue_review_levels_are_explainable_and_reject_low_candidates():
+    candidates = [{"number": 1}, {"number": 2}]
+    scores = [
+        {"number": 1, "level": "HIGH", "dimensions": {"clarity": "clear"}, "reason": "small"},
+        {"number": 2, "level": "REJECT", "rejection_reason": "linked PR exists"},
+    ]
+
+    ranked = apply_issue_scores(candidates, scores)
+
+    assert [item["number"] for item in ranked] == [1]
+    assert ranked[0]["review_level"] == "HIGH"
+    assert ranked[0]["review_dimensions"]["clarity"] == "clear"

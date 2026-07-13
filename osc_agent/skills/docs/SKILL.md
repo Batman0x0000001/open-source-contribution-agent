@@ -1,6 +1,13 @@
 ---
 name: docs
 description: Documentation, README, changelog, and contribution guide updates.
+schema_version: 1
+version: 1.0.0
+applies_to: [documentation]
+required_tools: [read_file, glob]
+permissions: [read]
+input_contract: Documentation files and the approved contribution scope.
+output_contract: Reviewable documentation guidance with verification steps.
 ---
 
 # Docs Skill

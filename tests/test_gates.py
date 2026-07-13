@@ -21,6 +21,7 @@ def test_gate_discover_passes_with_valid_directions(tmp_path):
             }
         ],
         "candidate_issues": [{"number": 12}],
+        "repository_profile": {"supported": True},
     }
     (tmp_path / "01_discover.json").write_text(json.dumps(data), encoding="utf-8")
 
@@ -58,6 +59,16 @@ def test_gate_design_passes_with_valid_design(tmp_path):
         "recommended": "A",
         "selected_direction": "Add retry logic",
         "agent_design": {"steps": ["step1"]},
+        "allowed_files": ["src/retry.py"],
+        "allowed_new_dirs": ["tests"],
+        "forbidden_paths": [".github/**"],
+        "source_evidence": [
+            {"file": "src/retry.py", "line_range": [1, 2], "content_hash": "abc"}
+        ],
+        "acceptance_checks": [{"criterion": "tests pass", "command": "pytest", "manual_check": False}],
+        "max_changed_files": 5,
+        "max_diff_lines": 400,
+        "validation": {"ok": True, "missing_files": []},
     }
     (tmp_path / "02_design.json").write_text(json.dumps(data), encoding="utf-8")
 
@@ -87,31 +98,33 @@ def test_gate_design_fails_with_no_options(tmp_path):
 
 
 def test_gate_implementation_passes_with_report(tmp_path):
-    report = tmp_path / "03_implementation_report.md"
-    report.write_text(
-        "## Changes\nAdded test for retry logic.\n\npytest passed.\n",
-        encoding="utf-8",
-    )
+    report = tmp_path / "03_implementation.json"
+    report.write_text(json.dumps({
+        "scope_validation": {"ok": True},
+        "verification_results": [{"command": "pytest", "exit_code": 0}],
+    }), encoding="utf-8")
+    (tmp_path / "run.json").write_text(json.dumps({"base_commit_sha": "abc"}), encoding="utf-8")
 
     with patch(
-        "osc_agent.harness.gates.git_status", return_value=" M src/retry.py\n"
+        "osc_agent.harness.gates.git_head", return_value="abc"
     ):
         result = gate_implementation(tmp_path, repo_root=tmp_path)
 
     assert result.passed is True
 
 
-def test_gate_implementation_warns_on_no_test_evidence(tmp_path):
-    report = tmp_path / "03_implementation_report.md"
-    report.write_text(
-        "## Changes\nRefactored the logging module.\n",
-        encoding="utf-8",
-    )
+def test_gate_implementation_blocks_without_test_or_waiver(tmp_path):
+    report = tmp_path / "03_implementation.json"
+    report.write_text(json.dumps({
+        "scope_validation": {"ok": True},
+        "verification_results": [],
+    }), encoding="utf-8")
+    (tmp_path / "run.json").write_text(json.dumps({"base_commit_sha": "abc"}), encoding="utf-8")
 
     with patch(
-        "osc_agent.harness.gates.git_status", return_value=" M src/logging.py\n"
+        "osc_agent.harness.gates.git_head", return_value="abc"
     ):
         result = gate_implementation(tmp_path, repo_root=tmp_path)
 
-    assert result.passed is True
-    assert any("test evidence" in w.lower() for w in result.warnings)
+    assert result.passed is False
+    assert "waiver" in result.reason

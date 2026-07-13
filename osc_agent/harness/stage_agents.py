@@ -59,6 +59,17 @@ def _call_with_tool(
             append_trace(repo_root, "stage_agent_error", {"error": str(exc)})
         return None
 
+    if repo_root is not None:
+        usage = getattr(response, "usage", None)
+        append_trace(
+            repo_root,
+            "stage_model_usage",
+            {
+                "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
+                "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+            },
+        )
+
     for block in response.content:
         if _block_attr(block, "type") == "tool_use" and _block_attr(block, "name") == tool_name:
             result = _block_attr(block, "input", {})
@@ -154,13 +165,47 @@ _SUBMIT_DESIGN_TOOL: dict[str, Any] = {
             "implementation_plan": {"type": "string"},
             "files_to_modify": {"type": "array", "items": {"type": "string"}},
             "tests_to_run": {"type": "array", "items": {"type": "string"}},
+            "allowed_files": {"type": "array", "items": {"type": "string"}},
+            "allowed_new_dirs": {"type": "array", "items": {"type": "string"}},
+            "forbidden_paths": {"type": "array", "items": {"type": "string"}},
+            "target_symbols": {"type": "array", "items": {"type": "string"}},
+            "source_evidence": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "file": {"type": "string"},
+                        "symbol": {"type": "string"},
+                        "line_range": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+                    },
+                    "required": ["file", "symbol", "line_range"],
+                },
+            },
+            "acceptance_checks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "criterion": {"type": "string"},
+                        "command": {"type": "string"},
+                        "manual_check": {"type": "boolean"},
+                    },
+                    "required": ["criterion", "command", "manual_check"],
+                },
+            },
+            "assumptions": {"type": "array", "items": {"type": "string"}},
+            "impact_area": {"type": "array", "items": {"type": "string"}},
+            "max_changed_files": {"type": "integer", "minimum": 1},
+            "max_diff_lines": {"type": "integer", "minimum": 1},
             "maintainer_comment": {"type": "string"},
             "interview_story": {"type": "string"},
         },
         "required": [
             "problem_boundary", "out_of_scope", "success_criteria",
             "options", "recommended", "implementation_plan", "files_to_modify", "tests_to_run",
-            "maintainer_comment", "interview_story",
+            "maintainer_comment", "interview_story", "allowed_files", "allowed_new_dirs",
+            "forbidden_paths", "target_symbols", "source_evidence", "acceptance_checks", "assumptions",
+            "impact_area", "max_changed_files", "max_diff_lines",
         ],
         "additionalProperties": False,
     },
@@ -179,12 +224,22 @@ _SUBMIT_ISSUE_SCORES_TOOL: dict[str, Any] = {
                     "properties": {
                         "number": {"type": "integer"},
                         "title": {"type": "string"},
-                        "score": {"type": "integer", "minimum": 0, "maximum": 100},
-                        "feasible": {"type": "boolean"},
+                        "level": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW", "REJECT"]},
+                        "dimensions": {
+                            "type": "object",
+                            "properties": {
+                                "clarity": {"type": "string"},
+                                "unclaimed": {"type": "string"},
+                                "scope": {"type": "string"},
+                                "testability": {"type": "string"},
+                                "reviewability": {"type": "string"},
+                            },
+                            "required": ["clarity", "unclaimed", "scope", "testability", "reviewability"],
+                        },
                         "reason": {"type": "string"},
-                        "risk": {"type": "string"},
+                        "rejection_reason": {"type": "string"},
                     },
-                    "required": ["number", "title", "score", "feasible", "reason", "risk"],
+                    "required": ["number", "title", "level", "dimensions", "reason", "rejection_reason"],
                 },
             }
         },

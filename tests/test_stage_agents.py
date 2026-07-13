@@ -120,10 +120,16 @@ def test_score_candidate_issues_returns_scores():
             {
                 "number": 1,
                 "title": "Add retry tests",
-                "score": 90,
-                "feasible": True,
+                "level": "HIGH",
+                "dimensions": {
+                    "clarity": "clear",
+                    "unclaimed": "unclaimed",
+                    "scope": "small",
+                    "testability": "good",
+                    "reviewability": "good",
+                },
                 "reason": "Clear and scoped",
-                "risk": "Low",
+                "rejection_reason": "",
             }
         ]
     }

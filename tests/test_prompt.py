@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from osc_agent.agent_loop import TOOLS, agent_loop
 from osc_agent.config import Settings
 from osc_agent.harness.memory import write_memory_file
+from osc_agent.harness.runtime_state import RuntimeState, save_runtime_state
 from osc_agent.harness.prompt import (
     PROMPT_SECTIONS,
     PromptContext,
@@ -35,6 +36,7 @@ def test_prompt_sections_are_defined():
         "memory",
         "current_todos",
         "git_state",
+        "runtime_state",
     }
 
 
@@ -99,12 +101,37 @@ def test_get_system_prompt_caches_same_context():
         memory="memory",
         current_todos=[],
         git_state="git",
+        runtime_state={"current_goal": "task"},
     )
 
     first = get_system_prompt(context)
     second = get_system_prompt(context)
 
     assert first is second
+
+
+def test_structured_runtime_state_is_injected_independently_of_message_history(tmp_path):
+    save_runtime_state(
+        tmp_path,
+        RuntimeState(
+            current_goal="old goal",
+            user_constraints=["Do not modify CI"],
+            allowed_files=["agent.py"],
+            test_results=[{"command": "pytest", "ok": True}],
+        ),
+    )
+
+    context = update_context(
+        repo_root=tmp_path,
+        messages=[{"role": "user", "content": "continue implementation"}],
+        enabled_tools=["read_file"],
+    )
+    prompt = assemble_system_prompt(context)
+
+    assert "Authoritative runtime state (never compacted):" in prompt
+    assert "Do not modify CI" in prompt
+    assert "agent.py" in prompt
+    assert "pytest" in prompt
 
 
 class TwoTurnMessages:

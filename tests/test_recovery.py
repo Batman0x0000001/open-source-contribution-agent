@@ -10,6 +10,7 @@ from osc_agent.harness.recovery import (
     DEFAULT_MAX_TOKENS,
     ESCALATED_MAX_TOKENS,
     RecoveryState,
+    classify_model_error,
     is_overloaded_error,
     is_prompt_too_long_error,
     is_rate_limit_error,
@@ -31,6 +32,8 @@ def test_error_classifiers():
     assert is_prompt_too_long_error(RuntimeError("prompt_too_long"))
     assert is_rate_limit_error(RuntimeError("429 rate limit"))
     assert is_overloaded_error(RuntimeError("529 overloaded"))
+    assert classify_model_error(RuntimeError("401 authentication failed")) == "AUTHENTICATION_ERROR"
+    assert classify_model_error(RuntimeError("connection timeout")) == "NETWORK_ERROR"
 
 
 def test_with_retry_handles_rate_limit_without_crashing(tmp_path):

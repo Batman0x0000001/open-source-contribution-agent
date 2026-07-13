@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+
+import json
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -166,8 +168,9 @@ def test_agent_loop_exposes_subagent_and_parent_receives_only_summary(tmp_path):
 
     assert response.stop_reason == "end_turn"
     tool_result = messages[2]["content"][0]["content"]
-    assert "Summary only." in tool_result
-    assert "toolu_main_1" not in tool_result
+    payload = json.loads(tool_result)
+    assert "Summary only." in payload["summary"]
+    assert payload["call_id"] == "toolu_main_1"
     assert {tool["name"] for tool in TOOLS} >= {"subagent", "todo_write"}
     assert "subagent" not in {tool["name"] for tool in SUBAGENT_TOOLS}
 

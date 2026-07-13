@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from osc_agent.harness.memory import memory_prompt
+from osc_agent.harness.runtime_state import refresh_runtime_state
 from osc_agent.harness.todo import current_todos
 from osc_agent.skills.registry import list_skill_catalog, suggest_skills_for_repo
 from osc_agent.tools.git import git_status
@@ -38,6 +39,7 @@ class PromptContext:
     memory: str
     current_todos: list[dict[str, str]]
     git_state: str
+    runtime_state: dict[str, Any]
 
 
 PROMPT_SECTIONS = {
@@ -58,6 +60,7 @@ PROMPT_SECTIONS = {
     "memory": "Persistent memory:\n{memory}",
     "current_todos": "Current todos:\n{current_todos}",
     "git_state": "Git state:\n{git_state}",
+    "runtime_state": "Authoritative runtime state (never compacted):\n{runtime_state}",
 }
 
 _last_context_key: str | None = None
@@ -74,6 +77,7 @@ def update_context(
     current_task = _latest_user_text(messages)
     catalog = list_skill_catalog()
     suggestions = suggest_skills_for_repo(repo_root)
+    runtime_state = refresh_runtime_state(repo_root, current_task)
     return PromptContext(
         repo_root=str(repo_root.resolve()),
         current_task=current_task or "(no explicit task in current messages)",
@@ -85,6 +89,7 @@ def update_context(
         memory=memory_prompt(repo_root, query=current_task),
         current_todos=current_todos(),
         git_state=git_status(repo_root=repo_root),
+        runtime_state=asdict(runtime_state),
     )
 
 
@@ -106,6 +111,9 @@ def assemble_system_prompt(context: PromptContext | Path, *, current_task: str =
         PROMPT_SECTIONS["memory"].format(memory=context.memory),
         PROMPT_SECTIONS["current_todos"].format(current_todos=_format_todos(context.current_todos)),
         PROMPT_SECTIONS["git_state"].format(git_state=context.git_state),
+        PROMPT_SECTIONS["runtime_state"].format(
+            runtime_state=json.dumps(context.runtime_state, ensure_ascii=False, indent=2, default=str)
+        ),
         (
             "Contribution rule: before modifying files, call todo_write with a plan that covers understanding "
             "the task, reading contribution guidance, locating files, editing, testing, and drafting the PR. "

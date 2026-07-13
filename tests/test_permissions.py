@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -98,7 +100,8 @@ def test_pre_tool_hook_blocks_dangerous_command_before_handler(tmp_path):
 
     tool_results = messages[2]["content"]
     assert isinstance(tool_results, list)
-    assert tool_results[0]["content"].startswith("Permission denied:")
+    result = json.loads(tool_results[0]["content"])
+    assert result["error_code"] == "PERMISSION_DENIED"
 
 
 def test_custom_hooks_do_not_replace_default_permission_hook(tmp_path):
@@ -118,7 +121,8 @@ def test_custom_hooks_do_not_replace_default_permission_hook(tmp_path):
 
     tool_results = messages[2]["content"]
     assert isinstance(tool_results, list)
-    assert tool_results[0]["content"].startswith("Permission denied:")
+    result = json.loads(tool_results[0]["content"])
+    assert result["error_code"] == "PERMISSION_DENIED"
 
 
 def test_post_tool_hook_writes_trace_and_stop_summary(tmp_path):
@@ -154,7 +158,7 @@ def test_ask_permission_runs_handler_when_user_confirms(tmp_path):
 
     tool_results = messages[2]["content"]
     assert isinstance(tool_results, list)
-    assert tool_results[0]["content"] == "approved: pip install demo"
+    assert json.loads(tool_results[0]["content"])["summary"] == "approved: pip install demo"
     trace_text = trace_path(tmp_path).read_text(encoding="utf-8")
     assert '"event": "permission_confirmation"' in trace_text
     assert '"approved": true' in trace_text
@@ -175,6 +179,7 @@ def test_ask_permission_blocks_handler_when_user_rejects(tmp_path):
 
     tool_results = messages[2]["content"]
     assert isinstance(tool_results, list)
-    assert tool_results[0]["content"].startswith("Permission required:")
+    result = json.loads(tool_results[0]["content"])
+    assert result["error_code"] == "PERMISSION_REQUIRED"
     trace_text = trace_path(tmp_path).read_text(encoding="utf-8")
     assert '"approved": false' in trace_text

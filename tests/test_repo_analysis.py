@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from osc_agent.tools.repo import analyze_architecture_dimensions, detect_entrypoints, find_functions, repo_tree
+from osc_agent.tools.repo import (
+    analyze_architecture_dimensions,
+    analyze_python_repository,
+    detect_entrypoints,
+    detect_repository_profile,
+    find_functions,
+    repo_tree,
+)
 
 
 def test_repo_tree_limits_depth_and_skips_cache(tmp_path):
@@ -30,3 +37,33 @@ def test_analyze_architecture_dimensions_marks_missing_locations(tmp_path):
 
     assert len(rows) == 7
     assert any(row["location"] == "未定位到具体实现" for row in rows)
+
+
+def test_python_analysis_builds_import_reference_test_and_call_evidence(tmp_path):
+    (tmp_path / "agent.py").write_text(
+        "import json\n\ndef helper():\n    return 1\n\ndef run_agent():\n    return helper()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_agent.py").write_text(
+        "from agent import run_agent\n\ndef test_run_agent():\n    assert run_agent() == 1\n",
+        encoding="utf-8",
+    )
+
+    analysis = analyze_python_repository(repo_root=tmp_path)
+
+    assert analysis["imports"]["agent.py"] == ["json"]
+    assert any(item["name"] == "run_agent" and item["content_hash"] for item in analysis["definitions"])
+    assert analysis["references"]["helper"]
+    assert analysis["test_mapping"]["agent.py"] == ["tests/test_agent.py"]
+    assert "helper" in analysis["call_expansion"]["agent.py::run_agent"]
+
+
+def test_repository_profile_accepts_agent_llm_python_project(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='llm-agent'\n", encoding="utf-8")
+    (tmp_path / "agent.py").write_text("class Agent:\n    pass\n", encoding="utf-8")
+
+    profile = detect_repository_profile(repo_root=tmp_path)
+
+    assert profile["supported"] is True
+    assert profile["language"] == "python"

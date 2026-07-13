@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -11,10 +12,14 @@ from osc_agent.agent_loop import agent_loop
 from osc_agent.config import Settings, create_anthropic_client, load_settings
 from osc_agent.harness.contribution_workflow import (
     ContributionRun,
+    configure_run,
     design_stage,
     discover_stage,
     draft_pr_stage,
     execute_implementation_stage,
+    load_run,
+    record_test_waiver,
+    update_design_contract,
 )
 from osc_agent.harness.gates import GateResult, gate_design, gate_discover, gate_implementation
 from osc_agent.harness.worktree import create_worktree, worktree_path
@@ -111,6 +116,48 @@ def contribute_design(
     _print_artifact(run, "02_design.md")
 
 
+@contribute_app.command("update-design")
+def contribute_update_design(
+    repo: Annotated[
+        Path,
+        typer.Option("--repo", exists=True, file_okay=False, dir_okay=True, resolve_path=True),
+    ],
+    run_id: Annotated[str, typer.Option("--run-id")],
+    allow_file: Annotated[list[str] | None, typer.Option("--allow-file")] = None,
+    allow_new_dir: Annotated[list[str] | None, typer.Option("--allow-new-dir")] = None,
+    target_symbol: Annotated[list[str] | None, typer.Option("--target-symbol")] = None,
+    test_command: Annotated[list[str] | None, typer.Option("--test-command")] = None,
+    max_files: Annotated[int | None, typer.Option("--max-files", min=1)] = None,
+    max_diff_lines: Annotated[int | None, typer.Option("--max-diff-lines", min=1)] = None,
+) -> None:
+    run = load_run(repo_root=repo, run_id=run_id)
+    design_path = Path(run.artifacts_dir) / "02_design.json"
+    design = json.loads(design_path.read_text(encoding="utf-8"))
+    updates: dict[str, Any] = {}
+    if allow_file is not None:
+        updates["allowed_files"] = allow_file
+        updates["files_to_modify"] = allow_file
+        updates["impact_area"] = allow_file
+    if allow_new_dir is not None:
+        updates["allowed_new_dirs"] = allow_new_dir
+    if target_symbol is not None:
+        updates["target_symbols"] = target_symbol
+    if test_command is not None:
+        updates["tests_to_run"] = test_command
+        updates["acceptance_checks"] = [
+            {"criterion": f"Command succeeds: {command}", "command": command, "manual_check": False}
+            for command in test_command
+        ] or design.get("acceptance_checks", [])
+    if max_files is not None:
+        updates["max_changed_files"] = max_files
+    if max_diff_lines is not None:
+        updates["max_diff_lines"] = max_diff_lines
+    if not updates:
+        raise typer.BadParameter("provide at least one design contract option to update")
+    run = update_design_contract(repo_root=repo, run_id=run_id, updates=updates)
+    _print_artifact(run, "02_design.md")
+
+
 @contribute_app.command("implement")
 def contribute_implement(
     repo: Annotated[
@@ -118,10 +165,22 @@ def contribute_implement(
         typer.Option("--repo", exists=True, file_okay=False, dir_okay=True, resolve_path=True),
     ],
     run_id: Annotated[str, typer.Option("--run-id")],
+    max_rounds: Annotated[int | None, typer.Option("--max-rounds", min=1)] = None,
+    max_tokens: Annotated[int | None, typer.Option("--max-tokens", min=1)] = None,
+    deadline_seconds: Annotated[int | None, typer.Option("--deadline-seconds", min=1)] = None,
+    max_files: Annotated[int | None, typer.Option("--max-files", min=1)] = None,
+    max_diff_lines: Annotated[int | None, typer.Option("--max-diff-lines", min=1)] = None,
+    test_waiver_reason: Annotated[str | None, typer.Option("--test-waiver-reason")] = None,
 ) -> None:
-    _confirm_clean_or_continue(repo)
+    settings = _settings_with_overrides(
+        load_settings(), max_rounds, max_tokens, deadline_seconds, max_files, max_diff_lines
+    )
+    configure_run(repo_root=repo, run_id=run_id, settings=settings)
+    _require_clean_repository(repo)
     work_repo = _create_run_worktree(repo=repo, run_id=run_id)
-    run = _execute_implementation(work_repo, run_id)
+    run = _execute_implementation(work_repo, run_id, settings=settings)
+    if test_waiver_reason:
+        run = record_test_waiver(repo_root=work_repo, run_id=run_id, reason=test_waiver_reason)
     _print_gate(gate_implementation(Path(run.artifacts_dir), work_repo))
     _print_artifact(run, "03_implementation_report.md")
 
@@ -164,8 +223,17 @@ def contribute_run(
             help="Use LLM analysis (requires ANTHROPIC_API_KEY); use --no-llm for local fallback.",
         ),
     ] = True,
+    max_rounds: Annotated[int | None, typer.Option("--max-rounds", min=1)] = None,
+    max_tokens: Annotated[int | None, typer.Option("--max-tokens", min=1)] = None,
+    deadline_seconds: Annotated[int | None, typer.Option("--deadline-seconds", min=1)] = None,
+    max_files: Annotated[int | None, typer.Option("--max-files", min=1)] = None,
+    max_diff_lines: Annotated[int | None, typer.Option("--max-diff-lines", min=1)] = None,
+    test_waiver_reason: Annotated[str | None, typer.Option("--test-waiver-reason")] = None,
 ) -> None:
-    client, settings = _stage_client() if use_llm else (None, None)
+    client, loaded_settings = _stage_client() if use_llm else (None, load_settings())
+    settings = _settings_with_overrides(
+        loaded_settings, max_rounds, max_tokens, deadline_seconds, max_files, max_diff_lines
+    )
 
     run = discover_stage(repo_root=repo, repo_url=repo_url, issues_file=issues_file, client=client, settings=settings)
     _require_gate(gate_discover(Path(run.artifacts_dir)))
@@ -180,9 +248,11 @@ def contribute_run(
         typer.echo(f"Stopped after design. Resume with run id: {run.run_id}")
         return
 
-    _confirm_clean_or_continue(repo)
+    _require_clean_repository(repo)
     work_repo = _create_run_worktree(repo=repo, run_id=run.run_id)
-    run = _execute_implementation(work_repo, run.run_id)
+    run = _execute_implementation(work_repo, run.run_id, settings=settings)
+    if test_waiver_reason:
+        run = record_test_waiver(repo_root=work_repo, run_id=run.run_id, reason=test_waiver_reason)
     _require_gate(gate_implementation(Path(run.artifacts_dir), work_repo))
     _print_artifact(run, "03_implementation_report.md")
 
@@ -216,11 +286,15 @@ def _run_single_task(*, repo: Path, task: str) -> None:
     _print_final_text(_run_single_task_capture(repo=repo, task=task))
 
 
-def _run_single_task_capture(*, repo: Path, task: str) -> object:
-    settings = load_settings()
-    client = create_anthropic_client(settings)
+def _run_single_task_capture(
+    *, repo: Path, task: str, settings: Settings | None = None, client: Any | None = None
+) -> object:
+    settings = settings or load_settings()
+    client = client or create_anthropic_client(settings)
     messages: list[dict[str, object]] = []
-    _run_agent_turn(repo=repo, messages=messages, query=task, client=client, settings=settings)
+    result = _run_agent_turn(repo=repo, messages=messages, query=task, client=client, settings=settings)
+    if result.status.value != "SUCCESS":
+        raise RuntimeError(f"{result.status.value}: {result.reason}")
     return messages[-1]["content"]
 
 
@@ -231,12 +305,12 @@ def _run_agent_turn(
     query: str,
     client: Any,
     settings: Settings,
-) -> None:
+) -> Any:
     messages.append({"role": "user", "content": query})
     log_dir = repo / ".osc_agent"
     log_dir.mkdir(exist_ok=True)
     with (log_dir / "agent.log").open("a", encoding="utf-8") as log:
-        agent_loop(
+        return agent_loop(
             messages,
             client=client,
             settings=settings,
@@ -259,10 +333,15 @@ def _stage_client() -> tuple[Any | None, Settings | None]:
         raise typer.BadParameter(str(exc)) from exc
 
 
-def _execute_implementation(repo: Path, run_id: str) -> ContributionRun:
+def _execute_implementation(repo: Path, run_id: str, *, settings: Settings | None = None) -> ContributionRun:
+    active_settings = settings or load_settings()
+    client = create_anthropic_client(active_settings)
+
     def run_step(stage: str, prompt: str) -> str:
         typer.echo(f"[implementation:{stage}]")
-        return _content_to_text(_run_single_task_capture(repo=repo, task=prompt))
+        return _content_to_text(
+            _run_single_task_capture(repo=repo, task=prompt, settings=active_settings, client=client)
+        )
 
     try:
         return execute_implementation_stage(repo_root=repo, run_id=run_id, run_step=run_step)
@@ -270,13 +349,19 @@ def _execute_implementation(repo: Path, run_id: str) -> ContributionRun:
         raise typer.BadParameter(str(exc)) from exc
 
 
-def _confirm_clean_or_continue(repo: Path) -> None:
+def _require_clean_repository(repo: Path) -> None:
     status = git_status(repo_root=repo)
-    if status != "(no output)" and not typer.confirm("Working tree has local changes. Continue?", default=False):
-        raise typer.Abort()
+    external = [line for line in status.splitlines() if ".osc_agent/" not in line.replace("\\", "/")]
+    if status != "(no output)" and any(line.strip() for line in external):
+        raise typer.BadParameter("Working tree must be clean before creating an implementation worktree.")
 
 
 def _create_run_worktree(*, repo: Path, run_id: str) -> Path:
+    run = load_run(repo_root=repo, run_id=run_id)
+    from osc_agent.tools.git import git_head
+
+    if git_head(repo_root=repo).strip() != run.base_commit_sha:
+        raise typer.BadParameter("STALE_RUN: repository HEAD differs from the saved base commit.")
     name = f"contribution-{run_id}"[:64]
     result = create_worktree(repo_root=repo, name=name, task_id="")
     if result.startswith("Error:") or result.startswith("Git error:"):
@@ -300,7 +385,27 @@ def _copy_run_artifacts(source_repo: Path, work_repo: Path, run_id: str) -> None
     payload = json.loads(run_path.read_text(encoding="utf-8"))
     payload["repo_root"] = str(work_repo.resolve())
     payload["artifacts_dir"] = str(target.resolve())
-    run_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp = run_path.with_name(f".{run_path.name}.tmp")
+    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp.replace(run_path)
+
+
+def _settings_with_overrides(
+    settings: Settings,
+    max_rounds: int | None,
+    max_tokens: int | None,
+    deadline_seconds: int | None,
+    max_files: int | None,
+    max_diff_lines: int | None,
+) -> Settings:
+    return replace(
+        settings,
+        max_agent_rounds=max_rounds or settings.max_agent_rounds,
+        max_total_tokens=max_tokens or settings.max_total_tokens,
+        agent_deadline_seconds=deadline_seconds or settings.agent_deadline_seconds,
+        max_changed_files=max_files or settings.max_changed_files,
+        max_diff_lines=max_diff_lines or settings.max_diff_lines,
+    )
 
 
 def _require_gate(result: GateResult) -> None:

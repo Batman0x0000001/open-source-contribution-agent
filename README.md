@@ -1,115 +1,141 @@
-# Open Source Contribution Agent Harness
+# Agent/LLM Python Open Source Contribution Agent
 
-This project is a staged Python CLI implementation of an open source contribution agent harness.
+A Python 3.10+ CLI harness that constrains an Anthropic-compatible coding agent into an auditable contribution workflow for Agent and LLM Python repositories.
 
+The project focuses on local analysis, scoped implementation, deterministic validation, and local PR-draft generation. GitHub access remains read-only: the CLI never pushes, comments, assigns issues, or creates a remote pull request.
 
-## OpenSourcePR 1-4 Workflow
+## Installation
 
-This upgrade turns the four OpenSourcePR documents into a resumable contribution workflow:
-
-1. `discover`: find contribution entry points from repository structure, issues, and architecture dimensions.
-2. `design`: turn a selected direction into a scoped technical plan.
-3. `implement`: create an isolated worktree, prepare todo/task state, and run controlled understanding, editing, and verification substeps.
-4. `draft-pr`: generate a full PR draft with Problem, Solution, Changes, Testing, and Notes for Reviewer.
-
-The workflow stores artifacts under `.osc_agent/contribution_runs/<run_id>/`:
-
-```text
-run.json
-01_discover.md
-01_discover.json
-01_discover_agent_prompt.md
-02_design.md
-02_design.json
-02_design_agent_prompt.md
-03_implementation_report.md
-04_pr_draft.md
+```sh
+python -m pip install -r requirements.txt
+python -m pip install -e .
+osc-agent --help
 ```
 
-New CLI commands:
+Copy `.env.example` to `.env` and set `ANTHROPIC_API_KEY`. `GITHUB_TOKEN` is optional and is only used for read-only Issue, Timeline, linked-PR, and recent-commit queries.
+
+## Contribution workflow
+
+```text
+clean repository + base commit
+  -> discover -> discover gate
+  -> choose direction -> design -> design gate
+  -> isolated worktree
+  -> understanding -> READY_TO_EDIT
+  -> edit -> deterministic scope validation
+  -> execute verification commands
+  -> implementation gate
+  -> local PR draft
+```
+
+The four stages are:
+
+1. `discover`: verify that the target is an Agent/LLM Python repository, collect Issue and Python AST evidence, detect linked open PRs, and rank candidates with explainable `HIGH`, `MEDIUM`, `LOW`, or `REJECT` levels.
+2. `design`: persist the approved files, allowed new directories, forbidden paths, symbols, source hashes, acceptance checks, assumptions, impact area, and change budgets as structured JSON.
+3. `implement`: create a worktree at the saved base commit, enforce the understanding/edit/verification sequence, compare the real diff with the design, and execute verification commands while recording exit codes.
+4. `draft-pr`: generate a local Markdown draft only after scope, repository consistency, and verification gates succeed.
+
+Common commands:
 
 ```sh
 osc-agent contribute discover --repo <local_path> --repo-url <github_url>
 osc-agent contribute discover --repo <local_path> --repo-url <github_url> --issues-file issues.json
 osc-agent contribute design --repo <local_path> --run-id <id> --direction "<direction>"
+osc-agent contribute update-design --repo <local_path> --run-id <id> --allow-file osc_agent/example.py --test-command "python -m pytest tests/test_example.py"
 osc-agent contribute implement --repo <local_path> --run-id <id>
 osc-agent contribute draft-pr --repo <local_path> --run-id <id>
 osc-agent contribute run --repo <local_path> --repo-url <github_url>
 ```
 
-LLM analysis is enabled by default and requires `ANTHROPIC_API_KEY` in the environment or `.env`.
-Use `--no-llm` on `discover`, `design`, `draft-pr`, or `run` to select deterministic local generation for those
-analysis stages. The `implement` stage always runs the Anthropic-backed agent loop, so `contribute implement` and a
-complete `contribute run --no-llm` still require valid Anthropic configuration. `--no-llm` is therefore not a fully
-offline end-to-end mode.
+The source repository must have at least one commit and no uncommitted project changes. Runtime files under `.osc_agent/` are ignored by this cleanliness check. Existing runs use Schema v2; older run files are intentionally rejected instead of migrated.
 
-The GitHub issue reader is read-only. It can fetch open issues with the standard library and `GITHUB_TOKEN` when present, but it never comments, assigns, pushes, or opens pull requests. If network access fails, use `--issues-file` with a JSON object containing `issues` and optional `comments_by_issue`.
+`--no-llm` selects deterministic generation for discovery, design, and PR drafting. Implementation still uses the Anthropic-compatible agent loop, so it is not a fully offline end-to-end mode.
 
-OpenSourcePR workflow operation steps:
+## Runtime budgets and gates
 
-1. Parse or fetch candidate issues with read-only GitHub APIs.
-2. Build a depth=3 repository tree, detect entry points, and locate functions/classes for the seven architecture dimensions.
-3. Persist `discover` artifacts and Top 3 contribution directions.
-4. Resume by `run_id`, select a direction, and persist the technical design artifact.
-5. Validate discover and design artifacts when using the end-to-end `run` command.
-6. Before implementation, inspect local git status, ask before continuing with existing changes, and create an isolated worktree for the run.
-7. Prepare todo state, a persistent task graph, and the initial implementation report.
-8. Run the implementation controller in three ordered substeps:
-   - `understanding`: inspect the approved scope without editing; execution continues only when the agent returns `READY_TO_EDIT`.
-   - `edit`: make the scoped code changes using the confirmed understanding and saved design.
-   - `verification`: run focused checks and report exact commands and results without committing, pushing, or opening a PR.
-9. Save all three outputs in `03_implementation_report.md` and apply the implementation quality gate.
-10. Generate a workflow-aware PR draft from the saved artifacts and current diff.
+Default limits are:
 
-The end-to-end control flow is:
+| Limit | Default | Environment variable | CLI override |
+|---|---:|---|---|
+| Model rounds | 30 | `OSC_AGENT_MAX_ROUNDS` | `--max-rounds` |
+| Input + output tokens | 200,000 | `OSC_AGENT_MAX_TOKENS` | `--max-tokens` |
+| Agent deadline | 1,800 seconds | `OSC_AGENT_DEADLINE_SECONDS` | `--deadline-seconds` |
+| Repeated action threshold | 3 | `OSC_AGENT_REPEAT_ACTION_LIMIT` | — |
+| Consecutive tool failures | 3 | `OSC_AGENT_FAILURE_LIMIT` | — |
+| No-progress threshold | 6 | `OSC_AGENT_NO_PROGRESS_LIMIT` | — |
+| Changed files | 5 | `OSC_AGENT_MAX_CHANGED_FILES` | `--max-files` |
+| Added + deleted lines | 400 | `OSC_AGENT_MAX_DIFF_LINES` | `--max-diff-lines` |
+
+Agent runs end with one of these deterministic statuses:
 
 ```text
-discover -> discover gate -> choose direction -> design -> design gate
-         -> confirm implementation -> isolated worktree
-         -> understanding -> READY_TO_EDIT checkpoint -> edit -> verification
-         -> implementation gate -> draft-pr
+SUCCESS
+FAILED_VALIDATION
+FAILED_BUDGET
+FAILED_TOOL
+BLOCKED_NEEDS_USER
+OUT_OF_SCOPE
+STALE_RUN
 ```
 
-Standalone `discover`, `design`, and `implement` commands generate their stage output but do not enforce every gate in
-the same way as `contribute run`. Use `contribute run` when you want the complete gated workflow.
-
-Verification:
+The implementation gate blocks PR drafting when the base commit or saved artifacts drift, files fall outside the approved scope, forbidden paths change, change budgets are exceeded, tests fail, or no verification command was executed. A task with no applicable automated test may continue only with an audited waiver:
 
 ```sh
-python -m pytest tests/test_github_tools.py tests/test_repo_analysis.py tests/test_contribution_workflow.py tests/test_contribute_cli.py tests/test_cli.py tests/test_pr_draft.py --basetemp .pytest-opensourcepr-focused
-python -m py_compile osc_agent/cli.py osc_agent/agent_loop.py osc_agent/tools/github.py osc_agent/tools/repo.py osc_agent/tools/pr.py osc_agent/harness/contribution_workflow.py
-python -m pytest tests --basetemp .pytest-opensourcepr-all
+osc-agent contribute implement \
+  --repo <local_path> \
+  --run-id <id> \
+  --test-waiver-reason "Documentation-only change; links checked manually"
 ```
 
-## OpenSourcePR Workflow Quality Upgrade
+Failures preserve the worktree, diff, tool trace, and diagnostic artifacts for inspection; the CLI does not automatically roll them back.
 
-This follow-up makes the four-step workflow closer to how a careful open source contributor works:
+## Artifacts and recovery
 
-1. `discover` writes an `01_discover_agent_prompt.md` evidence prompt and uses LLM analysis by default, with an explicit `--no-llm` fallback.
-2. `design` writes an `02_design_agent_prompt.md` prompt and uses the selected direction to generate a focused technical design.
-3. `implement` prepares todo and persistent task state, then enforces the `understanding -> edit -> verification` sequence through the workflow layer. Editing cannot begin until the understanding output contains `READY_TO_EDIT`.
-4. `draft-pr` now extracts Testing evidence from the implementation report and includes reviewer notes tied to the saved workflow artifacts.
+Each run is stored under `.osc_agent/contribution_runs/<run_id>/`:
 
-Use LLM analysis when you want the workflow to perform deeper issue and design review:
+```text
+run.json
+01_discover.json
+01_discover.md
+01_discover_agent_prompt.md
+02_design.json
+02_design.md
+02_design_agent_prompt.md
+03_implementation.json
+03_implementation_report.md
+04_pr_draft.md
+metrics.json
+metrics.md
+```
+
+JSON is the source of truth and Markdown is rendered from it. State writes use a temporary file plus atomic replacement. The run state records the Schema version, base commit, configuration snapshot, Issue snapshot time, stage states, input/output hashes, critical file hashes, metrics, and final status. Resume checks reject changed commits, evidence files, or stage artifacts as `STALE_RUN`.
+
+An additional `.osc_agent/runtime_state.json` keeps the current goal, user constraints, allowed and forbidden scope, verified facts, plan, modified files, test results, failed strategies, and unresolved questions outside the compactable message history. This state is injected into every model round.
+
+## Tool and Skill contracts
+
+Every model-visible built-in tool result is serialized with the same protocol: success state, typed error code, retryability, side-effect marker, summary, artifact reference, metadata, call ID, action fingerprint, and latency. The loop uses these fields for failure counting and progress detection rather than parsing free-form error prefixes.
+
+Built-in Markdown Skills use validated YAML Frontmatter with a Schema version, Skill version, applicability, required tools, permissions, and input/output contracts. Skill permissions can only reduce available capabilities; they never override global path, command, workflow, or human-approval checks.
+
+Multi-Agent support is limited to optional parallel read-only analysis. Multiple agents are not allowed to edit the same worktree concurrently.
+
+## Metrics and verification
+
+Each run reports stage duration, model calls, input/output tokens, retries, tool calls and failures, changed files, diff lines, verification commands and exit codes, human confirmations, and the final status.
+
+Run the offline suite and compilation checks with:
 
 ```sh
-osc-agent contribute discover --repo <local_path> --repo-url <github_url> --llm
-osc-agent contribute design --repo <local_path> --run-id <id> --direction "<direction>" --llm
-osc-agent contribute run --repo <local_path> --repo-url <github_url> --llm
+python -m pytest tests
+python -m py_compile osc_agent/*.py osc_agent/harness/*.py osc_agent/tools/*.py osc_agent/skills/*.py
 ```
 
-Quality-upgrade reading order:
-
-1. `osc_agent/harness/contribution_workflow.py`
-2. `osc_agent/cli.py`
-3. `osc_agent/tools/pr.py`
-4. `tests/test_contribution_workflow.py`
-5. `tests/test_pr_draft.py`
-
-Quality-upgrade verification:
+Two real-model contract checks are excluded by default. Run them manually when API usage is intended:
 
 ```sh
-python -m pytest tests/test_contribution_workflow.py tests/test_contribute_cli.py tests/test_pr_draft.py tests/test_cli.py --basetemp .pytest-opensourcepr-upgrade-focused
-python -m py_compile osc_agent/cli.py osc_agent/agent_loop.py osc_agent/tools/github.py osc_agent/tools/repo.py osc_agent/tools/pr.py osc_agent/harness/contribution_workflow.py
-python -m pytest tests --basetemp .pytest-opensourcepr-upgrade-all
+set OSC_AGENT_RUN_LIVE_TESTS=1
+python -m pytest tests/test_live_model.py -m live_model
 ```
+
+The automated suite validates software behavior; it is not a benchmark of contribution quality. Real-repository benchmark results, remote PR creation, OS-level sandboxing, general multi-provider support, and effectiveness claims remain explicitly out of scope for this version.

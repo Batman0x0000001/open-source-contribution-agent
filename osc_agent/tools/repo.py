@@ -13,8 +13,10 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import re
 from pathlib import Path
+from typing import Any
 
 from osc_agent.skills.registry import suggest_skills_for_repo
 
@@ -153,6 +155,8 @@ def collect_repo_evidence_pack(*, repo_root: Path) -> dict[str, object]:
         "overview": inspect_repo(repo_root=repo_root),
         "tree": repo_tree(repo_root=repo_root, depth=3),
         "entrypoints": detect_entrypoints(repo_root=repo_root),
+        "repository_profile": detect_repository_profile(repo_root=repo_root),
+        "python_analysis": analyze_python_repository(repo_root=repo_root),
         "architecture_dimensions": analyze_architecture_dimensions(repo_root=repo_root),
         "symbols": {
             "planning": find_functions(repo_root=repo_root, query="plan")[:10],
@@ -162,6 +166,123 @@ def collect_repo_evidence_pack(*, repo_root: Path) -> dict[str, object]:
             "trace": find_functions(repo_root=repo_root, query="trace")[:10],
         },
     }
+
+
+def detect_repository_profile(*, repo_root: Path) -> dict[str, Any]:
+    root = repo_root.resolve()
+    python_files = [path for path in root.rglob("*.py") if not any(part in _SKIP_DIRS for part in path.parts)]
+    marker_text = ""
+    for name in ("pyproject.toml", "requirements.txt", "README.md"):
+        path = root / name
+        if path.is_file():
+            marker_text += path.read_text(encoding="utf-8", errors="replace")[:20_000].lower()
+    agent_markers = sorted(
+        marker for marker in ("agent", "llm", "anthropic", "openai", "langchain", "langgraph", "tool use")
+        if marker in marker_text or any(marker.replace(" ", "_") in path.name.lower() for path in python_files)
+    )
+    return {
+        "language": "python" if python_files or (root / "pyproject.toml").exists() else "unsupported",
+        "agent_llm_markers": agent_markers,
+        "supported": bool(python_files and agent_markers),
+        "python_file_count": len(python_files),
+    }
+
+
+def analyze_python_repository(*, repo_root: Path, max_call_depth: int = 2) -> dict[str, Any]:
+    root = repo_root.resolve()
+    modules: dict[str, str] = {}
+    imports: dict[str, list[str]] = {}
+    definitions: list[dict[str, Any]] = []
+    references: dict[str, list[dict[str, Any]]] = {}
+    calls: dict[str, set[str]] = {}
+
+    for path in sorted(root.rglob("*.py")):
+        relative = path.relative_to(root)
+        if any(part in _SKIP_DIRS for part in relative.parts):
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        rel = relative.as_posix()
+        module = ".".join(relative.with_suffix("").parts)
+        modules[module] = rel
+        imports[rel] = sorted(_python_imports(tree))
+        current_function: str | None = None
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                kind = "class" if isinstance(node, ast.ClassDef) else "function"
+                snippet = "\n".join(text.splitlines()[node.lineno - 1 : getattr(node, "end_lineno", node.lineno)])
+                definitions.append(
+                    {
+                        "file": rel,
+                        "name": node.name,
+                        "kind": kind,
+                        "line_range": [node.lineno, getattr(node, "end_lineno", node.lineno)],
+                        "content_hash": hashlib.sha256(snippet.encode("utf-8")).hexdigest(),
+                    }
+                )
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    current_function = f"{rel}::{node.name}"
+                    calls[current_function] = {
+                        child.func.id
+                        for child in ast.walk(node)
+                        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+                    }
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                references.setdefault(node.id, []).append({"file": rel, "line": node.lineno})
+
+    tests = [path for path in modules.values() if path.startswith("tests/") or Path(path).name.startswith("test_")]
+    test_mapping: dict[str, list[str]] = {}
+    for definition in definitions:
+        if definition["file"] in tests:
+            continue
+        stem = Path(definition["file"]).stem.lower()
+        matches = [test for test in tests if stem in Path(test).stem.lower()]
+        if matches:
+            test_mapping[definition["file"]] = sorted(set(matches))
+
+    expanded_calls = {
+        caller: _expand_calls(targets, calls, max_depth=max(1, int(max_call_depth)))
+        for caller, targets in calls.items()
+    }
+    return {
+        "imports": imports,
+        "definitions": definitions,
+        "references": references,
+        "test_mapping": test_mapping,
+        "call_expansion": expanded_calls,
+    }
+
+
+def _python_imports(tree: ast.AST) -> set[str]:
+    result: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            result.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            result.add(node.module)
+    return result
+
+
+def _expand_calls(targets: set[str], calls: dict[str, set[str]], *, max_depth: int) -> list[str]:
+    known_by_name: dict[str, list[str]] = {}
+    for qualified in calls:
+        known_by_name.setdefault(qualified.rsplit("::", 1)[-1], []).append(qualified)
+    visited: set[str] = set(targets)
+    frontier = set(targets)
+    for _ in range(max_depth - 1):
+        next_frontier: set[str] = set()
+        for name in frontier:
+            for qualified in known_by_name.get(name, []):
+                next_frontier.update(calls.get(qualified, set()))
+        next_frontier -= visited
+        if not next_frontier:
+            break
+        visited.update(next_frontier)
+        frontier = next_frontier
+    return sorted(visited)
 
 
 _SKIP_DIRS = {".git", ".osc_agent", ".pytest_cache", "__pycache__", "node_modules", ".venv", "dist", "build"}

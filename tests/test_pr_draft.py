@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+
 from osc_agent.agent_loop import build_tool_handlers
 from osc_agent.tools.pr import build_pr_draft, format_pr_draft
 from osc_agent.harness.contribution_workflow import design_stage, discover_stage, record_implementation_result
@@ -59,7 +61,14 @@ def test_workflow_pr_draft_extracts_testing_from_report(tmp_path):
     from osc_agent.tools.pr import draft_pr
 
     (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
-    run = discover_stage(repo_root=tmp_path, repo_url="https://github.com/acme/demo", issues_file=_issues_file(tmp_path))
+    (tmp_path / "agent.py").write_text("def run_agent():\n    return 'ok'\n", encoding="utf-8")
+    issues = _issues_file(tmp_path)
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, check=True, capture_output=True)
+    run = discover_stage(repo_root=tmp_path, repo_url="https://github.com/acme/demo", issues_file=issues)
     design_stage(repo_root=tmp_path, run_id=run.run_id, direction="Improve eval docs")
     record_implementation_result(repo_root=tmp_path, run_id=run.run_id, agent_output="pytest tests\n2 passed")
 
