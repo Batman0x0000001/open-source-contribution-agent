@@ -128,8 +128,13 @@ def pre_tool_permission_hook(context: HookContext, payload: dict[str, Any]) -> P
 def post_tool_trace_hook(context: HookContext, payload: dict[str, Any]) -> None:
     """工具执行后记录名称、参数、输出预览、耗时和错误状态。"""
     context.tool_count += 1
-    output = str(payload.get("output", ""))
-    if output.startswith(("Error:", "Permission denied:", "Permission required:")):
+    raw_output = payload.get("output", "")
+    output = str(raw_output)
+    if isinstance(raw_output, dict) and "ok" in raw_output:
+        failed = not bool(raw_output.get("ok"))
+    else:
+        failed = output.startswith(("Error:", "Permission denied:", "Permission required:", "Git error:"))
+    if failed:
         context.failed_count += 1
 
     tool_name = str(payload.get("tool_name", ""))
@@ -147,7 +152,7 @@ def post_tool_trace_hook(context: HookContext, payload: dict[str, Any]) -> None:
             "arguments": tool_args,
             "output_preview": preview(output),
             "latency_ms": payload.get("latency_ms", 0),
-            "error": output.startswith(("Error:", "Permission denied:", "Permission required:")),
+            "error": failed,
         },
     )
 

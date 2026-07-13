@@ -19,6 +19,7 @@ filter_candidate_issues()
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from http.client import IncompleteRead
 import json
 import os
 import re
@@ -49,8 +50,15 @@ def parse_github_repo(repo_url: str) -> tuple[str, str]:
     return parts[0], repo
 
 
-def fetch_issues(repo_url: str, labels: list[str] | None = None, updated_within_days: int = 60) -> dict[str, Any]:
-    """只读拉取 GitHub issues；失败时返回结构化错误，调用方可改用 --issues-file。"""
+def fetch_issues(repo_url: str, labels: list[str] | None = None, updated_within_days: int = 60, token: str | None = None) -> dict[str, Any]:
+    """只读拉取 GitHub issues；失败时返回结构化错误，调用方可改用 --issues-file。
+
+    Args:
+        repo_url: GitHub 仓库 URL
+        labels: 要筛选的标签列表
+        updated_within_days: 获取最近 N 天内更新的 issues
+        token: GitHub 访问令牌（可选，未提供则从环境变量读取）
+    """
     try:
         owner, repo = parse_github_repo(repo_url)
     except ValueError as exc:
@@ -58,7 +66,7 @@ def fetch_issues(repo_url: str, labels: list[str] | None = None, updated_within_
 
     since = datetime.now(timezone.utc) - timedelta(days=max(int(updated_within_days), 1))
     query = f"?state=open&per_page=100&since={since.isoformat().replace('+00:00', 'Z')}"
-    result = _github_get_json(f"https://api.github.com/repos/{owner}/{repo}/issues{query}")
+    result = _github_get_json(f"https://api.github.com/repos/{owner}/{repo}/issues{query}", token=token)
     if not result["ok"]:
         return {**result, "issues": []}
 
@@ -69,29 +77,49 @@ def fetch_issues(repo_url: str, labels: list[str] | None = None, updated_within_
     return {"ok": True, "issues": issues}
 
 
-def fetch_issue_comments(repo_url: str, issue_number: int) -> dict[str, Any]:
+def fetch_issue_comments(repo_url: str, issue_number: int, token: str | None = None) -> dict[str, Any]:
     """只读拉取单个 issue 评论，用于判断是否已有贡献者认领。"""
     try:
         owner, repo = parse_github_repo(repo_url)
     except ValueError as exc:
         return {"ok": False, "error": str(exc), "comments": []}
 
-    result = _github_get_json(f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments?per_page=100")
+    result = _github_get_json(f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments?per_page=100", token=token)
     if not result["ok"]:
         return {**result, "comments": []}
     return {"ok": True, "comments": result["data"]}
 
 
-def fetch_issue_activity(repo_url: str, issue_number: int) -> dict[str, Any]:
+def fetch_issue(repo_url: str, issue_number: int, token: str | None = None) -> dict[str, Any]:
+    """只读获取单个 Issue，供长流程在进入实现前重新确认远端状态。"""
+    try:
+        owner, repo = parse_github_repo(repo_url)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc), "issue": {}}
+
+    result = _github_get_json(
+        f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}",
+        token=token,
+    )
+    if not result["ok"]:
+        return {**result, "issue": {}}
+    issue = result.get("data") or {}
+    if issue.get("pull_request"):
+        return {"ok": False, "error": "requested number is a pull request", "issue": {}}
+    return {"ok": True, "issue": issue}
+
+
+def fetch_issue_activity(repo_url: str, issue_number: int, token: str | None = None) -> dict[str, Any]:
     """只读检查 Issue 时间线中的关联 PR，并附带仓库近期提交摘要。"""
     try:
         owner, repo = parse_github_repo(repo_url)
     except ValueError as exc:
         return {"ok": False, "error": str(exc), "linked_pull_requests": [], "recent_commits": []}
     timeline = _github_get_json(
-        f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/timeline?per_page=100"
+        f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/timeline?per_page=100",
+        token=token
     )
-    commits = _github_get_json(f"https://api.github.com/repos/{owner}/{repo}/commits?per_page=20")
+    commits = _github_get_json(f"https://api.github.com/repos/{owner}/{repo}/commits?per_page=20", token=token)
     linked: list[dict[str, Any]] = []
     if timeline.get("ok"):
         for event in timeline.get("data") or []:
@@ -204,22 +232,43 @@ def load_issues_file(path: str) -> tuple[list[dict[str, Any]], dict[int | str, l
     raise ValueError("issues file must be a JSON list or an object with issues/comments_by_issue")
 
 
-def _github_get_json(url: str) -> dict[str, Any]:
+def _github_get_json(url: str, token: str | None = None) -> dict[str, Any]:
+    """调用 GitHub API，支持传入 token 或从环境变量读取。"""
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "open-source-contribution-agent",
+        "X-GitHub-Api-Version": "2022-11-28",
     }
-    token = os.getenv("GITHUB_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    # 优先使用传入的 token，否则从环境变量读取
+    github_token = token or os.getenv("GITHUB_TOKEN")
+    if github_token:
+        headers["Authorization"] = f"Bearer {github_token}"
+
     request = Request(url, headers=headers)
     try:
         with urlopen(request, timeout=20) as response:
             return {"ok": True, "data": json.loads(response.read().decode("utf-8"))}
-    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+    except HTTPError as exc:
+        error_msg = f"GitHub API error: HTTP {exc.code}"
+        if exc.code == 401:
+            error_msg += " (Unauthorized - check your GITHUB_TOKEN)"
+        elif exc.code == 403:
+            error_msg += " (Forbidden - likely rate limit exceeded without token)"
+        elif exc.code == 404:
+            error_msg += " (Not Found - check repository URL)"
         return {
             "ok": False,
-            "error": f"GitHub read failed: {exc}. Use --issues-file for offline input.",
+            "error": f"{error_msg}. Use --issues-file for offline input.",
+        }
+    except IncompleteRead as exc:
+        return {
+            "ok": False,
+            "error": f"GitHub API incomplete response (network issue). Retry or use --issues-file.",
+        }
+    except (URLError, TimeoutError, OSError) as exc:
+        return {
+            "ok": False,
+            "error": f"GitHub connection failed: {exc}. Check network or use --issues-file.",
         }
 
 

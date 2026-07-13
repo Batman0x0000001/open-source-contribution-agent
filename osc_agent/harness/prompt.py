@@ -87,7 +87,7 @@ def update_context(
         skill_catalog=catalog,
         suggested_skills=suggestions,
         memory=memory_prompt(repo_root, query=current_task),
-        current_todos=current_todos(),
+        current_todos=current_todos(repo_root),
         git_state=git_status(repo_root=repo_root),
         runtime_state=asdict(runtime_state),
     )

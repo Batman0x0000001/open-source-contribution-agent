@@ -290,10 +290,11 @@ def agent_loop(
     consecutive_failures = 0
     seen_fingerprints: set[str] = set()
     no_progress_calls = 0
+    budget_overrides: set[str] = set()
 
     while True:
         metrics.elapsed_ms = int((monotonic() - started_at) * 1000)
-        budget_reason = _budget_reason(metrics, settings)
+        budget_reason = _budget_reason(metrics, settings, confirm=confirm, overrides=budget_overrides)
         if budget_reason:
             return _finish_run(repo_root, RunStatus.FAILED_BUDGET, budget_reason, metrics, None)
 
@@ -346,7 +347,13 @@ def agent_loop(
         metrics.input_tokens += input_tokens
         metrics.output_tokens += output_tokens
         metrics.elapsed_ms = int((monotonic() - started_at) * 1000)
-        budget_reason = _budget_reason(metrics, settings, check_rounds=False)
+        budget_reason = _budget_reason(
+            metrics,
+            settings,
+            check_rounds=False,
+            confirm=confirm,
+            overrides=budget_overrides,
+        )
         if budget_reason:
             messages.append({"role": "assistant", "content": response.content})
             return _finish_run(repo_root, RunStatus.FAILED_BUDGET, budget_reason, metrics, response)
@@ -517,13 +524,31 @@ def _response_usage(response: Any) -> tuple[int, int]:
     return int(getattr(usage, "input_tokens", 0) or 0), int(getattr(usage, "output_tokens", 0) or 0)
 
 
-def _budget_reason(metrics: RunMetrics, settings: Settings, *, check_rounds: bool = True) -> str | None:
-    if check_rounds and metrics.model_calls >= settings.max_agent_rounds:
-        return f"maximum model rounds reached ({settings.max_agent_rounds})"
-    if metrics.total_tokens >= settings.max_total_tokens:
-        return f"maximum token budget reached ({settings.max_total_tokens})"
-    if metrics.elapsed_ms >= settings.agent_deadline_seconds * 1000:
-        return f"agent deadline reached ({settings.agent_deadline_seconds}s)"
+def _budget_reason(
+    metrics: RunMetrics,
+    settings: Settings,
+    *,
+    check_rounds: bool = True,
+    confirm: Callable[[str], bool] | None = None,
+    overrides: set[str] | None = None,
+) -> str | None:
+    granted = overrides if overrides is not None else set()
+
+    if check_rounds and "rounds" not in granted and metrics.model_calls >= settings.max_agent_rounds:
+        if confirm is not None and confirm(f"已达到最大轮次限制 ({settings.max_agent_rounds})，是否继续执行？"):
+            granted.add("rounds")
+        else:
+            return f"maximum model rounds reached ({settings.max_agent_rounds})"
+    if "tokens" not in granted and metrics.total_tokens >= settings.max_total_tokens:
+        if confirm is not None and confirm(f"已达到 token 预算限制 ({settings.max_total_tokens})，是否继续执行？"):
+            granted.add("tokens")
+        else:
+            return f"maximum token budget reached ({settings.max_total_tokens})"
+    if "deadline" not in granted and metrics.elapsed_ms >= settings.agent_deadline_seconds * 1000:
+        if confirm is not None and confirm(f"已达到时间限制 ({settings.agent_deadline_seconds}s)，是否继续执行？"):
+            granted.add("deadline")
+        else:
+            return f"agent deadline reached ({settings.agent_deadline_seconds}s)"
     return None
 
 

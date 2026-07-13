@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any
@@ -10,8 +9,9 @@ import typer
 
 from osc_agent.agent_loop import agent_loop
 from osc_agent.config import Settings, create_anthropic_client, load_settings
-from osc_agent.harness.contribution_workflow import (
+from osc_agent.workflows.contribution import (
     ContributionRun,
+    bind_run_worktree,
     configure_run,
     design_stage,
     discover_stage,
@@ -20,8 +20,11 @@ from osc_agent.harness.contribution_workflow import (
     load_run,
     record_test_waiver,
     update_design_contract,
+    GateResult,
+    gate_design,
+    gate_discover,
+    gate_implementation,
 )
-from osc_agent.harness.gates import GateResult, gate_design, gate_discover, gate_implementation
 from osc_agent.harness.worktree import create_worktree, worktree_path
 from osc_agent.tools.git import git_status
 from osc_agent.tools.pr import draft_pr
@@ -90,8 +93,25 @@ def contribute_discover(
         ),
     ] = True,
 ) -> None:
-    client, settings = _stage_client() if use_llm else (None, None)
-    run = discover_stage(repo_root=repo, repo_url=repo_url, issues_file=issues_file, client=client, settings=settings)
+    if use_llm:
+        client, settings = _stage_client()
+    else:
+        client, settings = None, load_settings()
+
+    # 检查 GITHUB_TOKEN 配置，避免未授权 API 访问受限
+    if issues_file is None and not settings.github_token:
+        typer.echo("⚠️  Warning: GITHUB_TOKEN not configured", err=True)
+        typer.echo("   Without token: 60 requests/hour | With token: 5,000 requests/hour", err=True)
+        typer.echo("   Set GITHUB_TOKEN in .env or use --issues-file for offline mode", err=True)
+        typer.echo("", err=True)
+
+    run = discover_stage(
+        repo_root=repo,
+        repo_url=repo_url,
+        issues_file=issues_file,
+        client=client,
+        settings=settings,
+    )
     _print_artifact(run, "01_discover.md")
 
 
@@ -181,7 +201,7 @@ def contribute_implement(
     run = _execute_implementation(work_repo, run_id, settings=settings)
     if test_waiver_reason:
         run = record_test_waiver(repo_root=work_repo, run_id=run_id, reason=test_waiver_reason)
-    _print_gate(gate_implementation(Path(run.artifacts_dir), work_repo))
+    _require_gate(gate_implementation(Path(run.artifacts_dir), work_repo))
     _print_artifact(run, "03_implementation_report.md")
 
 
@@ -203,6 +223,67 @@ def contribute_draft_pr(
     client, settings = _stage_client() if use_llm else (None, None)
     run = draft_pr_stage(repo_root=repo, run_id=run_id, client=client, settings=settings)
     _print_artifact(run, "04_pr_draft.md")
+
+
+@contribute_app.command("resume")
+def contribute_resume(
+    repo: Annotated[
+        Path,
+        typer.Option("--repo", exists=True, file_okay=False, dir_okay=True, resolve_path=True),
+    ],
+    run_id: Annotated[str, typer.Option("--run-id")],
+    use_llm: Annotated[bool, typer.Option("--llm/--no-llm")] = True,
+) -> None:
+    """从权威 Run 状态和最近一个持久化 checkpoint 继续工作流。"""
+    run = load_run(repo_root=repo, run_id=run_id)
+    status = (run.stage_status or {}).get(run.stage)
+    client, settings = _stage_client() if use_llm else (None, load_settings())
+
+    if run.stage == "discover":
+        if status != "SUCCEEDED":
+            raise typer.BadParameter("Discovery did not complete; start a new run to refresh repository evidence.")
+        run = design_stage(
+            repo_root=repo,
+            run_id=run_id,
+            direction=run.selected_direction or _default_direction_label(run),
+            client=client,
+            settings=settings,
+        )
+        _print_artifact(run, "02_design.md")
+        return
+
+    if run.stage == "design":
+        if status != "SUCCEEDED":
+            run = design_stage(
+                repo_root=repo,
+                run_id=run_id,
+                direction=run.selected_direction or _default_direction_label(run),
+                client=client,
+                settings=settings,
+            )
+        configure_run(repo_root=repo, run_id=run_id, settings=settings)
+        work_repo = _implementation_repo(repo=repo, run=run)
+        run = _execute_implementation(work_repo, run_id, settings=settings)
+        _print_artifact(run, "03_implementation_report.md")
+        return
+
+    if run.stage == "implement":
+        if status != "SUCCEEDED":
+            work_repo = _implementation_repo(repo=repo, run=run)
+            run = _execute_implementation(work_repo, run_id, settings=settings)
+            _print_artifact(run, "03_implementation_report.md")
+            return
+        active_repo = Path(run.worktree_root or repo)
+        run = draft_pr_stage(repo_root=active_repo, run_id=run_id, client=client, settings=settings)
+        _print_artifact(run, "04_pr_draft.md")
+        return
+
+    if run.stage == "draft_pr" and status != "SUCCEEDED":
+        active_repo = Path(run.worktree_root or repo)
+        run = draft_pr_stage(repo_root=active_repo, run_id=run_id, client=client, settings=settings)
+        _print_artifact(run, "04_pr_draft.md")
+        return
+    typer.echo(f"Run {run_id} is already complete.")
 
 
 @contribute_app.command("run")
@@ -335,9 +416,12 @@ def _stage_client() -> tuple[Any | None, Settings | None]:
 
 def _execute_implementation(repo: Path, run_id: str, *, settings: Settings | None = None) -> ContributionRun:
     active_settings = settings or load_settings()
-    client = create_anthropic_client(active_settings)
+    client: Any | None = None
 
     def run_step(stage: str, prompt: str) -> str:
+        nonlocal client
+        if client is None:
+            client = create_anthropic_client(active_settings)
         typer.echo(f"[implementation:{stage}]")
         return _content_to_text(
             _run_single_task_capture(repo=repo, task=prompt, settings=active_settings, client=client)
@@ -367,27 +451,23 @@ def _create_run_worktree(*, repo: Path, run_id: str) -> Path:
     if result.startswith("Error:") or result.startswith("Git error:"):
         raise typer.BadParameter(f"Could not create implementation worktree: {result}")
     path = worktree_path(repo, name)
-    _copy_run_artifacts(repo, path, run_id)
+    bind_run_worktree(repo_root=repo, run_id=run_id, worktree_root=path)
     typer.echo(f"[worktree] {path}")
     return path
 
 
 def _copy_run_artifacts(source_repo: Path, work_repo: Path, run_id: str) -> None:
-    source = source_repo / ".osc_agent" / "contribution_runs" / run_id
-    target = work_repo / ".osc_agent" / "contribution_runs" / run_id
-    if not source.exists():
-        raise typer.BadParameter(f"Contribution run artifacts not found: {run_id}")
-    if not target.exists():
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(source, target)
+    """兼容旧调用名：现在只创建指向权威 Run 的引用，不再复制状态。"""
+    bind_run_worktree(repo_root=source_repo, run_id=run_id, worktree_root=work_repo)
 
-    run_path = target / "run.json"
-    payload = json.loads(run_path.read_text(encoding="utf-8"))
-    payload["repo_root"] = str(work_repo.resolve())
-    payload["artifacts_dir"] = str(target.resolve())
-    temp = run_path.with_name(f".{run_path.name}.tmp")
-    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temp.replace(run_path)
+
+def _implementation_repo(*, repo: Path, run: ContributionRun) -> Path:
+    if run.worktree_root:
+        worktree = Path(run.worktree_root)
+        if worktree.is_dir():
+            return worktree
+    _require_clean_repository(repo)
+    return _create_run_worktree(repo=repo, run_id=run.run_id)
 
 
 def _settings_with_overrides(

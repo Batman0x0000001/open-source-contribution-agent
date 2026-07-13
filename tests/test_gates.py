@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-from osc_agent.harness.gates import gate_design, gate_discover, gate_implementation
+from osc_agent.workflows.contribution.gates import gate_design, gate_discover, gate_implementation
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@ def test_gate_implementation_passes_with_report(tmp_path):
     (tmp_path / "run.json").write_text(json.dumps({"base_commit_sha": "abc"}), encoding="utf-8")
 
     with patch(
-        "osc_agent.harness.gates.git_head", return_value="abc"
+        "osc_agent.workflows.contribution.gates.git_head", return_value="abc"
     ):
         result = gate_implementation(tmp_path, repo_root=tmp_path)
 
@@ -122,7 +122,7 @@ def test_gate_implementation_blocks_without_test_or_waiver(tmp_path):
     (tmp_path / "run.json").write_text(json.dumps({"base_commit_sha": "abc"}), encoding="utf-8")
 
     with patch(
-        "osc_agent.harness.gates.git_head", return_value="abc"
+        "osc_agent.workflows.contribution.gates.git_head", return_value="abc"
     ):
         result = gate_implementation(tmp_path, repo_root=tmp_path)
 

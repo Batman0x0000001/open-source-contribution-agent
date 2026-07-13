@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 import json
 from copy import deepcopy
@@ -10,7 +11,7 @@ import pytest
 
 from osc_agent.agent_loop import TOOLS, agent_loop
 from osc_agent.config import Settings
-from osc_agent.harness.subagent import SUBAGENT_TOOLS, spawn_subagent
+from osc_agent.harness.subagent import SUBAGENT_TOOLS, run_read_only_bash, spawn_subagent
 from osc_agent.harness.trace import trace_path
 
 
@@ -124,6 +125,31 @@ def test_subagent_bash_is_read_only(tmp_path):
 
     tool_result = messages.calls[1]["messages"][-1]["content"][0]["content"]
     assert tool_result == "Permission denied: subagent bash is read-only"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git status & echo bypassed",
+        "git status > status.txt",
+        "rg --pre malicious pattern",
+        "git diff --output=diff.txt",
+        "rg pattern ../outside",
+    ],
+)
+def test_read_only_bash_rejects_shell_and_write_bypasses(tmp_path, command):
+    result = run_read_only_bash(command, repo_root=tmp_path)
+
+    assert result.startswith("Permission denied:")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_read_only_bash_allows_structured_git_status(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+
+    result = run_read_only_bash("git status --short", repo_root=tmp_path)
+
+    assert not result.startswith(("Error:", "Permission denied:"))
 
 
 class MainAndSubagentMessages:

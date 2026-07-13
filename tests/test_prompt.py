@@ -49,7 +49,7 @@ def test_update_context_uses_real_repo_tools_memory_and_todos(tmp_path):
         description="README changes should be additive.",
         body="Append README updates instead of replacing existing content.",
     )
-    todo_write([{"content": "Read contribution guide", "status": "pending"}])
+    todo_write([{"content": "Read contribution guide", "status": "pending"}], repo_root=tmp_path)
 
     context = update_context(
         repo_root=tmp_path,

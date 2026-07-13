@@ -22,12 +22,15 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+import os
 import secrets
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
 CONTRIBUTION_TASK_STATUSES = {"pending", "in_progress", "completed"}
+_task_lock = threading.RLock()
 
 CONTRIBUTION_TASK_TOOLS = [
     {
@@ -154,16 +157,17 @@ def create_default_task_graph(repo_root: Path) -> list[ContributionTask]:
     ]
     created: list[ContributionTask] = []
     ids_by_subject: dict[str, str] = {}
-    for subject, description, deps in subjects:
-        task = ContributionTask(
-            id=_new_task_id(),
-            subject=subject,
-            description=description,
-            blockedBy=[ids_by_subject[dep] for dep in deps],
-        )
-        save_task(repo_root, task)
-        ids_by_subject[subject] = task.id
-        created.append(task)
+    with _task_lock:
+        for subject, description, deps in subjects:
+            task = ContributionTask(
+                id=_new_task_id(),
+                subject=subject,
+                description=description,
+                blockedBy=[ids_by_subject[dep] for dep in deps],
+            )
+            save_task(repo_root, task)
+            ids_by_subject[subject] = task.id
+            created.append(task)
     return created
 
 
@@ -184,62 +188,83 @@ def get_task(*, repo_root: Path, task_id: str) -> str:
 
 
 def claim_task(*, repo_root: Path, task_id: str, owner: str = "agent") -> str:
-    task = load_task(repo_root, task_id)
-    if task.status != "pending":
-        return f"Task {task.id} is {task.status}, cannot claim"
-    if task.owner:
-        return f"Task {task.id} already owned by {task.owner}"
+    with _task_lock:
+        task = load_task(repo_root, task_id)
+        if task.status != "pending":
+            return f"Task {task.id} is {task.status}, cannot claim"
+        if task.owner:
+            return f"Task {task.id} already owned by {task.owner}"
 
-    blocked_by = blocking_dependencies(repo_root, task)
-    if blocked_by:
-        return f"Task {task.id} is blocked by: {', '.join(blocked_by)}"
+        blocked_by = blocking_dependencies(repo_root, task)
+        if blocked_by:
+            return f"Task {task.id} is blocked by: {', '.join(blocked_by)}"
 
-    task.status = "in_progress"
-    task.owner = owner or "agent"
-    save_task(repo_root, task)
-    return f"Claimed {task.id} ({task.subject})"
+        task.status = "in_progress"
+        task.owner = owner or "agent"
+        save_task(repo_root, task)
+        return f"Claimed {task.id} ({task.subject})"
 
 
-def complete_task(*, repo_root: Path, task_id: str, evidence: list[str] | None = None) -> str:
-    task = load_task(repo_root, task_id)
-    task.status = "completed"
-    if evidence:
-        task.evidence.extend(evidence)
-    save_task(repo_root, task)
+def complete_task(
+    *,
+    repo_root: Path,
+    task_id: str,
+    evidence: list[str] | None = None,
+    owner: str | None = None,
+) -> str:
+    with _task_lock:
+        task = load_task(repo_root, task_id)
+        if task.status != "in_progress":
+            return f"Task {task.id} is {task.status}, cannot complete"
+        if owner is not None and task.owner != owner:
+            return f"Task {task.id} is owned by {task.owner}, not {owner}"
+        task.status = "completed"
+        if evidence:
+            task.evidence.extend(evidence)
+        save_task(repo_root, task)
 
-    unblocked = [
-        candidate.subject
-        for candidate in load_all_tasks(repo_root)
-        if candidate.status == "pending" and candidate.blockedBy and not blocking_dependencies(repo_root, candidate)
-    ]
-    message = f"Completed {task.id} ({task.subject})"
-    if unblocked:
-        message += "\nUnblocked: " + ", ".join(unblocked)
-    return message
+        unblocked = [
+            candidate.subject
+            for candidate in load_all_tasks(repo_root)
+            if candidate.status == "pending" and candidate.blockedBy and not blocking_dependencies(repo_root, candidate)
+        ]
+        message = f"Completed {task.id} ({task.subject})"
+        if unblocked:
+            message += "\nUnblocked: " + ", ".join(unblocked)
+        return message
 
 
 def load_task(repo_root: Path, task_id: str) -> ContributionTask:
-    path = task_path(repo_root, task_id)
-    if not path.exists():
-        raise ValueError(f"task not found: {task_id}")
-    return ContributionTask(**json.loads(path.read_text(encoding="utf-8")))
+    with _task_lock:
+        path = task_path(repo_root, task_id)
+        if not path.exists():
+            raise ValueError(f"task not found: {task_id}")
+        return ContributionTask(**json.loads(path.read_text(encoding="utf-8")))
 
 
 def load_all_tasks(repo_root: Path) -> list[ContributionTask]:
-    directory = ensure_tasks_dir(repo_root)
-    tasks = [
-        ContributionTask(**json.loads(path.read_text(encoding="utf-8")))
-        for path in sorted(directory.glob("*.json"))
-    ]
-    return sorted(tasks, key=lambda task: task.id)
+    with _task_lock:
+        directory = ensure_tasks_dir(repo_root)
+        tasks = [
+            ContributionTask(**json.loads(path.read_text(encoding="utf-8")))
+            for path in sorted(directory.glob("*.json"))
+        ]
+        return sorted(tasks, key=lambda task: task.id)
 
 
 def save_task(repo_root: Path, task: ContributionTask) -> Path:
     if task.status not in CONTRIBUTION_TASK_STATUSES:
         raise ValueError(f"invalid task status: {task.status}")
-    path = task_path(repo_root, task.id)
-    path.write_text(json.dumps(asdict(task), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return path
+    with _task_lock:
+        path = task_path(repo_root, task.id)
+        temp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+        try:
+            temp.write_text(json.dumps(asdict(task), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            os.replace(temp, path)
+        finally:
+            if temp.exists():
+                temp.unlink()
+        return path
 
 
 def blocking_dependencies(repo_root: Path, task: ContributionTask) -> list[str]:
@@ -265,6 +290,6 @@ def _new_task_id() -> str:
 
 def _safe_task_id(task_id: str) -> str:
     cleaned = "".join(ch for ch in task_id if ch.isalnum() or ch in {"_", "-"})
-    if not cleaned:
-        raise ValueError("task_id must contain safe characters")
+    if not cleaned or cleaned != task_id:
+        raise ValueError("task_id may contain only letters, numbers, underscores, or hyphens")
     return cleaned

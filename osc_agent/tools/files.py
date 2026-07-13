@@ -12,9 +12,15 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import stat
+import tempfile
+import threading
 
 from osc_agent.harness.permissions import check_file_write, format_blocked, safe_repo_path
+
+_FILE_WRITE_LOCK = threading.RLock()
 
 FILE_TOOLS = [
     {
@@ -88,9 +94,10 @@ def write_file(*, repo_root: Path, path: str, content: str, enforce_permissions:
             return format_blocked(decision)
 
     try:
-        target = safe_repo_path(repo_root, path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        with _FILE_WRITE_LOCK:
+            target = safe_repo_path(repo_root, path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_text(target, content)
     except (OSError, ValueError) as exc:
         return f"Error: {exc}"
     return f"Wrote {path}"
@@ -111,11 +118,12 @@ def edit_file(
             return format_blocked(decision)
 
     try:
-        target = safe_repo_path(repo_root, path)
-        text = target.read_text(encoding="utf-8")
-        if old_text not in text:
-            return f"Error: old_text not found in {path}"
-        target.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
+        with _FILE_WRITE_LOCK:
+            target = safe_repo_path(repo_root, path)
+            text = target.read_text(encoding="utf-8")
+            if old_text not in text:
+                return f"Error: old_text not found in {path}"
+            _atomic_write_text(target, text.replace(old_text, new_text, 1))
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         return f"Error: {exc}"
     return f"Edited {path}"
@@ -134,3 +142,23 @@ def glob_files(*, repo_root: Path, pattern: str) -> str:
         return f"Error: {exc}"
 
     return "\n".join(sorted(matches)) or "(no matches)"
+
+
+def _atomic_write_text(target: Path, content: str) -> None:
+    """在同一目录写临时文件后替换目标，避免失败时截断原文件。"""
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=target.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if target.exists():
+            temporary.chmod(stat.S_IMODE(target.stat().st_mode))
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)

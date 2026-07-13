@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 from osc_agent.agent_loop import TOOLS, build_tool_handlers
 from osc_agent.harness.tasks import (
@@ -84,6 +85,34 @@ def test_complete_task_records_evidence(tmp_path):
     assert result.startswith("Completed")
     assert task.status == "completed"
     assert task.evidence == ["pytest passed"]
+
+
+def test_complete_task_requires_claim_and_matching_owner(tmp_path):
+    task_id = _task_id(create_task(repo_root=tmp_path, subject="test"))
+
+    assert "is pending, cannot complete" in complete_task(repo_root=tmp_path, task_id=task_id)
+    claim_task(repo_root=tmp_path, task_id=task_id, owner="alice")
+    assert "owned by alice" in complete_task(repo_root=tmp_path, task_id=task_id, owner="bob")
+    assert complete_task(repo_root=tmp_path, task_id=task_id, owner="alice").startswith("Completed")
+
+
+def test_concurrent_claim_has_single_winner(tmp_path):
+    task_id = _task_id(create_task(repo_root=tmp_path, subject="edit"))
+    barrier = threading.Barrier(3)
+    results: list[str] = []
+
+    def claim(owner: str) -> None:
+        barrier.wait()
+        results.append(claim_task(repo_root=tmp_path, task_id=task_id, owner=owner))
+
+    threads = [threading.Thread(target=claim, args=(owner,)) for owner in ("alice", "bob")]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+
+    assert sum(result.startswith("Claimed") for result in results) == 1
 
 
 def test_list_and_get_task_return_readable_state(tmp_path):

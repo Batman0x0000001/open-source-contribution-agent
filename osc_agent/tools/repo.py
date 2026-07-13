@@ -38,7 +38,7 @@ def inspect_repo(*, repo_root: Path) -> str:
     key_files: list[str] = []
     for pattern in key_patterns:
         for path in root.glob(pattern):
-            if path.is_file():
+            if _is_safe_repo_file(root, path):
                 key_files.append(path.relative_to(root).as_posix())
 
     test_entries = []
@@ -89,7 +89,7 @@ def detect_entrypoints(*, repo_root: Path) -> list[str]:
     for path in sorted(root.rglob("*")):
         if any(part in _SKIP_DIRS for part in path.relative_to(root).parts):
             continue
-        if path.is_file() and path.name in names:
+        if _is_safe_repo_file(root, path) and path.name in names:
             matches.append(path.relative_to(root).as_posix())
     return matches
 
@@ -100,7 +100,7 @@ def find_functions(*, repo_root: Path, query: str | None = None) -> list[dict[st
     results: list[dict[str, str]] = []
     needle = (query or "").lower()
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or any(part in _SKIP_DIRS for part in path.relative_to(root).parts):
+        if not _is_safe_repo_file(root, path) or any(part in _SKIP_DIRS for part in path.relative_to(root).parts):
             continue
         if path.suffix == ".py":
             results.extend(_python_symbols(root, path, needle))
@@ -170,11 +170,15 @@ def collect_repo_evidence_pack(*, repo_root: Path) -> dict[str, object]:
 
 def detect_repository_profile(*, repo_root: Path) -> dict[str, Any]:
     root = repo_root.resolve()
-    python_files = [path for path in root.rglob("*.py") if not any(part in _SKIP_DIRS for part in path.parts)]
+    python_files = [
+        path
+        for path in root.rglob("*.py")
+        if _is_safe_repo_file(root, path) and not any(part in _SKIP_DIRS for part in path.relative_to(root).parts)
+    ]
     marker_text = ""
     for name in ("pyproject.toml", "requirements.txt", "README.md"):
         path = root / name
-        if path.is_file():
+        if _is_safe_repo_file(root, path):
             marker_text += path.read_text(encoding="utf-8", errors="replace")[:20_000].lower()
     agent_markers = sorted(
         marker for marker in ("agent", "llm", "anthropic", "openai", "langchain", "langgraph", "tool use")
@@ -198,7 +202,7 @@ def analyze_python_repository(*, repo_root: Path, max_call_depth: int = 2) -> di
 
     for path in sorted(root.rglob("*.py")):
         relative = path.relative_to(root)
-        if any(part in _SKIP_DIRS for part in relative.parts):
+        if any(part in _SKIP_DIRS for part in relative.parts) or not _is_safe_repo_file(root, path):
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         try:
@@ -288,7 +292,18 @@ def _expand_calls(targets: set[str], calls: dict[str, set[str]], *, max_depth: i
 _SKIP_DIRS = {".git", ".osc_agent", ".pytest_cache", "__pycache__", "node_modules", ".venv", "dist", "build"}
 
 
+def _is_safe_repo_file(root: Path, path: Path) -> bool:
+    """只允许读取解析后仍位于仓库内的普通文件。"""
+    try:
+        resolved = path.resolve()
+        return path.is_file() and (resolved == root or root in resolved.parents)
+    except (OSError, RuntimeError):
+        return False
+
+
 def _python_symbols(root: Path, path: Path, needle: str) -> list[dict[str, str]]:
+    if not _is_safe_repo_file(root, path):
+        return []
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     except (SyntaxError, UnicodeDecodeError):
@@ -304,6 +319,8 @@ def _python_symbols(root: Path, path: Path, needle: str) -> list[dict[str, str]]
 
 
 def _text_symbols(root: Path, path: Path, needle: str) -> list[dict[str, str]]:
+    if not _is_safe_repo_file(root, path):
+        return []
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:

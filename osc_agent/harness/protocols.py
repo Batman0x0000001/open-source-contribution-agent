@@ -23,6 +23,9 @@ match_response 校验 request_id + response_type
 from __future__ import annotations
 
 import json
+import os
+import secrets
+import threading
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -37,6 +40,7 @@ PROTOCOL_RESPONSE_TYPES = {
     "plan_approval": "plan_approval_response",
     "write_approval": "write_approval_response",
 }
+_protocol_lock = threading.RLock()
 
 PROTOCOL_TOOLS = [
     {
@@ -155,7 +159,15 @@ def review_plan(*, repo_root: Path, request_id: str, approve: bool, feedback: st
     return result
 
 
-def match_response(*, repo_root: Path, response_type: str, request_id: str, approve: bool) -> str:
+def match_response(
+    *,
+    repo_root: Path,
+    response_type: str,
+    request_id: str,
+    approve: bool,
+    responder: str | None = None,
+    recipient: str | None = None,
+) -> str:
     """按 request_id 和 response_type 匹配响应，防止错误响应更新错误协议。"""
     state = load_protocol_state(repo_root, request_id)
     if state is None:
@@ -163,6 +175,10 @@ def match_response(*, repo_root: Path, response_type: str, request_id: str, appr
     expected = PROTOCOL_RESPONSE_TYPES.get(state.type)
     if response_type != expected:
         return f"Error: response type {response_type} does not match {state.type}"
+    if responder is not None and responder != state.target:
+        return f"Error: response sender {responder} does not match {state.target}"
+    if recipient is not None and recipient != state.sender:
+        return f"Error: response recipient {recipient} does not match {state.sender}"
     return _resolve_state(repo_root, request_id, approve=approve, expected_type=state.type)
 
 
@@ -186,8 +202,18 @@ def route_protocol_message(*, repo_root: Path, agent: str, message: dict[str, An
             response_type=message_type,
             request_id=request_id,
             approve=bool(metadata.get("approve", False)),
+            responder=str(message.get("from_agent", "")),
+            recipient=agent,
         )
     if message_type == "shutdown_request" and request_id:
+        state = load_protocol_state(repo_root, request_id)
+        if (
+            state is None
+            or state.type != "shutdown"
+            or state.sender != str(message.get("from_agent", ""))
+            or state.target != agent
+        ):
+            return "Error: shutdown request does not match a pending protocol"
         _send_response(repo_root, _message_state(message, request_id), "shutdown_response", True, "shutdown accepted")
         append_trace(repo_root, "protocol_shutdown_ack", {"agent": agent, "request_id": request_id})
         return "shutdown"
@@ -195,9 +221,10 @@ def route_protocol_message(*, repo_root: Path, agent: str, message: dict[str, An
 
 
 def load_protocol_state(repo_root: Path, request_id: str) -> ProtocolState | None:
-    for state in _load_states(repo_root):
-        if state.request_id == request_id:
-            return state
+    with _protocol_lock:
+        for state in _load_states(repo_root):
+            if state.request_id == request_id:
+                return state
     return None
 
 
@@ -224,28 +251,30 @@ def _create_state(
         payload=payload,
         created_at=time(),
     )
-    states = _load_states(repo_root)
-    states.append(state)
-    _save_states(repo_root, states)
+    with _protocol_lock:
+        states = _load_states(repo_root)
+        states.append(state)
+        _save_states(repo_root, states)
     append_trace(repo_root, "protocol_request", {"request_id": state.request_id, "type": state.type})
     return state
 
 
 def _resolve_state(repo_root: Path, request_id: str, *, approve: bool, expected_type: str) -> str:
-    states = _load_states(repo_root)
-    for state in states:
-        if state.request_id != request_id:
-            continue
-        if state.type != expected_type:
-            return f"Error: request {request_id} is {state.type}, not {expected_type}"
-        if state.status != "pending":
-            return f"Error: request {request_id} is already {state.status}"
-        state.status = "approved" if approve else "rejected"
-        state.resolved_at = time()
-        _save_states(repo_root, states)
-        append_trace(repo_root, "protocol_response", {"request_id": request_id, "status": state.status})
-        return f"Request {request_id} {state.status}"
-    return f"Error: unknown request {request_id}"
+    with _protocol_lock:
+        states = _load_states(repo_root)
+        for state in states:
+            if state.request_id != request_id:
+                continue
+            if state.type != expected_type:
+                return f"Error: request {request_id} is {state.type}, not {expected_type}"
+            if state.status != "pending":
+                return f"Error: request {request_id} is already {state.status}"
+            state.status = "approved" if approve else "rejected"
+            state.resolved_at = time()
+            _save_states(repo_root, states)
+            append_trace(repo_root, "protocol_response", {"request_id": request_id, "status": state.status})
+            return f"Request {request_id} {state.status}"
+        return f"Error: unknown request {request_id}"
 
 
 def _send_protocol_message(repo_root: Path, state: ProtocolState, message_type: str, content: str) -> None:
@@ -286,32 +315,40 @@ def _message_state(message: dict[str, Any], request_id: str) -> ProtocolState:
 
 
 def _load_states(repo_root: Path) -> list[ProtocolState]:
-    path = protocols_path(repo_root)
-    if not path.exists():
-        return []
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return [
-        ProtocolState(
-            request_id=str(item.get("request_id", "")),
-            type=str(item.get("type", "")),
-            sender=str(item.get("sender", "")),
-            target=str(item.get("target", "")),
-            status=str(item.get("status", "pending")),
-            payload=item.get("payload") if isinstance(item.get("payload"), dict) else {},
-            created_at=float(item.get("created_at", 0)),
-            resolved_at=item.get("resolved_at"),
-        )
-        for item in data.get("requests", [])
-    ]
+    with _protocol_lock:
+        path = protocols_path(repo_root)
+        if not path.exists():
+            return []
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return [
+            ProtocolState(
+                request_id=str(item.get("request_id", "")),
+                type=str(item.get("type", "")),
+                sender=str(item.get("sender", "")),
+                target=str(item.get("target", "")),
+                status=str(item.get("status", "pending")),
+                payload=item.get("payload") if isinstance(item.get("payload"), dict) else {},
+                created_at=float(item.get("created_at", 0)),
+                resolved_at=item.get("resolved_at"),
+            )
+            for item in data.get("requests", [])
+        ]
 
 
 def _save_states(repo_root: Path, states: list[ProtocolState]) -> None:
-    path = protocols_path(repo_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"requests": [asdict(state) for state in states]}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    with _protocol_lock:
+        path = protocols_path(repo_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+        try:
+            temp.write_text(
+                json.dumps({"requests": [asdict(state) for state in states]}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(temp, path)
+        finally:
+            if temp.exists():
+                temp.unlink()
 
 
 def _state_json(state: ProtocolState) -> str:

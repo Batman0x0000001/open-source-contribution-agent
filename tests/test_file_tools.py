@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
+import threading
+import time
 
 from types import SimpleNamespace
 
 from osc_agent.agent_loop import agent_loop
 from osc_agent.config import Settings
+from osc_agent.tools import files as file_tools
 from osc_agent.tools.files import edit_file, glob_files, read_file, write_file
 from osc_agent.tools.repo import inspect_repo
 
@@ -38,6 +42,62 @@ def test_edit_file_returns_error_when_old_text_is_missing(tmp_path):
 
     assert output == "Error: old_text not found in README.md"
     assert (tmp_path / "README.md").read_text(encoding="utf-8") == "hello"
+
+
+def test_write_file_keeps_original_when_atomic_replace_fails(tmp_path, monkeypatch):
+    target = tmp_path / "README.md"
+    target.write_text("original", encoding="utf-8")
+
+    def fail_replace(source, destination):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(file_tools.os, "replace", fail_replace)
+
+    output = write_file(repo_root=tmp_path, path="README.md", content="replacement")
+
+    assert output == "Error: replace failed"
+    assert target.read_text(encoding="utf-8") == "original"
+    assert list(tmp_path.glob(".README.md.*.tmp")) == []
+
+
+def test_concurrent_edits_are_serialized(tmp_path, monkeypatch):
+    target = tmp_path / "README.md"
+    target.write_text("alpha beta", encoding="utf-8")
+    original_atomic_write = file_tools._atomic_write_text
+    counter_lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def slow_atomic_write(path, content):
+        nonlocal active, max_active
+        with counter_lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            time.sleep(0.05)
+            original_atomic_write(path, content)
+        finally:
+            with counter_lock:
+                active -= 1
+
+    monkeypatch.setattr(file_tools, "_atomic_write_text", slow_atomic_write)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda replacement: edit_file(
+                    repo_root=tmp_path,
+                    path="README.md",
+                    old_text=replacement[0],
+                    new_text=replacement[1],
+                ),
+                [("alpha", "one"), ("beta", "two")],
+            )
+        )
+
+    assert results == ["Edited README.md", "Edited README.md"]
+    assert target.read_text(encoding="utf-8") == "one two"
+    assert max_active == 1
 
 
 def test_inspect_repo_reports_key_files_and_tests(tmp_path):

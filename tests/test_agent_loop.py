@@ -3,9 +3,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 import json
 
-from osc_agent.agent_loop import agent_loop
+from osc_agent.agent_loop import _budget_reason, agent_loop
 from osc_agent.config import Settings
-from osc_agent.harness.contracts import RunStatus
+from osc_agent.harness.contracts import RunMetrics, RunStatus
 
 
 class FakeMessages:
@@ -165,6 +165,23 @@ def test_agent_loop_stops_at_deadline_before_model_call(tmp_path):
 
     assert result.status is RunStatus.FAILED_BUDGET
     assert messages.calls == 0
+
+
+def test_budget_override_is_per_run_and_per_limit():
+    settings = Settings(None, None, "test", None, max_agent_rounds=1, max_total_tokens=10)
+    metrics = RunMetrics(model_calls=1, input_tokens=10)
+    overrides: set[str] = set()
+    prompts: list[str] = []
+
+    def confirm_first(prompt: str) -> bool:
+        prompts.append(prompt)
+        return len(prompts) == 1
+
+    reason = _budget_reason(metrics, settings, confirm=confirm_first, overrides=overrides)
+
+    assert reason == "maximum token budget reached (10)"
+    assert overrides == {"rounds"}
+    assert _budget_reason(metrics, settings) == "maximum model rounds reached (1)"
 
 
 def test_agent_loop_stops_after_consecutive_tool_failures(tmp_path):

@@ -14,9 +14,11 @@ import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
+import threading
 from typing import Any
 
 TRACE_WRITE_MODE = "a"
+_trace_lock = threading.Lock()
 
 
 def trace_path(repo_root: Path) -> Path:
@@ -27,14 +29,15 @@ def trace_path(repo_root: Path) -> Path:
 def append_trace(repo_root: Path, event: str, payload: dict[str, Any]) -> None:
     """把单条审计事件追加到 JSONL；每行都是独立 JSON，方便流式读取。"""
     path = trace_path(repo_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "ts": datetime.now(ZoneInfo("Asia/ShangHai")).isoformat(),
         "event": event,
         **payload,
     }
-    with path.open(TRACE_WRITE_MODE, encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    with _trace_lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open(TRACE_WRITE_MODE, encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
 
 
 def preview(value: Any, limit: int = 200) -> str:

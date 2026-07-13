@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,7 +33,15 @@ def draft_pr(
 ) -> str:
     """生成 PR 草稿；传入 run_id 时读取工作流上下文，但始终不提交、不推送、不创建 PR。"""
     if run_id:
-        return _draft_from_workflow(repo_root=repo_root, run_id=run_id, client=client, settings=settings)
+        # 兼容旧调用；workflow 实现本身不再位于 tools。
+        from osc_agent.workflows.contribution.pr_draft import build_workflow_pr_draft
+
+        return build_workflow_pr_draft(
+            repo_root=repo_root,
+            run_id=run_id,
+            client=client,
+            settings=settings,
+        )
     diff = git_diff(repo_root=repo_root)
     status = git_status(repo_root=repo_root)
     return format_pr_draft(build_pr_draft(diff=diff, status=status))
@@ -63,102 +70,6 @@ def format_pr_draft(draft: PRDraft) -> str:
         f"{tests}\n\n"
         "## Risk\n"
         f"- {draft.risk}"
-    )
-
-
-def _draft_from_workflow(
-    *,
-    repo_root: Path,
-    run_id: str,
-    client: Any | None = None,
-    settings: Any | None = None,
-) -> str:
-    artifacts_dir = repo_root / ".osc_agent" / "contribution_runs" / run_id
-    discover = _read_artifact_json(artifacts_dir / "01_discover.json")
-    design = _read_artifact_json(artifacts_dir / "02_design.json")
-    implementation = _read_artifact_text(artifacts_dir / "03_implementation_report.md")
-    diff = git_diff(repo_root=repo_root)
-    status = git_status(repo_root=repo_root)
-    changed_files = _changed_files(diff, status)
-    llm_draft = _try_llm_pr_draft(
-        repo_root=repo_root,
-        client=client,
-        settings=settings,
-        selected_direction=str(design.get("selected_direction") or _first_direction_name(discover)),
-        design=design,
-        implementation=implementation,
-        diff=diff,
-        changed_files=changed_files,
-    )
-    if llm_draft:
-        return llm_draft
-    selected = str(design.get("selected_direction") or _first_direction_name(discover))
-    changes = "\n".join(f"- Updated `{path}`" for path in changed_files) or "- No local file changes detected yet."
-    testing = _extract_section(implementation, "Testing") or "No explicit test result captured. Run focused tests before submitting."
-    solution = design.get("agent_design") or design.get("recommended") or "Use the recommended scoped implementation plan."
-    notes = _reviewer_notes(design, implementation)
-    return (
-        "标题：\n"
-        f"`{_workflow_title(selected, changed_files)}`\n\n"
-        "**Problem**\n"
-        f"{design.get('problem_boundary', selected)}\n\n"
-        "**Solution**\n"
-        f"{solution}\n\n"
-        "**Changes**\n"
-        f"{changes}\n\n"
-        "**Testing**\n"
-        f"{testing}\n\n"
-        "**Notes for Reviewer**\n"
-        f"{notes}"
-    )
-
-
-def _try_llm_pr_draft(
-    *,
-    repo_root: Path,
-    client: Any | None,
-    settings: Any | None,
-    selected_direction: str,
-    design: dict,
-    implementation: str,
-    diff: str,
-    changed_files: list[str],
-) -> str | None:
-    if client is None or settings is None:
-        return None
-    try:
-        from osc_agent.harness.stage_agents import run_pr_draft_generation
-    except ImportError:
-        return None
-    result = run_pr_draft_generation(
-        client,
-        settings,
-        {
-            "selected_direction": selected_direction,
-            "design_summary": json.dumps(design, ensure_ascii=False, indent=2),
-            "implementation_report": implementation,
-            "git_diff": diff,
-            "changed_files": changed_files,
-        },
-        repo_root=repo_root,
-    )
-    if not result:
-        return None
-    changes = "\n".join(f"- {item}" for item in result.get("changes", [])) or "- No local file changes detected yet."
-    notes = "\n".join(f"- {item}" for item in result.get("reviewer_notes", [])) or "- Review the saved workflow artifacts."
-    return (
-        "Title:\n"
-        f"`{result.get('title', _workflow_title(selected_direction, changed_files))}`\n\n"
-        "**Problem**\n"
-        f"{result.get('problem', selected_direction)}\n\n"
-        "**Solution**\n"
-        f"{result.get('solution', 'See the saved implementation report.')}\n\n"
-        "**Changes**\n"
-        f"{changes}\n\n"
-        "**Testing**\n"
-        f"{result.get('testing', 'No explicit test result captured.')}\n\n"
-        "**Notes for Reviewer**\n"
-        f"{notes}"
     )
 
 
@@ -206,45 +117,3 @@ def _risk_for_files(files: list[str]) -> str:
 def _is_doc_file(path: str) -> bool:
     lower = path.lower()
     return lower.endswith((".md", ".rst", ".txt")) or lower.startswith("docs/")
-
-
-def _read_artifact_json(path: Path) -> dict:
-    if not path.exists():
-        raise ValueError(f"required workflow artifact missing: {path.name}")
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _read_artifact_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8") if path.exists() else ""
-
-
-def _first_direction_name(discover: dict) -> str:
-    directions = discover.get("top_directions") or []
-    if directions:
-        return str(directions[0].get("name", "OpenSourcePR contribution"))
-    return "OpenSourcePR contribution"
-
-
-def _workflow_title(selected: str, changed_files: list[str]) -> str:
-    scope = "docs" if changed_files and all(_is_doc_file(path) for path in changed_files) else "agent"
-    text = re.sub(r"[^A-Za-z0-9一-龥 ]+", " ", selected).strip()
-    words = " ".join(text.split()[:8]) or "update contribution workflow"
-    return f"feat({scope}): {words}"
-
-
-def _extract_section(markdown: str, heading: str) -> str:
-    pattern = re.compile(rf"^## {re.escape(heading)}\s*\n(.*?)(?=^## |\Z)", re.M | re.S)
-    match = pattern.search(markdown)
-    return match.group(1).strip() if match else ""
-
-
-def _reviewer_notes(design: dict, implementation: str) -> str:
-    notes = [
-        "Review whether the implementation remains within the selected OpenSourcePR scope.",
-        "Check that the code changes match the saved technical design artifact.",
-    ]
-    if design.get("agent_design"):
-        notes.append("The design was refined by an agent review artifact; compare the implementation against that section.")
-    if "No explicit test" in implementation:
-        notes.append("Testing evidence is incomplete and should be filled before opening the PR.")
-    return "\n".join(f"- {note}" for note in notes)

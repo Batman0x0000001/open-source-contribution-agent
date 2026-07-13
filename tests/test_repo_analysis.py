@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from osc_agent.tools.repo import (
+    _is_safe_repo_file,
     analyze_architecture_dimensions,
     analyze_python_repository,
     detect_entrypoints,
@@ -67,3 +70,29 @@ def test_repository_profile_accepts_agent_llm_python_project(tmp_path):
 
     assert profile["supported"] is True
     assert profile["language"] == "python"
+
+
+def test_repository_analysis_does_not_follow_external_file_symlinks(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("def secret_function():\n    return 'secret'\n", encoding="utf-8")
+    link = repo / "linked.py"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlinks are not available: {exc}")
+
+    assert find_functions(repo_root=repo, query="secret") == []
+    analysis = analyze_python_repository(repo_root=repo)
+    assert "linked.py" not in analysis["imports"]
+    assert detect_repository_profile(repo_root=repo)["python_file_count"] == 0
+
+
+def test_repository_file_boundary_rejects_external_paths(tmp_path):
+    repo = (tmp_path / "repo").resolve()
+    repo.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("pass\n", encoding="utf-8")
+
+    assert _is_safe_repo_file(repo, outside) is False

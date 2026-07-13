@@ -5,7 +5,7 @@ import os
 import pytest
 
 from osc_agent.config import create_anthropic_client, load_settings
-from osc_agent.harness.stage_agents import run_design_generation, score_candidate_issues
+from osc_agent.workflows.contribution.agents import run_design_generation, score_candidate_issues
 
 
 pytestmark = [

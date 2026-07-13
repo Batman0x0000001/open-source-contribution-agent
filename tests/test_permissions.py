@@ -102,6 +102,9 @@ def test_pre_tool_hook_blocks_dangerous_command_before_handler(tmp_path):
     assert isinstance(tool_results, list)
     result = json.loads(tool_results[0]["content"])
     assert result["error_code"] == "PERMISSION_DENIED"
+    records = [json.loads(line) for line in trace_path(tmp_path).read_text(encoding="utf-8").splitlines()]
+    stop = next(record for record in records if record["event"] == "stop_summary")
+    assert stop["failed_count"] == 1
 
 
 def test_custom_hooks_do_not_replace_default_permission_hook(tmp_path):

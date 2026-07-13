@@ -4,7 +4,14 @@ import subprocess
 
 from osc_agent.agent_loop import build_tool_handlers
 from osc_agent.tools.pr import build_pr_draft, format_pr_draft
-from osc_agent.harness.contribution_workflow import design_stage, discover_stage, record_implementation_result
+from osc_agent.workflows.contribution import (
+    bind_run_worktree,
+    build_workflow_pr_draft,
+    design_stage,
+    discover_stage,
+    record_implementation_result,
+    update_design_contract,
+)
 
 
 def _issues_file(tmp_path):
@@ -70,6 +77,16 @@ def test_workflow_pr_draft_extracts_testing_from_report(tmp_path):
     subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, check=True, capture_output=True)
     run = discover_stage(repo_root=tmp_path, repo_url="https://github.com/acme/demo", issues_file=issues)
     design_stage(repo_root=tmp_path, run_id=run.run_id, direction="Improve eval docs")
+    update_design_contract(
+        repo_root=tmp_path,
+        run_id=run.run_id,
+        updates={
+            "allowed_files": ["README.md"],
+            "files_to_modify": ["README.md"],
+            "tests_to_run": ['python -c "print(1)"'],
+        },
+    )
+    (tmp_path / "README.md").write_text("# Demo\n\nUpdated.\n", encoding="utf-8")
     record_implementation_result(repo_root=tmp_path, run_id=run.run_id, agent_output="pytest tests\n2 passed")
 
     output = draft_pr(repo_root=tmp_path, run_id=run.run_id)
@@ -77,3 +94,10 @@ def test_workflow_pr_draft_extracts_testing_from_report(tmp_path):
     assert "**Testing**" in output
     assert "2 passed" in output
     assert "**Notes for Reviewer**" in output
+
+    worktree = tmp_path / "implementation-worktree"
+    worktree.mkdir()
+    bind_run_worktree(repo_root=tmp_path, run_id=run.run_id, worktree_root=worktree)
+    worktree_output = build_workflow_pr_draft(repo_root=worktree, run_id=run.run_id)
+    assert "**Problem**" in worktree_output
+    assert "2 passed" in worktree_output

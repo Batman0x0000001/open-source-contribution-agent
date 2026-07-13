@@ -8,7 +8,7 @@ import subprocess
 from typer.testing import CliRunner
 
 import osc_agent.cli as cli
-from osc_agent.harness.contribution_workflow import (
+from osc_agent.workflows.contribution import (
     design_stage,
     discover_stage,
     implement_stage,
@@ -161,6 +161,23 @@ def test_contribute_update_design_updates_structured_contract(tmp_path):
     assert design["source_evidence"][0]["file"] == "README.md"
 
 
+def test_contribute_resume_advances_completed_discovery(tmp_path):
+    (tmp_path / "README.md").write_text("# Agent LLM Demo\n", encoding="utf-8")
+    issues = _issues_file(tmp_path)
+    _init_repo(tmp_path)
+    run = discover_stage(repo_root=tmp_path, repo_url="https://github.com/acme/demo", issues_file=issues)
+
+    result = runner.invoke(
+        cli.app,
+        ["contribute", "resume", "--repo", str(tmp_path), "--run-id", run.run_id, "--no-llm"],
+    )
+
+    assert result.exit_code == 0, result.output
+    resumed = load_run(repo_root=tmp_path, run_id=run.run_id)
+    assert resumed.stage == "design"
+    assert resumed.stage_status["design"] == "SUCCEEDED"
+
+
 def test_llm_mode_requires_anthropic_api_key(tmp_path, monkeypatch):
     (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -192,7 +209,7 @@ def test_llm_option_help_documents_api_key_requirement():
     assert "--no-llm" in result.output
 
 
-def test_copy_run_artifacts_rebinds_run_to_worktree(tmp_path):
+def test_worktree_uses_source_run_as_authoritative_state(tmp_path):
     source_repo = tmp_path / "source"
     work_repo = tmp_path / "worktree"
     source_repo.mkdir()
@@ -203,6 +220,8 @@ def test_copy_run_artifacts_rebinds_run_to_worktree(tmp_path):
     cli._copy_run_artifacts(source_repo, work_repo, run.run_id)
 
     copied = load_run(repo_root=work_repo, run_id=run.run_id)
-    expected_artifacts = work_repo / ".osc_agent" / "contribution_runs" / run.run_id
-    assert Path(copied.repo_root) == work_repo.resolve()
+    expected_artifacts = source_repo / ".osc_agent" / "contribution_runs" / run.run_id
+    assert Path(copied.repo_root) == source_repo.resolve()
     assert Path(copied.artifacts_dir) == expected_artifacts.resolve()
+    assert Path(copied.worktree_root) == work_repo.resolve()
+    assert not (work_repo / ".osc_agent" / "contribution_runs").exists()

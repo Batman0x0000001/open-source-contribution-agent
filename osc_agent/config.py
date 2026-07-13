@@ -30,6 +30,7 @@ class Settings:
     anthropic_base_url: str | None
     model_id: str
     fallback_model_id: str | None
+    github_token: str | None = None
     max_agent_rounds: int = 30
     max_total_tokens: int = 200_000
     agent_deadline_seconds: int = 1_800
@@ -61,6 +62,7 @@ def load_settings() -> Settings:
     return Settings(
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
         anthropic_base_url=os.getenv("ANTHROPIC_BASE_URL") or None,
+        github_token=os.getenv("GITHUB_TOKEN"),
         model_id=os.getenv("MODEL_ID", "claude-3-5-sonnet-latest"),
         fallback_model_id=os.getenv("FALLBACK_MODEL_ID") or None,
         max_agent_rounds=_env_int("OSC_AGENT_MAX_ROUNDS", 30),

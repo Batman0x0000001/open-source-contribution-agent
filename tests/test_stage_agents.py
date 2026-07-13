@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from osc_agent.config import Settings
-from osc_agent.harness.stage_agents import (
+from osc_agent.workflows.contribution.agents import (
     run_design_generation,
     run_discover_analysis,
     run_pr_draft_generation,
