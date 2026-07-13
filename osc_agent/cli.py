@@ -11,14 +11,10 @@ from osc_agent.agent_loop import agent_loop
 from osc_agent.config import Settings, create_anthropic_client, load_settings
 from osc_agent.harness.contribution_workflow import (
     ContributionRun,
-    build_edit_prompt,
-    build_understanding_prompt,
-    build_verification_prompt,
     design_stage,
     discover_stage,
     draft_pr_stage,
-    prepare_implementation_stage,
-    record_implementation_result,
+    execute_implementation_stage,
 )
 from osc_agent.harness.gates import GateResult, gate_design, gate_discover, gate_implementation
 from osc_agent.harness.worktree import create_worktree, worktree_path
@@ -81,7 +77,13 @@ def contribute_discover(
         Path | None,
         typer.Option("--issues-file", exists=True, file_okay=True, dir_okay=False, resolve_path=True),
     ] = None,
-    use_llm: Annotated[bool, typer.Option("--llm/--no-llm")] = True,
+    use_llm: Annotated[
+        bool,
+        typer.Option(
+            "--llm/--no-llm",
+            help="Use LLM analysis (requires ANTHROPIC_API_KEY); use --no-llm for local fallback.",
+        ),
+    ] = True,
 ) -> None:
     client, settings = _stage_client() if use_llm else (None, None)
     run = discover_stage(repo_root=repo, repo_url=repo_url, issues_file=issues_file, client=client, settings=settings)
@@ -96,7 +98,13 @@ def contribute_design(
     ],
     run_id: Annotated[str, typer.Option("--run-id")],
     direction: Annotated[str | None, typer.Option("--direction")] = None,
-    use_llm: Annotated[bool, typer.Option("--llm/--no-llm")] = True,
+    use_llm: Annotated[
+        bool,
+        typer.Option(
+            "--llm/--no-llm",
+            help="Use LLM analysis (requires ANTHROPIC_API_KEY); use --no-llm for local fallback.",
+        ),
+    ] = True,
 ) -> None:
     client, settings = _stage_client() if use_llm else (None, None)
     run = design_stage(repo_root=repo, run_id=run_id, direction=direction, client=client, settings=settings)
@@ -113,18 +121,7 @@ def contribute_implement(
 ) -> None:
     _confirm_clean_or_continue(repo)
     work_repo = _create_run_worktree(repo=repo, run_id=run_id)
-    run, prompt = prepare_implementation_stage(repo_root=work_repo, run_id=run_id)
-    understanding = _run_single_task_capture(repo=work_repo, task=_understanding_prompt(work_repo, run))
-    implementation_prompt = _edit_prompt(work_repo, run, _content_to_text(understanding)) or prompt
-    response = _run_single_task_capture(repo=work_repo, task=implementation_prompt)
-    verification = _run_single_task_capture(repo=work_repo, task=_verification_prompt(work_repo, run))
-    run = record_implementation_result(
-        repo_root=work_repo,
-        run_id=run_id,
-        understanding_output=_content_to_text(understanding),
-        agent_output=_content_to_text(response),
-        verification_output=_content_to_text(verification),
-    )
+    run = _execute_implementation(work_repo, run_id)
     _print_gate(gate_implementation(Path(run.artifacts_dir), work_repo))
     _print_artifact(run, "03_implementation_report.md")
 
@@ -136,7 +133,13 @@ def contribute_draft_pr(
         typer.Option("--repo", exists=True, file_okay=False, dir_okay=True, resolve_path=True),
     ],
     run_id: Annotated[str, typer.Option("--run-id")],
-    use_llm: Annotated[bool, typer.Option("--llm/--no-llm")] = True,
+    use_llm: Annotated[
+        bool,
+        typer.Option(
+            "--llm/--no-llm",
+            help="Use LLM analysis (requires ANTHROPIC_API_KEY); use --no-llm for local fallback.",
+        ),
+    ] = True,
 ) -> None:
     client, settings = _stage_client() if use_llm else (None, None)
     run = draft_pr_stage(repo_root=repo, run_id=run_id, client=client, settings=settings)
@@ -154,7 +157,13 @@ def contribute_run(
         Path | None,
         typer.Option("--issues-file", exists=True, file_okay=True, dir_okay=False, resolve_path=True),
     ] = None,
-    use_llm: Annotated[bool, typer.Option("--llm/--no-llm")] = True,
+    use_llm: Annotated[
+        bool,
+        typer.Option(
+            "--llm/--no-llm",
+            help="Use LLM analysis (requires ANTHROPIC_API_KEY); use --no-llm for local fallback.",
+        ),
+    ] = True,
 ) -> None:
     client, settings = _stage_client() if use_llm else (None, None)
 
@@ -173,18 +182,7 @@ def contribute_run(
 
     _confirm_clean_or_continue(repo)
     work_repo = _create_run_worktree(repo=repo, run_id=run.run_id)
-    run, prompt = prepare_implementation_stage(repo_root=work_repo, run_id=run.run_id)
-    understanding = _run_single_task_capture(repo=work_repo, task=_understanding_prompt(work_repo, run))
-    implementation_prompt = _edit_prompt(work_repo, run, _content_to_text(understanding)) or prompt
-    response = _run_single_task_capture(repo=work_repo, task=implementation_prompt)
-    verification = _run_single_task_capture(repo=work_repo, task=_verification_prompt(work_repo, run))
-    run = record_implementation_result(
-        repo_root=work_repo,
-        run_id=run.run_id,
-        understanding_output=_content_to_text(understanding),
-        agent_output=_content_to_text(response),
-        verification_output=_content_to_text(verification),
-    )
+    run = _execute_implementation(work_repo, run.run_id)
     _require_gate(gate_implementation(Path(run.artifacts_dir), work_repo))
     _print_artifact(run, "03_implementation_report.md")
 
@@ -251,30 +249,25 @@ def _run_agent_turn(
 def _stage_client() -> tuple[Any | None, Settings | None]:
     settings = load_settings()
     if not settings.anthropic_api_key:
-        typer.echo("[llm:fallback] ANTHROPIC_API_KEY is not set; using deterministic local fallback.")
-        return None, None
+        raise typer.BadParameter(
+            "ANTHROPIC_API_KEY is required for --llm. Set it in .env or use --no-llm "
+            "for the deterministic local fallback."
+        )
     try:
         return create_anthropic_client(settings), settings
     except RuntimeError as exc:
-        typer.echo(f"[llm:fallback] {exc}; using deterministic local fallback.")
-        return None, None
+        raise typer.BadParameter(str(exc)) from exc
 
 
-def _run_design_payload(repo: Path, run: ContributionRun) -> dict[str, Any]:
-    path = Path(run.artifacts_dir) / "02_design.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+def _execute_implementation(repo: Path, run_id: str) -> ContributionRun:
+    def run_step(stage: str, prompt: str) -> str:
+        typer.echo(f"[implementation:{stage}]")
+        return _content_to_text(_run_single_task_capture(repo=repo, task=prompt))
 
-
-def _understanding_prompt(repo: Path, run: ContributionRun) -> str:
-    return build_understanding_prompt(run, _run_design_payload(repo, run))
-
-
-def _edit_prompt(repo: Path, run: ContributionRun, understanding: str) -> str:
-    return build_edit_prompt(run, _run_design_payload(repo, run), understanding)
-
-
-def _verification_prompt(repo: Path, run: ContributionRun) -> str:
-    return build_verification_prompt(run, _run_design_payload(repo, run))
+    try:
+        return execute_implementation_stage(repo_root=repo, run_id=run_id, run_step=run_step)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 def _confirm_clean_or_continue(repo: Path) -> None:

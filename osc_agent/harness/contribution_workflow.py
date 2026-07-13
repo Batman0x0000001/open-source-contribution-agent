@@ -6,7 +6,7 @@ import json
 import re
 import secrets
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from osc_agent.harness.tasks import create_default_task_graph
 from osc_agent.harness.todo import todo_write
@@ -257,6 +257,35 @@ def record_implementation_result(
     _write_text(run, "03_implementation_report.md", render_implementation_report(report))
     save_run(run)
     return run
+
+
+def execute_implementation_stage(
+    *,
+    repo_root: Path,
+    run_id: str,
+    run_step: Callable[[str, str], str],
+) -> ContributionRun:
+    """Run the implementation substeps in order with an explicit edit checkpoint."""
+    run, fallback_prompt = prepare_implementation_stage(repo_root=repo_root, run_id=run_id)
+    design = _read_json(run, "02_design.json")
+
+    understanding = run_step("understanding", build_understanding_prompt(run, design))
+    if "READY_TO_EDIT" not in understanding:
+        raise ValueError(
+            "Implementation stopped at the understanding checkpoint: "
+            "the agent did not confirm READY_TO_EDIT."
+        )
+
+    edit_prompt = build_edit_prompt(run, design, understanding) or fallback_prompt
+    agent_output = run_step("edit", edit_prompt)
+    verification = run_step("verification", build_verification_prompt(run, design))
+    return record_implementation_result(
+        repo_root=repo_root,
+        run_id=run_id,
+        understanding_output=understanding,
+        agent_output=agent_output,
+        verification_output=verification,
+    )
 
 
 def implement_stage(*, repo_root: Path, run_id: str, agent_output: str | None = None) -> ContributionRun:

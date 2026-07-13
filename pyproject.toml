@@ -19,3 +19,4 @@ osc-agent = "osc_agent.cli:app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+cache_dir = ".pytest-cache-temp"

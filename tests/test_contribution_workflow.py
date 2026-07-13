@@ -10,6 +10,7 @@ from osc_agent.harness.contribution_workflow import (
     design_stage,
     discover_stage,
     draft_pr_stage,
+    execute_implementation_stage,
     implement_stage,
     load_run,
     prepare_implementation_stage,
@@ -106,6 +107,50 @@ def test_prepare_implementation_happens_before_recording_result(tmp_path):
     report = report_path.read_text(encoding="utf-8")
     assert "1 passed" in report
     assert "Implementation has not run yet" not in report
+
+
+def test_execute_implementation_runs_ordered_substeps(tmp_path):
+    (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
+    run = discover_stage(repo_root=tmp_path, repo_url="https://github.com/acme/demo", issues_file=_issues_file(tmp_path))
+    run = design_stage(repo_root=tmp_path, run_id=run.run_id, direction="Checkpoint docs")
+    calls = []
+
+    def run_step(stage, prompt):
+        calls.append((stage, prompt))
+        if stage == "understanding":
+            return "Scope confirmed. READY_TO_EDIT"
+        if stage == "verification":
+            return "pytest tests/test_demo.py: 1 passed"
+        return "implemented"
+
+    execute_implementation_stage(repo_root=tmp_path, run_id=run.run_id, run_step=run_step)
+
+    assert [stage for stage, _ in calls] == ["understanding", "edit", "verification"]
+    assert "READY_TO_EDIT" in calls[1][1]
+    report = (tmp_path / ".osc_agent" / "contribution_runs" / run.run_id / "03_implementation_report.md").read_text(
+        encoding="utf-8"
+    )
+    assert "1 passed" in report
+
+
+def test_execute_implementation_stops_without_ready_checkpoint(tmp_path):
+    (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
+    run = discover_stage(repo_root=tmp_path, repo_url="https://github.com/acme/demo", issues_file=_issues_file(tmp_path))
+    run = design_stage(repo_root=tmp_path, run_id=run.run_id, direction="Checkpoint docs")
+    calls = []
+
+    def run_step(stage, prompt):
+        calls.append(stage)
+        return "The implementation boundary is unclear."
+
+    try:
+        execute_implementation_stage(repo_root=tmp_path, run_id=run.run_id, run_step=run_step)
+    except ValueError as exc:
+        assert "READY_TO_EDIT" in str(exc)
+    else:
+        raise AssertionError("implementation should stop before editing")
+
+    assert calls == ["understanding"]
 
 
 def test_design_requires_discover_artifact(tmp_path):
