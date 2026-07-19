@@ -14,28 +14,27 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from time import monotonic, perf_counter
+import secrets
 from typing import Any, Callable, TextIO
 
 from osc_agent.config import Settings
 from osc_agent.harness.background import (
     collect_background_results,
-    should_run_background,
-    start_background_task,
 )
 from osc_agent.harness.compact import COMPACT_TOOL, apply_compaction, compact_history, reactive_compact
 from osc_agent.harness.contracts import (
     AgentRunResult,
     RunMetrics,
     RunStatus,
-    action_fingerprint,
-    normalize_tool_result,
 )
 from osc_agent.harness.cron import CRON_TOOLS, cancel_schedule, collect_cron_notifications, list_schedules, schedule_check
-from osc_agent.harness.hooks import HookContext, HookRegistry, default_hooks, elapsed_ms
-from osc_agent.harness.mcp import CONNECT_MCP_TOOL, assemble_tool_handlers, assemble_tool_pool, connect_mcp
+from osc_agent.harness.hooks import HookContext, HookRegistry, default_hooks
+from osc_agent.harness.loop_state import LoopExecutionState
+from osc_agent.harness.mcp import CONNECT_MCP_TOOL, connect_mcp
 from osc_agent.harness.prompt import assemble_system_prompt, update_context
+from osc_agent.harness.capabilities import AgentCapabilityScope
 from osc_agent.harness.protocols import (
     PROTOCOL_TOOLS,
     request_plan_review,
@@ -45,18 +44,19 @@ from osc_agent.harness.protocols import (
 )
 from osc_agent.harness.recovery import (
     CONTINUATION_PROMPT,
-    DEFAULT_MAX_TOKENS,
     ESCALATED_MAX_TOKENS,
     MAX_CONTINUATIONS,
-    RecoveryState,
+    classify_model_error,
     is_prompt_too_long_error,
+    safe_model_error,
     with_retry,
 )
-from osc_agent.harness.runtime_state import record_tool_observation
 from osc_agent.harness.subagent import SUBAGENT_TOOL, spawn_subagent
 from osc_agent.harness.tasks import CONTRIBUTION_TASK_TOOLS, claim_task, complete_task, create_task, get_task, list_tasks
 from osc_agent.harness.teams import TEAM_TOOLS, check_inbox, collect_team_notifications, send_message, spawn_teammate
 from osc_agent.harness.todo import TODO_WRITE_TOOL, todo_write
+from osc_agent.harness.tool_execution import block_attr, execute_tool_call, parse_tool_call
+from osc_agent.harness.tool_registry import ToolRegistry
 from osc_agent.harness.trace import append_trace
 from osc_agent.harness.worktree import WORKTREE_TOOLS, create_worktree, keep_worktree, remove_worktree
 from osc_agent.skills.registry import LOAD_SKILL_TOOL, load_skill
@@ -107,19 +107,6 @@ SIDE_EFFECT_TOOLS = {
 }
 
 
-def _block_attr(block: Any, name: str, default: Any = None) -> Any:
-    """兼容 Anthropic SDK 对象和测试里的 dict block，降低 mock 成本。"""
-    if isinstance(block, dict):
-        return block.get(name, default)
-    return getattr(block, name, default)
-
-
-def _tool_input(block: Any) -> dict[str, Any]:
-    """提取 tool_use 输入参数，缺失时返回空 dict 以便主循环稳定处理。"""
-    value = _block_attr(block, "input", {})
-    return value if isinstance(value, dict) else {}
-
-
 def build_tool_handlers(
     repo_root: Path,
     *,
@@ -127,6 +114,7 @@ def build_tool_handlers(
     settings: Settings | None = None,
     confirm: Callable[[str], bool] | None = None,
     messages: list[dict[str, Any]] | None = None,
+    session_id: str = "default",
 ) -> dict[str, Any]:
     """按 repo_root 绑定工具函数，主循环只负责按名称分发。"""
     def subagent_handler(description: str, role: str) -> str:
@@ -148,7 +136,7 @@ def build_tool_handlers(
         return "[Compacted. History summarized.]"
 
     return {
-        "bash": lambda command, run_in_background=False: run_bash(command, repo_root=repo_root, enforce_permissions=False),
+        "bash": lambda command, run_in_background=False: run_bash(command, repo_root=repo_root, enforce_risk_checks=False),
         "read_file": lambda path, limit=20_000, offset=0: read_file(
             repo_root=repo_root,
             path=path,
@@ -159,14 +147,14 @@ def build_tool_handlers(
             repo_root=repo_root,
             path=path,
             content=content,
-            enforce_permissions=False,
+            enforce_risk_checks=False,
         ),
         "edit_file": lambda path, old_text, new_text: edit_file(
             repo_root=repo_root,
             path=path,
             old_text=old_text,
             new_text=new_text,
-            enforce_permissions=False,
+            enforce_risk_checks=False,
         ),
         "glob": lambda pattern: glob_files(repo_root=repo_root, pattern=pattern),
         "git_status": lambda: git_status(repo_root=repo_root),
@@ -178,7 +166,7 @@ def build_tool_handlers(
         "subagent": subagent_handler,
         "load_skill": lambda name: load_skill(name),
         "compact": compact_handler,
-        "connect_mcp": lambda server_name: connect_mcp(server_name),
+        "connect_mcp": lambda server_name: connect_mcp(server_name, session_id=session_id),
         "spawn_teammate": lambda name, role, prompt, allow_write=False: spawn_teammate(
             name=name,
             role=role,
@@ -253,6 +241,120 @@ def build_tool_handlers(
     }
 
 
+@dataclass(frozen=True)
+class PreparedRound:
+    tools: list[dict[str, Any]]
+    handlers: dict[str, Any]
+    system_prompt: str
+
+
+@dataclass(frozen=True)
+class ModelRequestOutcome:
+    response: Any | None = None
+    retry_round: bool = False
+    failure_reason: str | None = None
+
+
+def _first_user_task(messages: list[dict[str, Any]]) -> str:
+    """保留最初的文本任务，避免后续工具结果覆盖运行目标。"""
+    return next(
+        (
+            str(message.get("content"))
+            for message in messages
+            if message.get("role") == "user" and isinstance(message.get("content"), str)
+        ),
+        "",
+    )
+
+
+def _prepare_round(
+    messages: list[dict[str, Any]],
+    *,
+    repo_root: Path,
+    objective: str,
+    current_instruction: str,
+    session_id: str,
+    capabilities: AgentCapabilityScope,
+    tool_registry: ToolRegistry,
+) -> PreparedRound:
+    notifications = (
+        collect_background_results(repo_root)
+        + collect_cron_notifications(repo_root)
+        + collect_team_notifications(repo_root)
+    )
+    if notifications:
+        messages.append(
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": notification} for notification in notifications],
+            }
+        )
+
+    # 保持调用者持有的 messages 列表对象不变，只替换其中的压缩结果。
+    messages[:] = apply_compaction(messages, repo_root=repo_root)
+    tools = capabilities.filter_tools(tool_registry.schemas(session_id=session_id))
+    # Schema 控制模型可见能力；Handler 保持完整，确保越权调用仍由 Capability Hook 明确拒绝。
+    handlers = tool_registry.handlers(session_id=session_id)
+    prompt_context = update_context(
+        repo_root=repo_root,
+        objective=objective,
+        current_instruction=current_instruction,
+        enabled_tools=[tool["name"] for tool in tools],
+        capabilities=capabilities,
+        run_id=capabilities.run_id,
+        session_id=session_id,
+    )
+    # MCP 工具可在运行中接入，因此每轮都必须重新构造工具池和 system prompt。
+    return PreparedRound(
+        tools=tools,
+        handlers=handlers,
+        system_prompt=assemble_system_prompt(prompt_context),
+    )
+
+
+def _request_model(
+    *,
+    client: Any,
+    messages: list[dict[str, Any]],
+    prepared: PreparedRound,
+    state: LoopExecutionState,
+    repo_root: Path,
+) -> ModelRequestOutcome:
+    state.metrics.model_calls += 1
+    try:
+        response = with_retry(
+            lambda model_id: client.messages.create(
+                model=model_id,
+                system=prepared.system_prompt,
+                messages=messages,
+                tools=prepared.tools,
+                max_tokens=state.response_recovery.max_tokens,
+            ),
+            state=state.request_recovery,
+            repo_root=repo_root,
+        )
+    except Exception as exc:
+        if (
+            not state.response_recovery.attempted_reactive_compact
+            and is_prompt_too_long_error(exc)
+        ):
+            messages[:] = reactive_compact(messages, repo_root=repo_root)
+            state.response_recovery.attempted_reactive_compact = True
+            append_trace(repo_root, "prompt_too_long_recovery", {"action": "reactive_compact"})
+            return ModelRequestOutcome(retry_round=True)
+        safe_error = safe_model_error(exc)
+        return ModelRequestOutcome(
+            failure_reason=(
+                f"model request failed: {classify_model_error(exc)}: {safe_error['error']}"
+            )
+        )
+    finally:
+        state.metrics.retries = state.request_recovery.retry_count
+        state.metrics.model_attempts = state.request_recovery.total_attempts
+        state.metrics.fallback_switches = state.request_recovery.fallback_switches
+    return ModelRequestOutcome(response=response)
+
+
 def agent_loop(
     messages: list[dict[str, Any]],
     *,
@@ -263,253 +365,191 @@ def agent_loop(
     tool_handlers: dict[str, Any] | None = None,
     hooks: HookRegistry | None = None,
     confirm: Callable[[str], bool] | None = None,
+    capabilities: AgentCapabilityScope | None = None,
+    session_id: str | None = None,
+    objective: str | None = None,
 ) -> AgentRunResult:
     """执行 Anthropic 风格 agent loop，直到模型不再请求工具。"""
-    handlers = tool_handlers or build_tool_handlers(
-        repo_root,
-        client=client,
-        settings=settings,
-        confirm=confirm,
-        messages=messages,
+    active_session_id = session_id or f"session_{secrets.token_hex(8)}"
+    handlers = (
+        tool_handlers
+        if tool_handlers is not None
+        else build_tool_handlers(
+            repo_root,
+            client=client,
+            settings=settings,
+            confirm=confirm,
+            messages=messages,
+            session_id=active_session_id,
+        )
+    )
+    tool_registry = ToolRegistry(
+        TOOLS,
+        handlers,
+        side_effect_tools=SIDE_EFFECT_TOOLS,
+        require_complete_handlers=tool_handlers is None,
     )
     hook_registry = default_hooks()
     if hooks is not None:
-        # 自定义 hook 只能追加，不能替换默认权限检查。
+        # 自定义 hook 只能追加，不能替换默认安全检查。
         hook_registry.extend(hooks)
-    hook_context = HookContext(repo_root=repo_root, confirm=confirm)
-
-    recovery_state = RecoveryState(
-        current_model=settings.model_id,
-        fallback_model_id=settings.fallback_model_id,
-        max_tokens=DEFAULT_MAX_TOKENS,
+    capability_scope = capabilities or AgentCapabilityScope.unrestricted()
+    current_instruction = _first_user_task(messages)
+    top_level_objective = objective or current_instruction
+    hook_context = HookContext(
+        repo_root=repo_root,
+        confirm=confirm,
+        capabilities=capability_scope,
+        session_id=active_session_id,
+        run_id=capability_scope.run_id,
     )
-    metrics = RunMetrics()
-    started_at = monotonic()
-    previous_fingerprint: str | None = None
-    repeated_actions = 0
-    consecutive_failures = 0
-    seen_fingerprints: set[str] = set()
-    no_progress_calls = 0
-    budget_overrides: set[str] = set()
+    state = LoopExecutionState.from_settings(settings)
+
+    def finish(status: RunStatus, reason: str, response: Any | None) -> AgentRunResult:
+        if not state.stopped:
+            hook_registry.run("Stop", hook_context, {"stop_reason": reason, "status": status.value})
+            state.stopped = True
+        return _finish_run(
+            repo_root,
+            status,
+            reason,
+            state.metrics,
+            response,
+            session_id=active_session_id,
+            run_id=capability_scope.run_id,
+        )
 
     while True:
-        metrics.elapsed_ms = int((monotonic() - started_at) * 1000)
-        budget_reason = _budget_reason(metrics, settings, confirm=confirm, overrides=budget_overrides)
-        if budget_reason:
-            return _finish_run(repo_root, RunStatus.FAILED_BUDGET, budget_reason, metrics, None)
-
-        notifications = (
-            collect_background_results()
-            + collect_cron_notifications(repo_root)
-            + collect_team_notifications(repo_root)
-        )
-        if notifications:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": [{"type": "text", "text": notification} for notification in notifications],
-                }
-            )
-
-        messages[:] = apply_compaction(messages, repo_root=repo_root)
-        active_tools = assemble_tool_pool(TOOLS)
-        active_handlers = assemble_tool_handlers(handlers)
-        prompt_context = update_context(
-            repo_root=repo_root,
-            messages=messages,
-            enabled_tools=[tool["name"] for tool in active_tools],
-        )
-        # MCP 工具池会在 agent_loop 运行中动态变化，因此这里每轮直接重组 system prompt。
-        system_prompt = assemble_system_prompt(prompt_context)
-        try:
-            metrics.model_calls += 1
-            response = with_retry(
-                lambda model_id: client.messages.create(
-                    model=model_id,
-                    system=system_prompt,
-                    messages=messages,
-                    tools=active_tools,
-                    max_tokens=recovery_state.max_tokens,
-                ),
-                state=recovery_state,
-                repo_root=repo_root,
-            )
-        except Exception as exc:
-            if not recovery_state.attempted_reactive_compact and is_prompt_too_long_error(exc):
-                messages[:] = reactive_compact(messages, repo_root=repo_root)
-                recovery_state.attempted_reactive_compact = True
-                append_trace(repo_root, "prompt_too_long_recovery", {"action": "reactive_compact"})
-                continue
-            raise
-
-        metrics.retries = recovery_state.retry_count
-        input_tokens, output_tokens = _response_usage(response)
-        metrics.input_tokens += input_tokens
-        metrics.output_tokens += output_tokens
-        metrics.elapsed_ms = int((monotonic() - started_at) * 1000)
+        state.update_elapsed()
         budget_reason = _budget_reason(
-            metrics,
+            state.metrics,
+            settings,
+            confirm=confirm,
+            overrides=state.budget_overrides,
+        )
+        if budget_reason:
+            return finish(RunStatus.FAILED_BUDGET, budget_reason, None)
+
+        prepared = _prepare_round(
+            messages,
+            repo_root=repo_root,
+            objective=top_level_objective,
+            current_instruction=current_instruction,
+            session_id=active_session_id,
+            capabilities=capability_scope,
+            tool_registry=tool_registry,
+        )
+        request = _request_model(
+            client=client,
+            messages=messages,
+            prepared=prepared,
+            state=state,
+            repo_root=repo_root,
+        )
+        if request.retry_round:
+            continue
+        if request.failure_reason is not None:
+            return finish(
+                RunStatus.FAILED_TOOL,
+                request.failure_reason,
+                None,
+            )
+        response = request.response
+        if response is None:
+            return finish(RunStatus.FAILED_TOOL, "model request returned no response", None)
+
+        input_tokens, output_tokens = _response_usage(response)
+        state.metrics.input_tokens += input_tokens
+        state.metrics.output_tokens += output_tokens
+        state.update_elapsed()
+        budget_reason = _budget_reason(
+            state.metrics,
             settings,
             check_rounds=False,
             confirm=confirm,
-            overrides=budget_overrides,
+            overrides=state.budget_overrides,
         )
         if budget_reason:
             messages.append({"role": "assistant", "content": response.content})
-            return _finish_run(repo_root, RunStatus.FAILED_BUDGET, budget_reason, metrics, response)
+            return finish(RunStatus.FAILED_BUDGET, budget_reason, response)
 
         if response.stop_reason == "max_tokens":
-            if not recovery_state.has_escalated_tokens:
-                recovery_state.max_tokens = ESCALATED_MAX_TOKENS
-                recovery_state.has_escalated_tokens = True
-                append_trace(repo_root, "max_tokens_recovery", {"action": "escalate", "max_tokens": ESCALATED_MAX_TOKENS})
-                continue
-
-            messages.append({"role": "assistant", "content": response.content})
-            if recovery_state.continuation_count < MAX_CONTINUATIONS:
-                messages.append({"role": "user", "content": CONTINUATION_PROMPT})
-                recovery_state.continuation_count += 1
+            if not state.response_recovery.has_escalated_tokens:
+                state.response_recovery.max_tokens = ESCALATED_MAX_TOKENS
+                state.response_recovery.has_escalated_tokens = True
                 append_trace(
                     repo_root,
                     "max_tokens_recovery",
-                    {"action": "continue", "count": recovery_state.continuation_count},
+                    {"action": "escalate", "max_tokens": ESCALATED_MAX_TOKENS},
                 )
                 continue
-            append_trace(repo_root, "max_tokens_recovery", {"action": "stop", "count": recovery_state.continuation_count})
-            return _finish_run(
+
+            messages.append({"role": "assistant", "content": response.content})
+            if state.response_recovery.continuation_count < MAX_CONTINUATIONS:
+                messages.append({"role": "user", "content": CONTINUATION_PROMPT})
+                state.response_recovery.continuation_count += 1
+                append_trace(
+                    repo_root,
+                    "max_tokens_recovery",
+                    {
+                        "action": "continue",
+                        "count": state.response_recovery.continuation_count,
+                    },
+                )
+                continue
+            append_trace(
                 repo_root,
+                "max_tokens_recovery",
+                {"action": "stop", "count": state.response_recovery.continuation_count},
+            )
+            return finish(
                 RunStatus.FAILED_BUDGET,
                 "model output continuation budget exhausted",
-                metrics,
                 response,
             )
 
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason != "tool_use":
-            hook_registry.run("Stop", hook_context, {"stop_reason": response.stop_reason})
-            return _finish_run(repo_root, RunStatus.SUCCESS, "model completed without tool requests", metrics, response)
+            return finish(RunStatus.SUCCESS, "model completed without tool requests", response)
 
-        results: list[dict[str, str]] = []
-        for block in response.content:
-            if _block_attr(block, "type") != "tool_use":
-                continue
+        results: list[dict[str, Any]] = []
+        tool_blocks = [block for block in response.content if block_attr(block, "type") == "tool_use"]
+        if not tool_blocks:
+            return finish(RunStatus.FAILED_TOOL, "tool_use response contained no tool calls", response)
+        for block in tool_blocks:
+            call = parse_tool_call(block)
+            fingerprint, progress_stop = state.progress.before_tool(call.name, call.arguments)
+            if progress_stop is not None:
+                return finish(progress_stop.status, progress_stop.reason, response)
 
-            tool_name = _block_attr(block, "name")
-            tool_use_id = _block_attr(block, "id")
-            tool_args = _tool_input(block)
-            fingerprint = action_fingerprint(str(tool_name), tool_args)
-            if fingerprint == previous_fingerprint:
-                repeated_actions += 1
-            else:
-                previous_fingerprint = fingerprint
-                repeated_actions = 1
-            if repeated_actions >= settings.repeat_action_limit:
-                return _finish_run(
-                    repo_root,
-                    RunStatus.BLOCKED_NEEDS_USER,
-                    f"tool action repeated {repeated_actions} times: {tool_name}",
-                    metrics,
-                    response,
-                )
-
-            handler = active_handlers.get(tool_name)
-            started = perf_counter()
-            if handler is None:
-                raw_output = f"Error: unknown tool {tool_name}"
-            else:
-                if output is not None:
-                    print(f"{tool_name}: {tool_args}", file=output)
-                pre_results = hook_registry.run(
-                    "PreToolUse",
-                    hook_context,
-                    {"tool_name": tool_name, "tool_args": tool_args},
-                )
-                blocked = next((result for result in pre_results if not result.allowed), None)
-                if blocked is not None:
-                    raw_output = blocked.content or "Permission denied"
-                elif should_run_background(tool_name, tool_args):
-                    # 后台任务只返回占位结果；真实输出由下一轮 task_notification 独立注入。
-                    foreground_args = dict(tool_args)
-                    foreground_args.pop("run_in_background", None)
-                    task_id = start_background_task(
-                        command=str(tool_args.get("command", "")),
-                        repo_root=repo_root,
-                        runner=lambda handler=handler, args=foreground_args: handler(**args),
-                    )
-                    raw_output = (
-                        f"[Background task {task_id} started] "
-                        "Result will be available in a later task_notification."
-                    )
-                else:
-                    try:
-                        raw_output = handler(**tool_args)
-                    except (TypeError, ValueError) as exc:
-                        raw_output = f"Error: invalid arguments for {tool_name}: {exc}"
-                    except Exception as exc:  # noqa: BLE001 - 工具失败必须转成可审计结果
-                        raw_output = f"Error: tool {tool_name} failed: {exc}"
-
-            tool_result = normalize_tool_result(
-                raw_output,
-                tool_name=str(tool_name),
-                arguments=tool_args,
-                call_id=str(tool_use_id) if tool_use_id is not None else None,
-                latency_ms=elapsed_ms(started),
-                side_effect=str(tool_name) in SIDE_EFFECT_TOOLS,
+            tool_result = execute_tool_call(
+                call,
+                handler=prepared.handlers.get(call.name),
+                side_effect=tool_registry.has_side_effect(call.name),
+                repo_root=repo_root,
+                hook_registry=hook_registry,
+                hook_context=hook_context,
+                session_id=active_session_id,
+                output=output,
             )
             tool_output = tool_result.to_model_content()
-            record_tool_observation(repo_root, str(tool_name), tool_args, tool_result)
-            metrics.tool_calls += 1
-            if tool_result.ok:
-                consecutive_failures = 0
-                if fingerprint in seen_fingerprints and not tool_result.side_effect:
-                    no_progress_calls += 1
-                else:
-                    no_progress_calls = 0
-                seen_fingerprints.add(fingerprint)
-            else:
-                metrics.tool_failures += 1
-                consecutive_failures += 1
-                no_progress_calls += 1
-            hook_registry.run(
-                "PostToolUse",
-                hook_context,
-                {
-                    "tool_name": tool_name,
-                    "tool_args": tool_args,
-                    "output": tool_result.to_dict(),
-                    "latency_ms": tool_result.latency_ms,
-                },
-            )
-            if output is not None:
-                print(str(tool_output)[:200], file=output)
-
-            if consecutive_failures >= settings.consecutive_failure_limit:
-                return _finish_run(
-                    repo_root,
-                    RunStatus.FAILED_TOOL,
-                    f"{consecutive_failures} consecutive tool failures",
-                    metrics,
-                    response,
-                )
-            if no_progress_calls >= settings.no_progress_limit:
-                return _finish_run(
-                    repo_root,
-                    RunStatus.BLOCKED_NEEDS_USER,
-                    f"no new evidence or state change after {no_progress_calls} tool calls",
-                    metrics,
-                    response,
-                )
+            state.metrics.tool_calls += 1
+            if not tool_result.ok:
+                state.metrics.tool_failures += 1
+            progress_stop = state.progress.after_tool(fingerprint, tool_result)
+            if progress_stop is not None:
+                return finish(progress_stop.status, progress_stop.reason, response)
 
             results.append(
                 {
                     "type": "tool_result",
-                    "tool_use_id": tool_use_id,
+                    "tool_use_id": call.use_id,
                     "content": tool_output,
                 }
             )
 
-        #Anthropic 把工具看成：用户帮模型完成了一件事，然后把结果告诉模型
+        # Anthropic 协议要求工具结果以 user 消息返回给模型。
         messages.append({"role": "user", "content": results})
 
 
@@ -558,10 +598,19 @@ def _finish_run(
     reason: str,
     metrics: RunMetrics,
     response: Any | None,
+    *,
+    session_id: str = "",
+    run_id: str | None = None,
 ) -> AgentRunResult:
     append_trace(
         repo_root,
         "agent_run_finished",
-        {"status": status.value, "reason": reason, "metrics": metrics.to_dict()},
+        {
+            "session_id": session_id,
+            "run_id": run_id,
+            "status": status.value,
+            "reason": reason,
+            "metrics": metrics.to_dict(),
+        },
     )
     return AgentRunResult(status=status, response=response, reason=reason, metrics=metrics)

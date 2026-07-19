@@ -18,7 +18,8 @@ import stat
 import tempfile
 import threading
 
-from osc_agent.harness.permissions import check_file_write, format_blocked, safe_repo_path
+from osc_agent.harness.repository_boundary import safe_repo_path
+from osc_agent.harness.risk import assess_file_write_risk, format_risk_block
 
 _FILE_WRITE_LOCK = threading.RLock()
 
@@ -86,12 +87,12 @@ def read_file(*, repo_root: Path, path: str, limit: int = 20_000, offset: int = 
     return text[start:end]
 
 
-def write_file(*, repo_root: Path, path: str, content: str, enforce_permissions: bool = True) -> str:
+def write_file(*, repo_root: Path, path: str, content: str, enforce_risk_checks: bool = True) -> str:
     """写入 repo 内文件；父目录不存在时按常见编辑工具行为创建。"""
-    if enforce_permissions:
-        decision = check_file_write(path, content)
+    if enforce_risk_checks:
+        decision = assess_file_write_risk(path, content)
         if not decision.allowed:
-            return format_blocked(decision)
+            return format_risk_block(decision)
 
     try:
         with _FILE_WRITE_LOCK:
@@ -109,13 +110,13 @@ def edit_file(
     path: str,
     old_text: str,
     new_text: str,
-    enforce_permissions: bool = True,
+    enforce_risk_checks: bool = True,
 ) -> str:
     """只替换第一次匹配，防止模型一次调用意外改动多个位置。"""
-    if enforce_permissions:
-        decision = check_file_write(path, new_text)
+    if enforce_risk_checks:
+        decision = assess_file_write_risk(path, new_text)
         if not decision.allowed:
-            return format_blocked(decision)
+            return format_risk_block(decision)
 
     try:
         with _FILE_WRITE_LOCK:

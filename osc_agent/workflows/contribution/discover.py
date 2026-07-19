@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
-import os
-import re
 from pathlib import Path
 from typing import Any
 
 from osc_agent.harness.contracts import RunStatus
+from osc_agent.workflows.contribution.agents import run_discover_analysis, score_candidate_issues
 from osc_agent.tools.github import (
     CANDIDATE_LABELS,
     apply_issue_scores,
@@ -20,13 +20,14 @@ from osc_agent.tools.github import (
 )
 from osc_agent.tools.repo import (
     analyze_architecture_dimensions,
+    analyze_issue_code_candidates,
     collect_repo_evidence_pack,
     detect_entrypoints,
     inspect_repo,
     repo_tree,
 )
 from osc_agent.workflows.contribution.gates import GateResult
-from osc_agent.workflows.contribution.models import ContributionRun
+from osc_agent.workflows.contribution.models import ContributionDirection, ContributionRun
 from osc_agent.workflows.contribution.state import (
     _evidence_file_hashes,
     _read_json,
@@ -44,36 +45,37 @@ def discover_stage(
     *,
     repo_root: Path,
     repo_url: str,
+    client: Any,
+    settings: Any,
     issues_file: Path | None = None,
-    client: Any | None = None,
-    settings: Any | None = None,
-    agent_review: str | None = None,
 ) -> ContributionRun:
     run = create_run(repo_root=repo_root, repo_url=repo_url, settings=settings)
     _begin_stage(run, "discover", repo_root)
+    try:
+        github_token = getattr(settings, "github_token", None)
+        issues, comments_by_issue, issue_error = _collect_issues(
+            repo_url=repo_url,
+            issues_file=issues_file,
+            github_token=github_token,
+        )
+        collection_warnings = [issue_error] if issue_error else []
+        for issue in issues:
+            number = issue.get("number", "unknown")
+            if issue.get("comments_error"):
+                collection_warnings.append(f"Issue #{number} comments: {issue['comments_error']}")
+            if issue.get("activity_error"):
+                collection_warnings.append(f"Issue #{number} activity: {issue['activity_error']}")
+        candidates = filter_candidate_issues(issues, comments_by_issue)
+        for issue in candidates:
+            issue["code_candidates"] = analyze_issue_code_candidates(repo_root=repo_root, issue=issue)
 
-    # 从 settings 获取 GitHub token，避免未授权 API 访问受限
-    github_token = getattr(settings, "github_token", None) if settings else None
-
-    issues, comments_by_issue, issue_error = _collect_issues(
-        repo_url=repo_url,
-        issues_file=issues_file,
-        github_token=github_token
-    )
-    if issue_error:
-        print(f"⚠️  Warning: {issue_error}")
-        if not github_token and not os.getenv("GITHUB_TOKEN"):
-            print("💡 Tip: Set GITHUB_TOKEN in your .env file for authenticated GitHub access")
-            print("   Without token: 60 requests/hour | With token: 5,000 requests/hour")
-    candidates = filter_candidate_issues(issues, comments_by_issue)
-    dimensions = analyze_architecture_dimensions(repo_root=repo_root)
-    evidence_pack = build_discover_evidence(repo_root=repo_root)
-    issue_scores: list[dict[str, Any]] = []
-
-    llm_result = None
-    stage_agents = _try_import_stage_agents()
-    if client is not None and settings is not None and stage_agents is not None:
-        issue_scores = stage_agents.score_candidate_issues(
+        # 只生成一次仓库快照，保证 LLM 输入和落盘 Artifact 使用相同事实。
+        repo_overview = inspect_repo(repo_root=repo_root)
+        tree = repo_tree(repo_root=repo_root, depth=3)
+        entrypoints = detect_entrypoints(repo_root=repo_root)
+        dimensions = analyze_architecture_dimensions(repo_root=repo_root)
+        evidence_pack = build_discover_evidence(repo_root=repo_root)
+        issue_scores = score_candidate_issues(
             client,
             settings,
             candidates,
@@ -81,14 +83,14 @@ def discover_stage(
             repo_root=repo_root,
         )
         candidates = apply_issue_scores(candidates, issue_scores)
-        llm_result = stage_agents.run_discover_analysis(
+        llm_result = run_discover_analysis(
             client,
             settings,
             {
                 "repo_url": repo_url,
-                "repo_overview": inspect_repo(repo_root=repo_root),
-                "tree": repo_tree(repo_root=repo_root, depth=3),
-                "entrypoints": detect_entrypoints(repo_root=repo_root),
+                "repo_overview": repo_overview,
+                "tree": tree,
+                "entrypoints": entrypoints,
                 "candidate_issues": candidates,
                 "issue_scores": issue_scores,
                 "architecture_dimensions": dimensions,
@@ -96,54 +98,71 @@ def discover_stage(
             },
             repo_root=repo_root,
         )
+        directions = _normalize_directions(llm_result.get("top_directions"), candidates)
+        if not directions:
+            raise ValueError("Discover model returned no valid contribution directions")
+        analysis_summary = str(llm_result.get("analysis_summary") or "").strip()
+        if not analysis_summary:
+            raise ValueError("Discover model returned an empty analysis_summary")
 
-    if llm_result:
-        directions = _normalize_directions(llm_result.get("top_directions")) or _top_directions(candidates, dimensions)
-        architecture_dimensions = llm_result.get("architecture_insights") or dimensions
-        analysis_summary = llm_result.get("analysis_summary") or ""
-    else:
-        directions = _top_directions(candidates, dimensions)
-        architecture_dimensions = dimensions
-        analysis_summary = agent_review or ""
+        payload = {
+            "repo_url": repo_url,
+            "repo_overview": repo_overview,
+            "tree": tree,
+            "entrypoints": entrypoints,
+            "candidate_issues": candidates,
+            "issue_scores": issue_scores,
+            "architecture_dimensions": list(llm_result.get("architecture_insights") or []),
+            "top_directions": directions,
+            "warnings": collection_warnings,
+            "issue_source": "offline" if issues_file is not None else "github",
+            "evidence_pack": evidence_pack,
+            "repository_profile": evidence_pack.get("repository_profile", {}),
+            "llm_analysis_summary": analysis_summary,
+            "agent_review_prompt": build_discover_review_prompt(
+                repo_url=repo_url,
+                candidates=candidates,
+                dimensions=dimensions,
+                evidence_pack=evidence_pack,
+            ),
+        }
+        _write_json(run, "01_discover.json", payload)
+        _write_text(run, "01_discover.md", render_discover(payload))
+        _write_text(run, "01_discover_agent_prompt.md", payload["agent_review_prompt"])
+        run.critical_file_hashes = _evidence_file_hashes(repo_root, evidence_pack)
+        _complete_stage(run, "discover", success=True)
+        _write_metrics_report(run)
+        return run
+    except Exception as exc:
+        run.final_status = (
+            RunStatus.FAILED_VALIDATION.value if isinstance(exc, ValueError) else RunStatus.FAILED_TOOL.value
+        )
+        if run.metrics is not None:
+            run.metrics["failure_reason"] = str(exc)[:1000]
+        if (run.stage_status or {}).get("discover") == "RUNNING":
+            _complete_stage(run, "discover", success=False)
+        _write_metrics_report(run)
+        raise
 
-    payload = {
-        "repo_url": repo_url,
-        "repo_overview": inspect_repo(repo_root=repo_root),
-        "tree": repo_tree(repo_root=repo_root, depth=3),
-        "entrypoints": detect_entrypoints(repo_root=repo_root),
-        "candidate_issues": candidates,
-        "issue_scores": issue_scores,
-        "architecture_dimensions": architecture_dimensions,
-        "top_directions": directions,
-        "issue_error": issue_error,
-        "issue_source": "offline" if issues_file is not None else "github",
-        "evidence_pack": evidence_pack,
-        "repository_profile": evidence_pack.get("repository_profile", {}),
-        "agent_review": analysis_summary,
-        "agent_review_prompt": build_discover_review_prompt(
-            repo_url=repo_url,
-            candidates=candidates,
-            dimensions=dimensions,
-            evidence_pack=evidence_pack,
-        ),
-    }
-    _write_json(run, "01_discover.json", payload)
-    _write_text(run, "01_discover.md", render_discover(payload))
-    _write_text(run, "01_discover_agent_prompt.md", payload["agent_review_prompt"])
-    run.critical_file_hashes = _evidence_file_hashes(repo_root, evidence_pack)
-    _complete_stage(run, "discover", success=True)
-    save_run(run)
-    _write_metrics_report(run)
-    return run
 
-
-def attach_discover_agent_review(*, repo_root: Path, run_id: str, review: str) -> ContributionRun:
+def attach_discover_human_review(*, repo_root: Path, run_id: str, review: str) -> ContributionRun:
+    if not review.strip():
+        raise ValueError("human review is required")
     run = load_run(repo_root=repo_root, run_id=run_id)
     _require_consistent_run(run, repo_root)
-    payload = _read_json(run, "01_discover.json")
-    payload["agent_review"] = review
-    _write_json(run, "01_discover.json", payload)
-    _write_text(run, "01_discover.md", render_discover(payload))
+    if run.stage_status.get("discover") != "SUCCEEDED":
+        raise ValueError("Discover must succeed before attaching a human review")
+    downstream = ("design", "implement", "draft_pr")
+    if any(run.stage_status.get(stage) != "PENDING" for stage in downstream):
+        raise ValueError("human review cannot change after a downstream stage has started")
+    _write_json(
+        run,
+        "01_discover_human_review.json",
+        {
+            "review": review.strip(),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
     save_run(run)
     return run
 
@@ -152,18 +171,16 @@ def build_discover_evidence(*, repo_root: Path) -> dict[str, Any]:
     return collect_repo_evidence_pack(repo_root=repo_root)
 
 
-def revalidate_selected_issue(run: ContributionRun) -> GateResult:
+def revalidate_selected_issue(run: ContributionRun, *, github_token: str | None = None) -> GateResult:
     """进入实现前重新确认选中 Issue 仍开放且没有被认领。"""
     discover = _read_json(run, "01_discover.json")
     if discover.get("issue_source") == "offline":
         return GateResult(True, "offline issue snapshot cannot be refreshed")
 
-    selected = run.selected_direction or ""
-    match = re.search(r"Issue\s+#(\d+)", selected, flags=re.IGNORECASE)
-    if not match:
+    number = run.selected_issue_number
+    if number is None:
         return GateResult(True, "selected direction is not tied to a GitHub issue")
-    number = int(match.group(1))
-    current = fetch_issue(run.repo_url, number)
+    current = fetch_issue(run.repo_url, number, token=github_token)
     if not current.get("ok"):
         return GateResult(
             False,
@@ -171,9 +188,20 @@ def revalidate_selected_issue(run: ContributionRun) -> GateResult:
             status=RunStatus.BLOCKED_NEEDS_USER,
         )
     issue = current.get("issue") or {}
-    comments = fetch_issue_comments(run.repo_url, number)
-    activity = fetch_issue_activity(run.repo_url, number)
-    issue["activity"] = activity if activity.get("ok") else {}
+    comments = fetch_issue_comments(run.repo_url, number, token=github_token)
+    activity = fetch_issue_activity(run.repo_url, number, token=github_token)
+    if not comments.get("ok") or not activity.get("ok"):
+        failures = [
+            str(result.get("error") or label)
+            for label, result in (("comments unavailable", comments), ("activity unavailable", activity))
+            if not result.get("ok")
+        ]
+        return GateResult(
+            False,
+            f"could not fully revalidate Issue #{number}: {'; '.join(failures)}",
+            status=RunStatus.BLOCKED_NEEDS_USER,
+        )
+    issue["activity"] = activity
     candidates = filter_candidate_issues(
         [issue],
         {number: comments.get("comments") or []},
@@ -185,11 +213,12 @@ def revalidate_selected_issue(run: ContributionRun) -> GateResult:
             f"Issue #{number} is closed, assigned, claimed, or already has an active linked PR",
             status=RunStatus.BLOCKED_NEEDS_USER,
         )
-    run.issue_snapshot_at = datetime.now(timezone.utc).isoformat()
-    if run.metrics is not None:
-        run.metrics["issue_revalidated_at"] = run.issue_snapshot_at
-    save_run(run)
-    return GateResult(True, f"Issue #{number} is still available")
+    checked_at = datetime.now(timezone.utc).isoformat()
+    return GateResult(
+        True,
+        f"Issue #{number} is still available",
+        metadata={"issue_revalidated_at": checked_at},
+    )
 
 
 def build_discover_review_prompt(
@@ -199,31 +228,30 @@ def build_discover_review_prompt(
     dimensions: list[dict[str, str]],
     evidence_pack: dict[str, Any],
 ) -> str:
-    return (
+    prompt = (
         "OpenSourcePR step 1: find contribution entry points.\n"
         f"Repository: {repo_url}\n\n"
-        f"Candidate issues:\n{json.dumps(candidates, ensure_ascii=False, indent=2)}\n\n"
-        f"Architecture dimensions:\n{json.dumps(dimensions, ensure_ascii=False, indent=2)}\n\n"
-        f"Evidence pack:\n{json.dumps(evidence_pack, ensure_ascii=False, indent=2)}\n"
+        f"Candidate issues:\n{json.dumps(candidates, ensure_ascii=False, indent=2)[:12000]}\n\n"
+        f"Architecture dimensions:\n{json.dumps(dimensions, ensure_ascii=False, indent=2)[:8000]}\n\n"
+        f"Evidence pack:\n{json.dumps(evidence_pack, ensure_ascii=False, indent=2)[:10000]}\n"
     )
+    return prompt[:32_000]
 
 
 def render_discover(payload: dict[str, Any]) -> str:
-    issue_error = payload.get("issue_error")
-    if issue_error:
+    warnings = [str(item) for item in payload.get("warnings") or []]
+    if warnings:
         issue_error_section = (
-            f"\n\n**⚠️ GitHub API Error:**\n\n"
-            f"```\n{issue_error}\n```\n\n"
-            f"**Troubleshooting:**\n"
-            f"- Set `GITHUB_TOKEN` in your `.env` file for authenticated access\n"
-            f"- Use `--issues-file <path>` to provide issues offline\n"
-            f"- Check your network connection and GitHub API rate limits\n\n"
+            "\n\n**Collection warnings:**\n\n"
+            + "\n".join(f"- {_markdown_cell(item)}" for item in warnings)
+            + "\n\n"
         )
     else:
         issue_error_section = ""
 
     issue_rows = "\n".join(
-        f"| #{issue.get('number')} | {issue.get('title', '')} | {', '.join(issue.get('labels', []))} |"
+        f"| #{issue.get('number')} | {_markdown_cell(issue.get('title', ''))} | "
+        f"{_markdown_cell(', '.join(issue.get('labels', [])))} |"
         for issue in payload["candidate_issues"]
     ) or "| - | No matching issue found | - |"
 
@@ -254,7 +282,8 @@ def render_discover(payload: dict[str, Any]) -> str:
         )
         for item in payload["architecture_dimensions"]
     )
-    review = f"\n## Agent Analysis\n\n{payload['agent_review']}\n" if payload.get("agent_review") else ""
+    analysis = payload.get("llm_analysis_summary") or ""
+    review = f"\n## LLM Analysis\n\n{analysis}\n" if analysis else ""
     return (
         "# Open Source Contribution Analysis\n\n"
         f"## Project\nRepository: {payload['repo_url']}\n\n"
@@ -270,6 +299,10 @@ def render_discover(payload: dict[str, Any]) -> str:
         "## Top 3 Contribution Suggestions\n\n"
         f"{directions}\n"
     )
+
+
+def _markdown_cell(value: Any) -> str:
+    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
 
 
 def _collect_issues(
@@ -288,58 +321,55 @@ def _collect_issues(
     if not issue_result["ok"]:
         return [], {}, issue_result["error"]
 
+    selected_issues = list(issue_result["issues"][:20])
     comments: dict[int | str, list[dict[str, Any]]] = {}
-    for issue in issue_result["issues"][:20]:
+    for issue in selected_issues:
         number = issue.get("number")
         if number is None:
+            issue["eligibility_evidence_complete"] = False
+            issue["comments_error"] = "issue number is missing"
             continue
-        result = fetch_issue_comments(repo_url, int(number), token=github_token)
-        comments[number] = result.get("comments", [])
-        issue["activity"] = fetch_issue_activity(repo_url, int(number), token=github_token)
-    return issue_result["issues"], comments, None
-
-
-def _top_directions(candidates: list[dict[str, Any]], dimensions: list[dict[str, str]]) -> list[dict[str, str]]:
-    directions: list[dict[str, str]] = []
-    for issue in candidates[:3]:
-        directions.append(
-            {
-                "name": f"Issue #{issue['number']}: {issue['title']}",
-                "description": "Small scoped fix or enhancement from an existing issue.",
-                "source": f"Issue #{issue['number']}",
-                "entry": issue.get("url") or "issue",
-                "effort": "small",
-                "interview": "Shows requirement clarification, scope control, and verification.",
-                "risk": "Needs maintainer confirmation.",
-            }
+        comment_result = fetch_issue_comments(repo_url, int(number), token=github_token)
+        activity_result = fetch_issue_activity(repo_url, int(number), token=github_token)
+        comments[number] = list(comment_result.get("comments") or [])
+        issue["activity"] = activity_result
+        issue["eligibility_evidence_complete"] = bool(
+            comment_result.get("ok") and activity_result.get("ok")
         )
-    for item in dimensions:
-        if len(directions) >= 3:
-            break
-        directions.append(
-            {
-                "name": f"Improve {item['dimension']}",
-                "description": item["improvement"],
-                "source": f"Code analysis - {item['dimension']}",
-                "entry": item["location"],
-                "effort": "medium",
-                "interview": item["interview_angle"],
-                "risk": "Scope must be validated against maintainer expectations.",
-            }
-        )
-    return directions[:3]
+        if not comment_result.get("ok"):
+            issue["comments_error"] = str(comment_result.get("error") or "comments unavailable")
+        if not activity_result.get("ok"):
+            issue["activity_error"] = str(activity_result.get("error") or "activity unavailable")
+    return selected_issues, comments, None
 
 
-def _normalize_directions(value: Any) -> list[dict[str, Any]]:
+def _normalize_directions(value: Any, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict) and item.get("name") and item.get("description")]
-
-
-def _try_import_stage_agents():
-    try:
-        from osc_agent.workflows.contribution import agents as stage_agents
-
-        return stage_agents
-    except ImportError:
-        return None
+        raise ValueError("Discover model top_directions must be a list")
+    candidate_numbers = {int(item["number"]) for item in candidates if item.get("number") is not None}
+    directions: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("Discover model directions must be objects")
+        source_kind = str(item.get("source_kind") or "")
+        issue_number = item.get("issue_number")
+        if source_kind == "issue":
+            if isinstance(issue_number, bool) or not isinstance(issue_number, int):
+                raise ValueError("issue direction must define an integer issue_number")
+            if issue_number not in candidate_numbers:
+                raise ValueError(f"direction references unknown candidate Issue #{issue_number}")
+            direction_id = f"issue:{issue_number}"
+        elif source_kind == "architecture":
+            if issue_number is not None:
+                raise ValueError("architecture direction cannot define issue_number")
+            identity = "\n".join(str(item.get(key) or "").strip() for key in ("name", "source", "entry"))
+            direction_id = f"architecture:{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]}"
+        else:
+            raise ValueError("direction source_kind must be issue or architecture")
+        direction = ContributionDirection.model_validate({**item, "id": direction_id}).model_dump(mode="json")
+        if direction_id in seen_ids:
+            raise ValueError(f"duplicate contribution direction id: {direction_id}")
+        seen_ids.add(direction_id)
+        directions.append(direction)
+    return directions

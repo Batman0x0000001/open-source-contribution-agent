@@ -108,6 +108,8 @@ def normalize_tool_result(
 @dataclass
 class RunMetrics:
     model_calls: int = 0
+    model_attempts: int = 0
+    fallback_switches: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     tool_calls: int = 0

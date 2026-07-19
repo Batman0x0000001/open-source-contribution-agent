@@ -5,19 +5,22 @@ from pathlib import Path
 
 from osc_agent.harness.contracts import RunStatus, StageStatus
 from osc_agent.workflows.contribution.gates import GateResult, gate_design, gate_discover, gate_implementation
-from osc_agent.workflows.contribution.models import ContributionRun, STAGES
+from osc_agent.workflows.contribution.models import ContributionRun, ContributionStage, STAGE_ORDER
 from osc_agent.workflows.contribution.state import save_run
 
 def transition_run(
     run: ContributionRun,
-    stage: str,
+    stage: ContributionStage | str,
     *,
     repo_root: Path | None = None,
+    github_token: str | None = None,
     success: bool | None = None,
 ) -> None:
     """唯一的阶段状态转换入口；开始阶段时在这里执行前置 Gate。"""
-    if stage not in STAGES:
-        raise ValueError(f"unknown contribution stage: {stage}")
+    try:
+        stage = ContributionStage(stage).value
+    except ValueError as exc:
+        raise ValueError(f"unknown contribution stage: {stage}") from exc
     if run.stage_status is None or run.metrics is None:
         raise ValueError("run state is missing required schema fields")
 
@@ -39,6 +42,7 @@ def transition_run(
             "status": run.stage_status[stage],
             "at": finished.isoformat(),
         }
+        save_run(run)
         return
 
     current_status = run.stage_status.get(run.stage, StageStatus.PENDING.value)
@@ -47,13 +51,15 @@ def transition_run(
         StageStatus.FAILED.value,
         StageStatus.RUNNING.value,
     }
-    ordered = ["discover", "design", "implement", "draft_pr"]
-    allowed_forward = ordered.index(stage) == ordered.index(run.stage) + 1
+    allowed_forward = (
+        current_status == StageStatus.SUCCEEDED.value
+        and STAGE_ORDER.index(stage) == STAGE_ORDER.index(run.stage) + 1
+    )
     if not (allowed_retry or allowed_forward):
         raise ValueError(f"illegal contribution transition: {run.stage} -> {stage}")
 
     active_repo = (repo_root or Path(run.worktree_root or run.repo_root)).resolve()
-    gate = _transition_gate(run, stage, active_repo)
+    gate = _transition_gate(run, stage, active_repo, github_token=github_token)
     if not gate.passed:
         run.final_status = (gate.status or RunStatus.FAILED_VALIDATION).value
         run.recovery_stage = run.stage if allowed_forward else stage
@@ -66,6 +72,9 @@ def transition_run(
         }
         save_run(run)
         raise ValueError(f"{run.final_status}: transition to {stage} blocked: {gate.reason}")
+
+    if gate.metadata.get("issue_revalidated_at"):
+        run.issue_snapshot_at = str(gate.metadata["issue_revalidated_at"])
 
     run.stage = stage
     run.stage_status[stage] = StageStatus.RUNNING.value
@@ -81,15 +90,27 @@ def transition_run(
     save_run(run)
 
 
-def _begin_stage(run: ContributionRun, stage: str, repo_root: Path | None = None) -> None:
-    transition_run(run, stage, repo_root=repo_root)
+def _begin_stage(
+    run: ContributionRun,
+    stage: ContributionStage | str,
+    repo_root: Path | None = None,
+    *,
+    github_token: str | None = None,
+) -> None:
+    transition_run(run, stage, repo_root=repo_root, github_token=github_token)
 
 
-def _complete_stage(run: ContributionRun, stage: str, *, success: bool) -> None:
+def _complete_stage(run: ContributionRun, stage: ContributionStage | str, *, success: bool) -> None:
     transition_run(run, stage, success=success)
 
 
-def _transition_gate(run: ContributionRun, target: str, repo_root: Path) -> GateResult:
+def _transition_gate(
+    run: ContributionRun,
+    target: ContributionStage | str,
+    repo_root: Path,
+    *,
+    github_token: str | None = None,
+) -> GateResult:
     artifacts = Path(run.artifacts_dir)
     if target == "discover":
         return GateResult(True, "initial stage")
@@ -101,6 +122,5 @@ def _transition_gate(run: ContributionRun, target: str, repo_root: Path) -> Gate
             return design_gate
         from osc_agent.workflows.contribution.discover import revalidate_selected_issue
 
-        return revalidate_selected_issue(run)
+        return revalidate_selected_issue(run, github_token=github_token)
     return gate_implementation(artifacts, repo_root)
-

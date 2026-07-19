@@ -4,7 +4,8 @@ from types import SimpleNamespace
 
 from osc_agent.agent_loop import TOOLS, agent_loop, build_tool_handlers
 from osc_agent.config import Settings
-from osc_agent.harness.prompt import assemble_system_prompt
+from osc_agent.harness.capabilities import AgentCapabilityScope
+from osc_agent.harness.prompt import assemble_system_prompt, update_context
 from osc_agent.skills.registry import (
     list_skill_catalog,
     load_skill,
@@ -78,7 +79,14 @@ def test_skill_contract_cannot_grant_missing_tool_or_permission():
 def test_system_prompt_contains_catalog_not_full_skill_body(tmp_path):
     (tmp_path / "README.md").write_text("hello", encoding="utf-8")
 
-    prompt = assemble_system_prompt(tmp_path)
+    context = update_context(
+        repo_root=tmp_path,
+        objective="Inspect repository skills",
+        current_instruction="inspect skills",
+        enabled_tools=["load_skill"],
+        capabilities=AgentCapabilityScope.unrestricted(),
+    )
+    prompt = assemble_system_prompt(context)
 
     assert "Skills available:" in prompt
     assert "- docs:" in prompt

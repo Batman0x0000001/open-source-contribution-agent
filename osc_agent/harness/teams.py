@@ -539,7 +539,7 @@ def _teammate_handlers(
             repo_root=cwd(),
             path=path,
             content=content,
-            enforce_permissions=True,
+            enforce_risk_checks=True,
         )
     return handlers
 

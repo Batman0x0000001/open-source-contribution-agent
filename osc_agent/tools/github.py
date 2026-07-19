@@ -162,6 +162,8 @@ def filter_candidate_issues(
     threshold = datetime.now(timezone.utc) - timedelta(days=max(int(updated_within_days), 1))
     candidates: list[dict[str, Any]] = []
     for issue in issues:
+        if issue.get("eligibility_evidence_complete") is False:
+            continue
         if issue.get("state") != "open":
             continue
         if not (_issue_labels(issue) & CANDIDATE_LABELS):

@@ -13,7 +13,8 @@ from osc_agent.harness.memory import (
     select_relevant_memories,
     write_memory_file,
 )
-from osc_agent.harness.prompt import assemble_system_prompt
+from osc_agent.harness.capabilities import AgentCapabilityScope
+from osc_agent.harness.prompt import assemble_system_prompt, update_context
 
 
 def test_ensure_memory_store_creates_readable_index(tmp_path):
@@ -96,7 +97,14 @@ def test_memory_prompt_is_limited_and_injected_into_system_prompt(tmp_path):
     )
 
     text = memory_prompt(tmp_path, query="contribution", limit_chars=120)
-    prompt = assemble_system_prompt(tmp_path, current_task="contribution")
+    context = update_context(
+        repo_root=tmp_path,
+        objective="contribution",
+        current_instruction="review contribution memory",
+        enabled_tools=[],
+        capabilities=AgentCapabilityScope.unrestricted(),
+    )
+    prompt = assemble_system_prompt(context)
 
     assert len(text) <= 120
     assert "Persistent memory:" in prompt

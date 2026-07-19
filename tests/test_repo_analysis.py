@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from osc_agent.tools.repo import (
+    analyze_issue_code_candidates,
     _is_safe_repo_file,
     analyze_architecture_dimensions,
     analyze_python_repository,
@@ -11,6 +12,28 @@ from osc_agent.tools.repo import (
     find_functions,
     repo_tree,
 )
+
+
+def test_issue_terms_map_to_symbol_level_code_candidates(tmp_path):
+    (tmp_path / "retry.py").write_text(
+        "class RetryManager:\n"
+        "    def execute_with_retry(self):\n"
+        "        raise RetryError('retry exhausted')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "unrelated.py").write_text("def render_docs():\n    return 'ok'\n", encoding="utf-8")
+
+    candidates = analyze_issue_code_candidates(
+        repo_root=tmp_path,
+        issue={
+            "title": "execute_with_retry raises RetryError",
+            "body": "The RetryManager should recover instead of reporting retry exhausted.",
+        },
+    )
+
+    assert candidates[0]["file"] == "retry.py"
+    assert {item["name"] for item in candidates[0]["symbols"]} >= {"RetryManager", "execute_with_retry"}
+    assert any("Issue references symbol execute_with_retry" in reason for reason in candidates[0]["reasons"])
 
 
 def test_repo_tree_limits_depth_and_skips_cache(tmp_path):
@@ -96,3 +119,15 @@ def test_repository_file_boundary_rejects_external_paths(tmp_path):
     outside.write_text("pass\n", encoding="utf-8")
 
     assert _is_safe_repo_file(repo, outside) is False
+
+
+def test_repository_index_reports_budget_truncation(tmp_path):
+    from osc_agent.tools.repo import RepositoryIndex
+
+    for index in range(3):
+        (tmp_path / f"file_{index}.py").write_text("pass\n", encoding="utf-8")
+
+    repository_index = RepositoryIndex.build(tmp_path, max_files=2)
+
+    assert len(repository_index.paths) == 2
+    assert repository_index.truncated is True

@@ -1,83 +1,168 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
-import re
 from typing import Any
 
-from osc_agent.tools.git import git_diff, git_status
-from osc_agent.workflows.contribution.models import ContributionRun
+from osc_agent.harness.contracts import RunStatus, StageStatus
+from osc_agent.harness.repository_boundary import safe_repo_path
+from osc_agent.tools.git import git_changes, git_diff, git_head
+from osc_agent.workflows.contribution.agents import run_pr_draft_generation
+from osc_agent.workflows.contribution.gates import gate_implementation
+from osc_agent.workflows.contribution.models import (
+    ContributionRun,
+    PRDraftArtifact,
+    PRDraftNarrative,
+)
+from osc_agent.workflows.contribution.scope import is_runtime_artifact
 from osc_agent.workflows.contribution.state import (
     _read_json,
-    _read_text,
     _require_consistent_run,
+    _write_json,
     _write_metrics_report,
     _write_text,
+    acquire_run_lock,
     load_run,
-    save_run,
 )
 from osc_agent.workflows.contribution.transitions import _begin_stage, _complete_stage
+
 
 def draft_pr_stage(
     *,
     repo_root: Path,
     run_id: str,
-    client: Any | None = None,
-    settings: Any | None = None,
+    client: Any,
+    settings: Any,
 ) -> ContributionRun:
-    run = load_run(repo_root=repo_root, run_id=run_id)
-    _require_consistent_run(run, repo_root, check_evidence=False)
-    _begin_stage(run, "draft_pr", repo_root)
-    _write_text(
-        run,
-        "04_pr_draft.md",
-        build_workflow_pr_draft(repo_root=repo_root, run_id=run_id, client=client, settings=settings),
-    )
-    _complete_stage(run, "draft_pr", success=True)
-    save_run(run)
-    _write_metrics_report(run)
-    return run
+    _require_llm(client, settings)
+    with acquire_run_lock(repo_root=repo_root, run_id=run_id):
+        run = load_run(repo_root=repo_root, run_id=run_id)
+        _require_consistent_run(run, repo_root, check_evidence=False)
+        _begin_stage(run, "draft_pr", repo_root)
+        try:
+            artifact = _build_pr_draft_artifact(
+                repo_root=repo_root,
+                run_id=run_id,
+                client=client,
+                settings=settings,
+            )
+            _write_json(run, "04_pr_draft.json", artifact.model_dump(mode="json"))
+            _write_text(run, "04_pr_draft.md", render_pr_draft(artifact))
+            _complete_stage(run, "draft_pr", success=True)
+        except Exception as exc:
+            run.final_status = (
+                RunStatus.FAILED_VALIDATION.value
+                if isinstance(exc, ValueError)
+                else RunStatus.FAILED_TOOL.value
+            )
+            if run.metrics is not None:
+                run.metrics["failure_reason"] = str(exc)[:1000]
+            if (run.stage_status or {}).get("draft_pr") == StageStatus.RUNNING.value:
+                _complete_stage(run, "draft_pr", success=False)
+            _write_metrics_report(run)
+            raise
+        _write_metrics_report(run)
+        return run
 
 
 def build_workflow_pr_draft(
     *,
     repo_root: Path,
     run_id: str,
-    client: Any | None = None,
-    settings: Any | None = None,
+    client: Any,
+    settings: Any,
 ) -> str:
     """基于权威 Run 产物和当前实现 worktree 生成 PR 草稿。"""
-    run = load_run(repo_root=repo_root, run_id=run_id)
-    discover = _read_json(run, "01_discover.json")
-    design = _read_json(run, "02_design.json")
-    implementation = _read_text(run, "03_implementation_report.md")
-    diff = git_diff(repo_root=repo_root)
-    status = git_status(repo_root=repo_root)
-    changed_files = _changed_files(diff, status)
-    selected = str(design.get("selected_direction") or _first_direction_name(discover))
-    llm_draft = _try_llm_pr_draft(
+    _require_llm(client, settings)
+    artifact = _build_pr_draft_artifact(
         repo_root=repo_root,
+        run_id=run_id,
         client=client,
         settings=settings,
-        selected_direction=selected,
-        design=design,
-        implementation=implementation,
-        diff=diff,
-        changed_files=changed_files,
     )
-    if llm_draft:
-        return llm_draft
-    changes = "\n".join(f"- Updated `{path}`" for path in changed_files) or "- No local file changes detected yet."
-    testing = _extract_section(implementation, "Testing") or "No explicit test result captured. Run focused tests before submitting."
-    solution = design.get("agent_design") or design.get("recommended") or "Use the recommended scoped implementation plan."
-    notes = _reviewer_notes(design, implementation)
+    return render_pr_draft(artifact)
+
+
+def _build_pr_draft_artifact(
+    *,
+    repo_root: Path,
+    run_id: str,
+    client: Any,
+    settings: Any,
+) -> PRDraftArtifact:
+    run = load_run(repo_root=repo_root, run_id=run_id)
+    _require_consistent_run(run, repo_root, check_evidence=False)
+    if (run.stage_status or {}).get("implement") != StageStatus.SUCCEEDED.value:
+        raise ValueError("implement must be SUCCEEDED before drafting a pull request")
+
+    gate = gate_implementation(Path(run.artifacts_dir), repo_root)
+    if not gate.passed:
+        raise ValueError(f"implementation gate failed: {gate.reason}")
+
+    design = _read_json(run, "02_design.json")
+    implementation = _read_json(run, "03_implementation.json")
+    diff = git_diff(repo_root=repo_root)
+    if diff.startswith("Error:"):
+        raise RuntimeError(diff)
+    changed_files = sorted(
+        {
+            change.path
+            for change in git_changes(repo_root=repo_root)
+            if not is_runtime_artifact(change.path)
+        }
+    )
+    head = git_head(repo_root=repo_root).strip()
+    diff_hash = _worktree_diff_hash(repo_root, head, diff, changed_files)
+
+    # 已完成的草稿只能读取，且必须仍对应同一个 worktree 快照。
+    if (run.stage_status or {}).get("draft_pr") == StageStatus.SUCCEEDED.value:
+        existing = PRDraftArtifact.model_validate(_read_json(run, "04_pr_draft.json"))
+        if existing.diff_hash != diff_hash:
+            raise ValueError("STALE_RUN: PR draft no longer matches the current worktree")
+        return existing
+
+    narrative = PRDraftNarrative.model_validate(
+        run_pr_draft_generation(
+            client,
+            settings,
+            {
+                "selected_direction": design.get("selected_direction") or run.selected_direction,
+                "design_summary": design,
+                "implementation_report": implementation,
+                "git_diff": diff,
+                "changed_files": changed_files,
+            },
+            repo_root=repo_root,
+        )
+    )
+    implementation_hash = str((run.stage_hashes or {}).get("03_implementation.json") or "")
+    return PRDraftArtifact(
+        **narrative.model_dump(),
+        run_id=run.run_id,
+        run_revision=run.revision,
+        head_sha=head,
+        diff_hash=diff_hash,
+        implementation_artifact_hash=implementation_hash,
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        changed_files=changed_files,
+        changes=[f"Updated `{path}`." for path in changed_files],
+        testing=_testing_facts(implementation),
+    )
+
+
+def render_pr_draft(draft: PRDraftArtifact) -> str:
+    changes = "\n".join(f"- {item}" for item in draft.changes)
+    testing = "\n".join(f"- {item}" for item in draft.testing)
+    notes = "\n".join(f"- {item}" for item in draft.reviewer_notes)
     return (
-        "标题：\n"
-        f"`{_workflow_title(selected, changed_files)}`\n\n"
+        "Title:\n"
+        f"`{draft.title}`\n\n"
         "**Problem**\n"
-        f"{design.get('problem_boundary', selected)}\n\n"
+        f"{draft.problem}\n\n"
         "**Solution**\n"
-        f"{solution}\n\n"
+        f"{draft.solution}\n\n"
         "**Changes**\n"
         f"{changes}\n\n"
         "**Testing**\n"
@@ -87,99 +172,37 @@ def build_workflow_pr_draft(
     )
 
 
-def _try_llm_pr_draft(
-    *,
-    repo_root: Path,
-    client: Any | None,
-    settings: Any | None,
-    selected_direction: str,
-    design: dict,
-    implementation: str,
-    diff: str,
-    changed_files: list[str],
-) -> str | None:
+def _testing_facts(implementation: dict[str, Any]) -> list[str]:
+    results = implementation.get("verification_results") or []
+    if results:
+        return [
+            f"`{item.get('command')}` → exit {item.get('exit_code')} ({item.get('duration_ms', 0)} ms)"
+            for item in results
+        ]
+    waiver = implementation.get("test_waiver") or {}
+    reason = str(waiver.get("reason") or "").strip()
+    if reason:
+        return [f"Test waiver recorded: {reason}"]
+    raise ValueError("implementation artifact contains no verification result or test waiver")
+
+
+def _worktree_diff_hash(repo_root: Path, head: str, diff: str, changed_files: list[str]) -> str:
+    files: list[dict[str, str | None]] = []
+    for relative in changed_files:
+        path = safe_repo_path(repo_root, relative)
+        content_hash = None
+        if path.is_file() and not path.is_symlink():
+            content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        files.append({"path": relative, "content_hash": content_hash})
+    payload = json.dumps(
+        {"head": head, "diff": diff, "files": files},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _require_llm(client: Any, settings: Any) -> None:
     if client is None or settings is None:
-        return None
-    from osc_agent.workflows.contribution.agents import run_pr_draft_generation
-
-    result = run_pr_draft_generation(
-        client,
-        settings,
-        {
-            "selected_direction": selected_direction,
-            "design_summary": json.dumps(design, ensure_ascii=False, indent=2),
-            "implementation_report": implementation,
-            "git_diff": diff,
-            "changed_files": changed_files,
-        },
-        repo_root=repo_root,
-    )
-    if not result:
-        return None
-    changes = "\n".join(f"- {item}" for item in result.get("changes", [])) or "- No local file changes detected yet."
-    notes = "\n".join(f"- {item}" for item in result.get("reviewer_notes", [])) or "- Review the saved workflow artifacts."
-    return (
-        "Title:\n"
-        f"`{result.get('title', _workflow_title(selected_direction, changed_files))}`\n\n"
-        "**Problem**\n"
-        f"{result.get('problem', selected_direction)}\n\n"
-        "**Solution**\n"
-        f"{result.get('solution', 'See the saved implementation report.')}\n\n"
-        "**Changes**\n"
-        f"{changes}\n\n"
-        "**Testing**\n"
-        f"{result.get('testing', 'No explicit test result captured.')}\n\n"
-        "**Notes for Reviewer**\n"
-        f"{notes}"
-    )
-
-
-def _changed_files(diff: str, status: str) -> list[str]:
-    files: set[str] = set()
-    for match in re.finditer(r"^diff --git a/(.*?) b/(.*?)$", diff, flags=re.MULTILINE):
-        files.add(match.group(2))
-    for line in status.splitlines():
-        if not line.strip() or line == "(no output)":
-            continue
-        path = line[3:].strip() if len(line) > 3 else line.strip()
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1]
-        files.add(path)
-    return sorted(files)
-
-
-def _first_direction_name(discover: dict) -> str:
-    directions = discover.get("top_directions") or []
-    if directions:
-        return str(directions[0].get("name", "OpenSourcePR contribution"))
-    return "OpenSourcePR contribution"
-
-
-def _workflow_title(selected: str, changed_files: list[str]) -> str:
-    scope = "docs" if changed_files and all(_is_doc_file(path) for path in changed_files) else "agent"
-    text = re.sub(r"[^A-Za-z0-9一-龥]+", " ", selected).strip()
-    words = " ".join(text.split()[:8]) or "update contribution workflow"
-    return f"feat({scope}): {words}"
-
-
-def _is_doc_file(path: str) -> bool:
-    lower = path.lower()
-    return lower.endswith((".md", ".rst", ".txt")) or lower.startswith("docs/")
-
-
-def _extract_section(markdown: str, heading: str) -> str:
-    pattern = re.compile(rf"^## {re.escape(heading)}\s*\n(.*?)(?=^## |\Z)", re.M | re.S)
-    match = pattern.search(markdown)
-    return match.group(1).strip() if match else ""
-
-
-def _reviewer_notes(design: dict, implementation: str) -> str:
-    notes = [
-        "Review whether the implementation remains within the selected OpenSourcePR scope.",
-        "Check that the code changes match the saved technical design artifact.",
-    ]
-    if design.get("agent_design"):
-        notes.append("The design was refined by an agent review artifact; compare the implementation against that section.")
-    if "No explicit test" in implementation:
-        notes.append("Testing evidence is incomplete and should be filled before opening the PR.")
-    return "\n".join(f"- {note}" for note in notes)
+        raise ValueError("LLM client and settings are required for Draft PR generation")

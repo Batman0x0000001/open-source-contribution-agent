@@ -6,6 +6,7 @@ import json
 from osc_agent.agent_loop import _budget_reason, agent_loop
 from osc_agent.config import Settings
 from osc_agent.harness.contracts import RunMetrics, RunStatus
+from osc_agent.harness.capabilities import AgentCapabilityScope
 
 
 class FakeMessages:
@@ -62,6 +63,44 @@ def test_agent_loop_appends_tool_result_and_stops(tmp_path):
     assert result["call_id"] == "toolu_1"
 
 
+def test_agent_loop_respects_explicit_empty_tool_handlers(tmp_path):
+    class ReadMessages:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def create(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    stop_reason="tool_use",
+                    content=[
+                        SimpleNamespace(
+                            type="tool_use",
+                            name="read_file",
+                            id="toolu_empty",
+                            input={"path": "README.md"},
+                        )
+                    ],
+                )
+            return SimpleNamespace(
+                stop_reason="end_turn",
+                content=[SimpleNamespace(type="text", text="done")],
+            )
+
+    messages = [{"role": "user", "content": "read"}]
+    agent_loop(
+        messages,
+        client=SimpleNamespace(messages=ReadMessages()),
+        settings=Settings(model_id="test"),
+        repo_root=tmp_path,
+        tool_handlers={},
+    )
+
+    result = json.loads(messages[2]["content"][0]["content"])
+    assert result["ok"] is False
+    assert result["summary"] == "Error: unknown tool read_file"
+
+
 def test_agent_loop_starts_background_bash(tmp_path):
     messages = [{"role": "user", "content": "run slow test"}]
     settings = Settings(
@@ -104,6 +143,46 @@ def test_agent_loop_starts_background_bash(tmp_path):
     assert "Background task bg_" in messages[2]["content"][0]["content"]
 
 
+def test_contribution_policy_hides_and_blocks_shell(tmp_path):
+    called = False
+
+    class PolicyMessages:
+        def __init__(self):
+            self.calls = 0
+            self.exposed_tools = set()
+
+        def create(self, **kwargs):
+            self.calls += 1
+            self.exposed_tools = {tool["name"] for tool in kwargs["tools"]}
+            if self.calls == 1:
+                return SimpleNamespace(
+                    stop_reason="tool_use",
+                    content=[SimpleNamespace(type="tool_use", name="bash", id="forbidden", input={"command": "pytest"})],
+                )
+            return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="done")])
+
+    messages_api = PolicyMessages()
+    client = SimpleNamespace(messages=messages_api)
+
+    def forbidden_handler(command):
+        nonlocal called
+        called = True
+        return command
+
+    result = agent_loop(
+        [{"role": "user", "content": "understand"}],
+        client=client,
+        settings=Settings(model_id="test"),
+        repo_root=tmp_path,
+        tool_handlers={"bash": forbidden_handler},
+        capabilities=AgentCapabilityScope.contribution("understanding", {}),
+    )
+
+    assert result.status is RunStatus.SUCCESS
+    assert "bash" not in messages_api.exposed_tools
+    assert called is False
+
+
 class LoopingMessages:
     def __init__(self, *, include_usage=False) -> None:
         self.calls = 0
@@ -119,7 +198,7 @@ class LoopingMessages:
 
 
 def test_agent_loop_stops_repeated_actions_with_structured_status(tmp_path):
-    settings = Settings(None, None, "test", None, repeat_action_limit=3)
+    settings = Settings(model_id="test", repeat_action_limit=3)
     result = agent_loop(
         [{"role": "user", "content": "loop"}],
         client=SimpleNamespace(messages=LoopingMessages()),
@@ -141,7 +220,7 @@ def test_agent_loop_stops_at_token_budget(tmp_path):
                 usage=SimpleNamespace(input_tokens=120, output_tokens=90),
             )
 
-    settings = Settings(None, None, "test", None, max_total_tokens=200)
+    settings = Settings(model_id="test", max_total_tokens=200)
     result = agent_loop(
         [{"role": "user", "content": "work"}],
         client=SimpleNamespace(messages=TokenMessages()),
@@ -155,7 +234,7 @@ def test_agent_loop_stops_at_token_budget(tmp_path):
 
 def test_agent_loop_stops_at_deadline_before_model_call(tmp_path):
     messages = LoopingMessages()
-    settings = Settings(None, None, "test", None, agent_deadline_seconds=0)
+    settings = Settings(model_id="test", agent_deadline_seconds=0)
     result = agent_loop(
         [{"role": "user", "content": "work"}],
         client=SimpleNamespace(messages=messages),
@@ -168,7 +247,7 @@ def test_agent_loop_stops_at_deadline_before_model_call(tmp_path):
 
 
 def test_budget_override_is_per_run_and_per_limit():
-    settings = Settings(None, None, "test", None, max_agent_rounds=1, max_total_tokens=10)
+    settings = Settings(model_id="test", max_agent_rounds=1, max_total_tokens=10)
     metrics = RunMetrics(model_calls=1, input_tokens=10)
     overrides: set[str] = set()
     prompts: list[str] = []
@@ -203,7 +282,7 @@ def test_agent_loop_stops_after_consecutive_tool_failures(tmp_path):
                 ],
             )
 
-    settings = Settings(None, None, "test", None, consecutive_failure_limit=3)
+    settings = Settings(model_id="test", consecutive_failure_limit=3)
     result = agent_loop(
         [{"role": "user", "content": "read missing files"}],
         client=SimpleNamespace(messages=FailingMessages()),
@@ -214,3 +293,21 @@ def test_agent_loop_stops_after_consecutive_tool_failures(tmp_path):
 
     assert result.status is RunStatus.FAILED_TOOL
     assert result.metrics.tool_failures == 3
+
+
+def test_model_exception_uses_single_audited_finalization(tmp_path):
+    class BrokenMessages:
+        def create(self, **kwargs):
+            raise RuntimeError("model unavailable")
+
+    result = agent_loop(
+        [{"role": "user", "content": "work"}],
+        client=SimpleNamespace(messages=BrokenMessages()),
+        settings=Settings(model_id="test"),
+        repo_root=tmp_path,
+    )
+
+    trace = (tmp_path / ".osc_agent" / "traces" / "session.jsonl").read_text(encoding="utf-8")
+    assert result.status is RunStatus.FAILED_TOOL
+    assert trace.count('"event": "stop_summary"') == 1
+    assert trace.count('"event": "agent_run_finished"') == 1

@@ -1,7 +1,7 @@
 """
 agent_loop 准备调用工具
         ↓
-PreToolUse hook：权限检查
+PreToolUse hook：能力边界 → 仓库边界 → 风险评估 → 审批
         ↓
 允许 → 执行工具
 拒绝 → 返回错误文本
@@ -20,20 +20,18 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable
 
-from osc_agent.harness.permissions import (
-    PermissionDecision,
-    allow,
-    check_file_write,
-    check_shell_command,
-    format_blocked,
-    safe_repo_path,
-)
-from osc_agent.harness.trace import append_trace, preview
+from osc_agent.harness.capabilities import AgentCapabilityScope
+from osc_agent.harness.repository_boundary import safe_repo_path
+from osc_agent.harness.risk import RiskDecision, assess_file_write_risk, assess_shell_risk, format_risk_block
+from osc_agent.harness.trace import append_trace, preview, sanitize_tool_arguments
 
 
 @dataclass
 class HookContext:
     repo_root: Path
+    capabilities: AgentCapabilityScope = field(default_factory=AgentCapabilityScope.unrestricted)
+    session_id: str = ""
+    run_id: str | None = None
     confirm: Callable[[str], bool] | None = None
     tool_count: int = 0
     failed_count: int = 0
@@ -80,41 +78,45 @@ class HookRegistry:
 
 def default_hooks() -> HookRegistry:
     registry = HookRegistry()
-    registry.register("PreToolUse", pre_tool_permission_hook)
+    registry.register("PreToolUse", pre_tool_guard_hook)
     registry.register("PostToolUse", post_tool_trace_hook)
     registry.register("Stop", stop_summary_hook)
     return registry
 
 
-def pre_tool_permission_hook(context: HookContext, payload: dict[str, Any]) -> PreToolUseResult:
-    """在工具执行前集中做权限判断，阻止危险操作进入 handler。"""
+def pre_tool_guard_hook(context: HookContext, payload: dict[str, Any]) -> PreToolUseResult:
+    """按能力、路径和风险层次检查工具调用，并在需要时请求审批。"""
     tool_name = str(payload.get("tool_name", ""))
     tool_args = payload.get("tool_args", {})
     if not isinstance(tool_args, dict):
         return PreToolUseResult(False, "Error: tool arguments must be an object")
 
-    decision = _permission_for_tool(context.repo_root, tool_name, tool_args)
-    append_trace(
-        context.repo_root,
-        "permission_decision",
-        {
-            "tool": tool_name,
-            "action": decision.action,
-            "reason": decision.reason,
-        },
-    )
+    capability_violation = _capability_violation(tool_name, tool_args, context.capabilities)
+    if capability_violation is not None:
+        _record_guard_decision(context, tool_name, "capability", "deny", capability_violation)
+        return PreToolUseResult(False, f"Permission denied: {capability_violation}")
+
+    boundary_violation = _repository_boundary_violation(context.repo_root, tool_name, tool_args)
+    if boundary_violation is not None:
+        _record_guard_decision(context, tool_name, "repository_boundary", "deny", boundary_violation)
+        return PreToolUseResult(False, f"Permission denied: {boundary_violation}")
+
+    decision = _assess_tool_risk(tool_name, tool_args)
+    _record_guard_decision(context, tool_name, "risk", decision.action, decision.reason)
     if decision.allowed:
         return PreToolUseResult(True)
     if decision.action == "ask":
         if context.confirm is None:
-            return PreToolUseResult(False, format_blocked(decision))
+            return PreToolUseResult(False, format_risk_block(decision))
 
-        # ask 决策必须交给人类确认；只有明确输入 y/yes 才放行。
+        # 风险层只提出审批要求，是否放行由 Hook 中的确认结果决定。
         approved = context.confirm(f"{decision.reason} Allow this tool call?")
         append_trace(
             context.repo_root,
-            "permission_confirmation",
+            "approval_decision",
             {
+                "session_id": context.session_id,
+                "run_id": context.run_id,
                 "tool": tool_name,
                 "approved": approved,
                 "reason": decision.reason,
@@ -122,7 +124,7 @@ def pre_tool_permission_hook(context: HookContext, payload: dict[str, Any]) -> P
         )
         if approved:
             return PreToolUseResult(True)
-    return PreToolUseResult(False, format_blocked(decision))
+    return PreToolUseResult(False, format_risk_block(decision))
 
 
 def post_tool_trace_hook(context: HookContext, payload: dict[str, Any]) -> None:
@@ -148,8 +150,11 @@ def post_tool_trace_hook(context: HookContext, payload: dict[str, Any]) -> None:
         context.repo_root,
         "tool_use",
         {
+            "session_id": context.session_id,
+            "run_id": context.run_id,
+            "stage": context.capabilities.stage.value,
             "tool": tool_name,
-            "arguments": tool_args,
+            "arguments": sanitize_tool_arguments(tool_name, tool_args),
             "output_preview": preview(output),
             "latency_ms": payload.get("latency_ms", 0),
             "error": failed,
@@ -163,6 +168,9 @@ def stop_summary_hook(context: HookContext, payload: dict[str, Any]) -> None:
         context.repo_root,
         "stop_summary",
         {
+            "session_id": context.session_id,
+            "run_id": context.run_id,
+            "stage": context.capabilities.stage.value,
             "tool_count": context.tool_count,
             "failed_count": context.failed_count,
             "modified_files": sorted(context.modified_files),
@@ -171,24 +179,70 @@ def stop_summary_hook(context: HookContext, payload: dict[str, Any]) -> None:
     )
 
 
-def _permission_for_tool(repo_root: Path, tool_name: str, tool_args: dict[str, Any]) -> PermissionDecision:
+def _capability_violation(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    capabilities: AgentCapabilityScope,
+) -> str | None:
+    if not capabilities.permits_tool(tool_name):
+        return f"tool {tool_name} is not allowed during {capabilities.stage.value}"
+    if tool_name in {"write_file", "edit_file"} and not capabilities.permits_write(
+        str(tool_args.get("path", ""))
+    ):
+        return f"{tool_name.removesuffix('_file')} path is outside the current stage scope"
+    return None
+
+
+def _repository_boundary_violation(
+    repo_root: Path,
+    tool_name: str,
+    tool_args: dict[str, Any],
+) -> str | None:
+    if tool_name not in {"read_file", "write_file", "edit_file"}:
+        return None
+    try:
+        safe_repo_path(repo_root, str(tool_args.get("path", "")))
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def _assess_tool_risk(tool_name: str, tool_args: dict[str, Any]) -> RiskDecision:
     if tool_name == "bash":
-        return check_shell_command(str(tool_args.get("command", "")))
-
-    if tool_name in {"read_file", "write_file", "edit_file"}:
-        path = str(tool_args.get("path", ""))
-        try:
-            safe_repo_path(repo_root, path)
-        except ValueError as exc:
-            return PermissionDecision("deny", str(exc))
-
+        return assess_shell_risk(str(tool_args.get("command", "")))
     if tool_name == "write_file":
-        return check_file_write(str(tool_args.get("path", "")), str(tool_args.get("content", "")))
-
+        return assess_file_write_risk(
+            str(tool_args.get("path", "")),
+            str(tool_args.get("content", "")),
+        )
     if tool_name == "edit_file":
-        return check_file_write(str(tool_args.get("path", "")), str(tool_args.get("new_text", "")))
+        return assess_file_write_risk(
+            str(tool_args.get("path", "")),
+            str(tool_args.get("new_text", "")),
+        )
+    return RiskDecision("allow", "tool risk accepted")
 
-    return allow("tool allowed")
+
+def _record_guard_decision(
+    context: HookContext,
+    tool_name: str,
+    layer: str,
+    action: str,
+    reason: str,
+) -> None:
+    append_trace(
+        context.repo_root,
+        "guard_decision",
+        {
+            "session_id": context.session_id,
+            "run_id": context.run_id,
+            "stage": context.capabilities.stage.value,
+            "tool": tool_name,
+            "layer": layer,
+            "action": action,
+            "reason": reason,
+        },
+    )
 
 
 def elapsed_ms(start: float) -> int:

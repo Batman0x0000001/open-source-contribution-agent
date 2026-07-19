@@ -103,6 +103,16 @@ def test_run_design_generation_returns_tool_input():
         "implementation_plan": "Modify tests/test_retry.py.",
         "files_to_modify": ["tests/test_retry.py"],
         "tests_to_run": ["python -m pytest tests/test_retry.py"],
+        "task_type": "behavior",
+        "baseline_checks": [
+            {
+                "command": "python -m pytest tests/test_retry.py",
+                "expected_exit_codes": [1],
+                "output_contains": "retry failed",
+            }
+        ],
+        "reproduction_mode": "existing",
+        "reproduction_test_files": [],
         "maintainer_comment": "Would focused retry tests be useful?",
         "interview_story": "I scoped the contribution to verifiable behavior.",
     }
@@ -112,6 +122,15 @@ def test_run_design_generation_returns_tool_input():
 
     assert result == payload
     assert client.messages.calls[0]["tools"][0]["name"] == "submit_design"
+    properties = client.messages.calls[0]["tools"][0]["input_schema"]["properties"]
+    assert "reproduction_mode" in properties
+    assert properties["forbidden_paths"]["minItems"] == 1
+    assert properties["baseline_checks"]["items"]["properties"]["expected_exit_codes"]["items"]["minimum"] == 1
+    assert "never include symbols that the implementation will add" in properties["target_symbols"]["description"]
+    assert "REQ-1 through REQ-N" in properties["acceptance_checks"]["description"]
+    assert "forbidden_paths must be a non-empty list" in client.messages.calls[0]["system"]
+    assert "union of acceptance_checks.requirement_ids" in client.messages.calls[0]["system"]
+    assert "Successful import, smoke, or syntax commands" in client.messages.calls[0]["system"]
 
 
 def test_score_candidate_issues_returns_scores():
@@ -151,8 +170,6 @@ def test_run_pr_draft_generation_returns_tool_input():
         "title": "test(agent): add retry coverage",
         "problem": "Retry behavior was not covered.",
         "solution": "Add focused tests.",
-        "changes": ["Added retry test case"],
-        "testing": "python -m pytest tests/test_retry.py",
         "reviewer_notes": ["Review expected retry count"],
     }
     client = _Client("submit_pr_draft", payload)
@@ -163,7 +180,8 @@ def test_run_pr_draft_generation_returns_tool_input():
     assert client.messages.calls[0]["tools"][0]["name"] == "submit_pr_draft"
 
 
-def test_stage_agent_returns_none_when_client_call_fails():
-    result = run_discover_analysis(_FailingClient(), _settings(), {"repo_overview": "demo"})
+def test_stage_agent_raises_when_client_call_fails():
+    import pytest
 
-    assert result is None
+    with pytest.raises(RuntimeError, match="stage model request failed"):
+        run_discover_analysis(_FailingClient(), _settings(), {"repo_overview": "demo"})

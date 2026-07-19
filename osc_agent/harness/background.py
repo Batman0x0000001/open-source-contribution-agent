@@ -66,6 +66,7 @@ class BackgroundTask:
     started_at: str
     finished_at: str | None
     output_path: str
+    repo_root: str
     notified: bool = False
 
 
@@ -93,6 +94,7 @@ def start_background_task(*, command: str, repo_root: Path, runner: Callable[[],
         started_at=_now(),
         finished_at=None,
         output_path=str(output_path),
+        repo_root=str(repo_root.resolve()),
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -133,12 +135,13 @@ def check_background_task(task_id: str) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def collect_background_results() -> list[str]:
+def collect_background_results(repo_root: Path | None = None) -> list[str]:
     """收集已完成且尚未通知的任务，作为独立 task_notification 注入下一轮。"""
     ready: list[BackgroundTask] = []
     with _lock:
         for task in _background_tasks.values():
-            if task.status in {"completed", "failed"} and not task.notified:
+            matches_repo = repo_root is None or task.repo_root == str(repo_root.resolve())
+            if matches_repo and task.status in {"completed", "failed"} and not task.notified:
                 task.notified = True
                 ready.append(BackgroundTask(**asdict(task)))
 
