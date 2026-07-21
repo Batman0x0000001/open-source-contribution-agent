@@ -5,7 +5,7 @@
     ↓
 校验并标准化 todos
     ↓
-更新全局 CURRENT_TODOS
+按 repo 保存当前 TODO 快照
     ↓
 可选写入 trace
     ↓
@@ -17,6 +17,8 @@ from __future__ import annotations
 import ast
 import json
 from copy import deepcopy
+from pathlib import Path
+import threading
 from typing import Any
 
 from osc_agent.harness.trace import append_trace
@@ -51,36 +53,43 @@ TODO_WRITE_TOOL = {
     },
 }
 
-CURRENT_TODOS: list[dict[str, str]] = []
+_DEFAULT_TODO_KEY = "<default>"
+_todos_by_repo: dict[str, list[dict[str, str]]] = {}
+_todo_lock = threading.RLock()
 
 
 def todo_write(todos: list[dict[str, Any]] | str, *, repo_root: Any | None = None) -> str:
     """更新当前 TODO 计划，并确保同一时间只有一个任务处于进行中。"""
     normalized = _normalize_todos(_parse_todos(todos))
-
-    global CURRENT_TODOS
-    CURRENT_TODOS = normalized
+    key = _todo_key(repo_root)
+    with _todo_lock:
+        _todos_by_repo[key] = normalized
 
     if repo_root is not None:
         append_trace(
             repo_root,
             "todo_write",
             {
-                "todos": deepcopy(CURRENT_TODOS),
-                "summary": summarize_todos(CURRENT_TODOS),
+                "todos": deepcopy(normalized),
+                "summary": summarize_todos(normalized),
             },
         )
 
-    return _render_todos(CURRENT_TODOS)
+    return _render_todos(normalized)
 
 
-def current_todos() -> list[dict[str, str]]:
+def current_todos(repo_root: Any | None = None) -> list[dict[str, str]]:
     """返回 TODO 快照，避免调用方直接修改模块内全局状态。"""
-    return deepcopy(CURRENT_TODOS)
+    with _todo_lock:
+        return deepcopy(_todos_by_repo.get(_todo_key(repo_root), []))
 
 
-def summarize_todos(todos: list[dict[str, str]] | None = None) -> dict[str, int]:
-    source = CURRENT_TODOS if todos is None else todos
+def summarize_todos(
+    todos: list[dict[str, str]] | None = None,
+    *,
+    repo_root: Any | None = None,
+) -> dict[str, int]:
+    source = current_todos(repo_root) if todos is None else todos
     return {
         "total": len(source),
         "pending": sum(1 for todo in source if todo["status"] == "pending"),
@@ -146,6 +155,12 @@ def _normalize_todos(todos: list[dict[str, Any]]) -> list[dict[str, str]]:
         raise ValueError("only one todo can be in_progress")
 
     return normalized
+
+
+def _todo_key(repo_root: Any | None) -> str:
+    if repo_root is None:
+        return _DEFAULT_TODO_KEY
+    return str(Path(repo_root).resolve())
 
 
 def _render_todos(todos: list[dict[str, str]]) -> str:

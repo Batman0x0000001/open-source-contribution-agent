@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,8 +9,10 @@ import pytest
 
 from osc_agent.agent_loop import agent_loop
 from osc_agent.config import Settings
+from osc_agent.harness.capabilities import AgentCapabilityScope
 from osc_agent.harness.hooks import HookRegistry
-from osc_agent.harness.permissions import check_shell_command, safe_repo_path
+from osc_agent.harness.repository_boundary import safe_repo_path
+from osc_agent.harness.risk import assess_shell_risk
 from osc_agent.harness.trace import trace_path
 from osc_agent.tools.files import edit_file, read_file, write_file
 from osc_agent.tools.shell import run_bash
@@ -17,6 +21,28 @@ from osc_agent.tools.shell import run_bash
 def test_safe_repo_path_blocks_path_escape(tmp_path):
     with pytest.raises(ValueError):
         safe_repo_path(tmp_path, "../outside.txt")
+
+
+def test_unrestricted_capabilities_permit_writes():
+    assert AgentCapabilityScope.unrestricted().permits_write("any/path.py")
+
+
+def test_contribution_capabilities_honor_new_directories_and_forbidden_paths():
+    capabilities = AgentCapabilityScope.contribution(
+        "edit",
+        {
+            "allowed_files": ["src/agent.py", ".github/workflows/ci.yml"],
+            "allowed_new_dirs": ["generated"],
+            "forbidden_paths": [".github/**", "generated/private/**"],
+            "contribution_spec": {"reproduction": {"test_files": ["tests/test_issue.py"]}},
+        },
+    )
+
+    assert capabilities.permits_write("src/agent.py")
+    assert capabilities.permits_write("generated/result.py")
+    assert not capabilities.permits_write("generated/private/secret.py")
+    assert not capabilities.permits_write(".github/workflows/ci.yml")
+    assert not capabilities.permits_write("tests/test_issue.py")
 
 
 def test_file_tools_reject_path_escape(tmp_path):
@@ -44,7 +70,7 @@ def test_dangerous_shell_command_is_denied(tmp_path):
 
 
 def test_suspicious_shell_command_requires_confirmation():
-    decision = check_shell_command("pip install some-package")
+    decision = assess_shell_risk("pip install some-package")
 
     assert decision.action == "ask"
     assert "explicit confirmation" in decision.reason
@@ -86,7 +112,7 @@ class FakeClient:
 
 def test_pre_tool_hook_blocks_dangerous_command_before_handler(tmp_path):
     messages = [{"role": "user", "content": "push"}]
-    settings = Settings(None, None, "test-model", None)
+    settings = Settings(model_id="test-model")
 
     agent_loop(
         messages,
@@ -98,12 +124,45 @@ def test_pre_tool_hook_blocks_dangerous_command_before_handler(tmp_path):
 
     tool_results = messages[2]["content"]
     assert isinstance(tool_results, list)
-    assert tool_results[0]["content"].startswith("Permission denied:")
+    result = json.loads(tool_results[0]["content"])
+    assert result["error_code"] == "PERMISSION_DENIED"
+    records = [json.loads(line) for line in trace_path(tmp_path).read_text(encoding="utf-8").splitlines()]
+    stop = next(record for record in records if record["event"] == "stop_summary")
+    assert stop["failed_count"] == 1
 
 
-def test_custom_hooks_do_not_replace_default_permission_hook(tmp_path):
+def test_guard_trace_identifies_capability_layer(tmp_path):
+    agent_loop(
+        [{"role": "user", "content": "push"}],
+        client=FakeClient("bash", {"command": "git status"}),
+        settings=Settings(model_id="test-model"),
+        repo_root=tmp_path,
+        tool_handlers={"bash": lambda command: "should not run"},
+        capabilities=AgentCapabilityScope.contribution("understanding", {}),
+    )
+
+    trace_text = trace_path(tmp_path).read_text(encoding="utf-8")
+    assert '"event": "guard_decision"' in trace_text
+    assert '"layer": "capability"' in trace_text
+
+
+def test_guard_trace_identifies_repository_boundary_layer(tmp_path):
+    agent_loop(
+        [{"role": "user", "content": "read outside"}],
+        client=FakeClient("read_file", {"path": "../outside.txt"}),
+        settings=Settings(model_id="test-model"),
+        repo_root=tmp_path,
+        tool_handlers={"read_file": lambda path: "should not run"},
+    )
+
+    trace_text = trace_path(tmp_path).read_text(encoding="utf-8")
+    assert '"event": "guard_decision"' in trace_text
+    assert '"layer": "repository_boundary"' in trace_text
+
+
+def test_custom_hooks_do_not_replace_default_guard_hook(tmp_path):
     messages = [{"role": "user", "content": "push"}]
-    settings = Settings(None, None, "test-model", None)
+    settings = Settings(model_id="test-model")
     custom_hooks = HookRegistry()
     custom_hooks.register("PreToolUse", lambda context, payload: None)
 
@@ -118,12 +177,13 @@ def test_custom_hooks_do_not_replace_default_permission_hook(tmp_path):
 
     tool_results = messages[2]["content"]
     assert isinstance(tool_results, list)
-    assert tool_results[0]["content"].startswith("Permission denied:")
+    result = json.loads(tool_results[0]["content"])
+    assert result["error_code"] == "PERMISSION_DENIED"
 
 
 def test_post_tool_hook_writes_trace_and_stop_summary(tmp_path):
     messages = [{"role": "user", "content": "read"}]
-    settings = Settings(None, None, "test-model", None)
+    settings = Settings(model_id="test-model")
 
     agent_loop(
         messages,
@@ -134,14 +194,15 @@ def test_post_tool_hook_writes_trace_and_stop_summary(tmp_path):
     )
 
     trace_text = trace_path(tmp_path).read_text(encoding="utf-8")
-    assert '"event": "permission_decision"' in trace_text
+    assert '"event": "guard_decision"' in trace_text
+    assert '"layer": "risk"' in trace_text
     assert '"event": "tool_use"' in trace_text
     assert '"event": "stop_summary"' in trace_text
 
 
 def test_ask_permission_runs_handler_when_user_confirms(tmp_path):
     messages = [{"role": "user", "content": "install"}]
-    settings = Settings(None, None, "test-model", None)
+    settings = Settings(model_id="test-model")
 
     agent_loop(
         messages,
@@ -154,15 +215,15 @@ def test_ask_permission_runs_handler_when_user_confirms(tmp_path):
 
     tool_results = messages[2]["content"]
     assert isinstance(tool_results, list)
-    assert tool_results[0]["content"] == "approved: pip install demo"
+    assert json.loads(tool_results[0]["content"])["summary"] == "approved: pip install demo"
     trace_text = trace_path(tmp_path).read_text(encoding="utf-8")
-    assert '"event": "permission_confirmation"' in trace_text
+    assert '"event": "approval_decision"' in trace_text
     assert '"approved": true' in trace_text
 
 
 def test_ask_permission_blocks_handler_when_user_rejects(tmp_path):
     messages = [{"role": "user", "content": "install"}]
-    settings = Settings(None, None, "test-model", None)
+    settings = Settings(model_id="test-model")
 
     agent_loop(
         messages,
@@ -175,6 +236,7 @@ def test_ask_permission_blocks_handler_when_user_rejects(tmp_path):
 
     tool_results = messages[2]["content"]
     assert isinstance(tool_results, list)
-    assert tool_results[0]["content"].startswith("Permission required:")
+    result = json.loads(tool_results[0]["content"])
+    assert result["error_code"] == "PERMISSION_REQUIRED"
     trace_text = trace_path(tmp_path).read_text(encoding="utf-8")
     assert '"approved": false' in trace_text

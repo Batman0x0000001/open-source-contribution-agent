@@ -45,3 +45,16 @@ def test_agent_loop_does_not_expose_background_check_tool():
     tool_names = {tool["name"] for tool in TOOLS}
 
     assert "check_background_task" not in tool_names
+
+
+def test_background_notifications_are_filtered_by_repository(tmp_path):
+    other = tmp_path / "other"
+    other.mkdir()
+    task_id = start_background_task(command="echo done", repo_root=other, runner=lambda: "done")
+    for _ in range(50):
+        if json.loads(check_background_task(task_id))["status"] == "completed":
+            break
+        time.sleep(0.02)
+
+    assert collect_background_results(tmp_path) == []
+    assert len(collect_background_results(other)) == 1

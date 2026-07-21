@@ -1,6 +1,13 @@
 ---
 name: open-source
 description: Open source contribution workflow, maintainer empathy, and PR preparation guidance.
+schema_version: 1
+version: 1.0.0
+applies_to: [open-source]
+required_tools: [read_file, glob, git_status, git_diff]
+permissions: [read]
+input_contract: Repository state, issue evidence, and approved contribution scope.
+output_contract: Auditable contribution workflow and maintainer-facing guidance.
 ---
 
 # Open Source Skill

@@ -20,7 +20,7 @@ def test_todo_write_updates_current_plan_and_trace(tmp_path):
     )
 
     assert "Implement focused fix" in output
-    assert current_todos()[1] == {"content": "Implement focused fix", "status": "in_progress"}
+    assert current_todos(tmp_path)[1] == {"content": "Implement focused fix", "status": "in_progress"}
 
     line = trace_path(tmp_path).read_text(encoding="utf-8").splitlines()[-1]
     event = json.loads(line)
@@ -47,6 +47,16 @@ def test_todo_write_accepts_json_array_string():
     output = todo_write('[{"content": "Read docs", "status": "pending"}]')
 
     assert "Read docs" in output
+
+
+def test_todos_are_isolated_by_repository(tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    todo_write([{"content": "First task", "status": "pending"}], repo_root=first)
+    todo_write([{"content": "Second task", "status": "pending"}], repo_root=second)
+
+    assert current_todos(first)[0]["content"] == "First task"
+    assert current_todos(second)[0]["content"] == "Second task"
 
 
 def test_todo_write_accepts_python_list_repr_without_eval():

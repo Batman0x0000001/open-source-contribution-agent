@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from copy import deepcopy
 from types import SimpleNamespace
@@ -73,6 +74,40 @@ def test_match_response_rejects_wrong_response_type(tmp_path):
     assert load_protocol_state(tmp_path, request_id).status == "pending"  # type: ignore[union-attr]
 
 
+def test_protocol_rejects_response_from_wrong_agent(tmp_path):
+    request_id = _request_id(request_plan_review(repo_root=tmp_path, sender="alice", plan="Safe plan."))
+    MessageBus(tmp_path).send(
+        "mallory",
+        "alice",
+        "approved",
+        "plan_approval_response",
+        {"request_id": request_id, "approve": True, "protocol_type": "plan_approval"},
+    )
+
+    consume_inbox(tmp_path, "alice")
+
+    assert load_protocol_state(tmp_path, request_id).status == "pending"  # type: ignore[union-attr]
+
+
+def test_concurrent_protocol_creation_does_not_lose_requests(tmp_path):
+    barrier = threading.Barrier(3)
+    request_ids: list[str] = []
+
+    def create(sender: str) -> None:
+        barrier.wait()
+        request_ids.append(_request_id(request_plan_review(repo_root=tmp_path, sender=sender, plan="Plan.")))
+
+    threads = [threading.Thread(target=create, args=(sender,)) for sender in ("alice", "bob")]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+
+    assert len(request_ids) == 2
+    assert all(load_protocol_state(tmp_path, request_id) is not None for request_id in request_ids)
+
+
 def test_shutdown_request_round_trip_updates_state(tmp_path):
     request_id = _request_id(request_shutdown(repo_root=tmp_path, target="alice", reason="done"))
 
@@ -129,7 +164,7 @@ class FakeClient:
         self.messages = messages
 
 
-def test_teammate_stops_after_plan_review_request(tmp_path):
+def test_teammate_resumes_after_plan_approval(tmp_path):
     fake_messages = PlanThenContinueMessages()
 
     spawn_teammate(
@@ -139,17 +174,30 @@ def test_teammate_stops_after_plan_review_request(tmp_path):
         repo_root=tmp_path,
         client=FakeClient(fake_messages),
         settings=_settings(),
+        autonomous=False,
     )
 
-    notifications: list[str] = []
+    request = None
     for _ in range(50):
-        notifications.extend(collect_team_notifications(tmp_path))
-        if any("waiting for plan approval" in notification for notification in notifications):
+        inbox = MessageBus(tmp_path).read_inbox("lead")
+        request = next((message for message in inbox if message["type"] == "plan_approval_request"), None)
+        if request is not None:
             break
         time.sleep(0.02)
 
-    assert len(fake_messages.calls) == 1
-    assert any("waiting for plan approval" in notification for notification in notifications)
+    assert request is not None
+    request_id = request["metadata"]["request_id"]
+    review_plan(repo_root=tmp_path, request_id=request_id, approve=True, feedback="Proceed.")
+
+    notifications: list[str] = []
+    for _ in range(100):
+        notifications.extend(collect_team_notifications(tmp_path))
+        if any("continued" in notification for notification in notifications):
+            break
+        time.sleep(0.02)
+
+    assert len(fake_messages.calls) == 2
+    assert any("continued" in notification for notification in notifications)
 
 
 def test_agent_loop_registers_protocol_tools(tmp_path):

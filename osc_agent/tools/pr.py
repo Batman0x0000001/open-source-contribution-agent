@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from osc_agent.tools.git import git_diff, git_status
 
@@ -23,22 +24,35 @@ class PRDraft:
     risk: str
 
 
-def draft_pr(*, repo_root: Path) -> str:
-    """基于当前本地 diff 生成 PR 草稿；只读 git 状态，不提交、不推送、不创建 PR。"""
+def draft_pr(
+    *,
+    repo_root: Path,
+    run_id: str | None = None,
+    client: Any | None = None,
+    settings: Any | None = None,
+) -> str:
+    """生成 PR 草稿；传入 run_id 时读取工作流上下文，但始终不提交、不推送、不创建 PR。"""
+    if run_id:
+        # 兼容旧调用；workflow 实现本身不再位于 tools。
+        from osc_agent.workflows.contribution.pr_draft import build_workflow_pr_draft
+
+        return build_workflow_pr_draft(
+            repo_root=repo_root,
+            run_id=run_id,
+            client=client,
+            settings=settings,
+        )
     diff = git_diff(repo_root=repo_root)
     status = git_status(repo_root=repo_root)
-    draft = build_pr_draft(diff=diff, status=status)
-    return format_pr_draft(draft)
+    return format_pr_draft(build_pr_draft(diff=diff, status=status))
 
 
 def build_pr_draft(*, diff: str, status: str) -> PRDraft:
     """把 git diff/status 提炼成稳定结构，便于 CLI 和测试复用同一套 PR 草稿逻辑。"""
     changed_files = _changed_files(diff, status)
-    title = _title_for_files(changed_files)
-    summary = _summary_for_files(changed_files)
     return PRDraft(
-        title=title,
-        summary=summary,
+        title=_title_for_files(changed_files),
+        summary=_summary_for_files(changed_files),
         tests=["Not run (not provided)."],
         risk=_risk_for_files(changed_files),
     )

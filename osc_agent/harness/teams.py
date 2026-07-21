@@ -31,7 +31,7 @@ from typing import Any
 
 from osc_agent.config import Settings
 from osc_agent.harness.hooks import HookContext, default_hooks, elapsed_ms
-from osc_agent.harness.subagent import READ_ONLY_BASH_PREFIXES
+from osc_agent.harness.subagent import run_read_only_bash
 from osc_agent.harness.tasks import (
     CONTRIBUTION_TASK_TOOLS,
     blocking_dependencies,
@@ -46,12 +46,13 @@ from osc_agent.harness.worktree import resolve_task_worktree
 from osc_agent.tools.files import FILE_TOOLS, glob_files, read_file, write_file
 from osc_agent.tools.git import GIT_TOOLS, git_status
 from osc_agent.tools.repo import REPO_TOOLS, inspect_repo
-from osc_agent.tools.shell import BASH_TOOL, run_bash
+from osc_agent.tools.shell import BASH_TOOL
 
 TEAM_ROLES = {"reviewer", "tester", "doc_writer"}
 TEAMMATE_MAX_ROUNDS = 10
 IDLE_POLL_INTERVAL_SECONDS = 5.0
 IDLE_TIMEOUT_SECONDS = 60.0
+PROTOCOL_POLL_INTERVAL_SECONDS = 0.1
 LEAD_AGENT = "lead"
 
 SPAWN_TEAMMATE_TOOL = {
@@ -122,6 +123,7 @@ TEAMMATE_TOOLS = [
 ]
 
 _bus_lock = threading.Lock()
+_teammate_lock = threading.Lock()
 _active_teammates: dict[str, threading.Thread] = {}
 
 
@@ -211,9 +213,6 @@ def spawn_teammate(
         return "Error: prompt is required"
 
     key = f"{repo_root.resolve()}::{name}"
-    if key in _active_teammates and _active_teammates[key].is_alive():
-        return f"Error: teammate {name} is already active"
-
     bus = MessageBus(repo_root)
 
     def worker() -> None:
@@ -230,8 +229,11 @@ def spawn_teammate(
         bus.send(name, LEAD_AGENT, summary, "result", {"role": role})
 
     thread = threading.Thread(target=worker, daemon=True, name=f"teammate-{name}")
-    _active_teammates[key] = thread
-    thread.start()
+    with _teammate_lock:
+        if key in _active_teammates and _active_teammates[key].is_alive():
+            return f"Error: teammate {name} is already active"
+        _active_teammates[key] = thread
+        thread.start()
     append_trace(repo_root, "teammate_spawned", {"name": name, "role": role, "allow_write": allow_write})
     return f"Spawned teammate {name} as {role}"
 
@@ -388,7 +390,7 @@ def _run_teammate_loop(
                     break
 
                 results: list[dict[str, str]] = []
-                waiting_for_protocol = False
+                waiting_request_id: str | None = None
                 for block in response.content:
                     if _block_attr(block, "type") != "tool_use":
                         continue
@@ -428,11 +430,29 @@ def _run_teammate_loop(
                     )
                     results.append({"type": "tool_result", "tool_use_id": _block_attr(block, "id"), "content": output})
                     if tool_name == "request_plan_review":
-                        # 计划审批是执行门：提交计划后先停下来，等待 Lead 明确审批。
-                        waiting_for_protocol = True
+                        try:
+                            state = json.loads(output)
+                        except (TypeError, json.JSONDecodeError):
+                            state = {}
+                        request_id = state.get("request_id") if isinstance(state, dict) else None
+                        if isinstance(request_id, str) and request_id:
+                            waiting_request_id = request_id
                 messages.append({"role": "user", "content": results})
-                if waiting_for_protocol:
-                    final_summary = f"Teammate {name} is waiting for plan approval."
+                if waiting_request_id:
+                    decision = _wait_for_plan_decision(
+                        repo_root=repo_root,
+                        name=name,
+                        request_id=waiting_request_id,
+                        messages=messages,
+                    )
+                    if decision == "approved":
+                        continue
+                    if decision == "rejected":
+                        final_summary = f"Teammate {name} stopped because the plan was rejected."
+                    elif decision == "shutdown":
+                        final_summary = f"Teammate {name} shut down gracefully."
+                    else:
+                        final_summary = f"Teammate {name} stopped after plan approval timed out."
                     should_idle = False
                     break
             else:
@@ -501,9 +521,9 @@ def _teammate_handlers(
     }
     from osc_agent.harness.protocols import request_plan_review
 
-    handlers["request_plan_review"] = lambda sender=name, plan="": request_plan_review(
+    handlers["request_plan_review"] = lambda plan, sender=name: request_plan_review(
         repo_root=repo_root,
-        sender=sender,
+        sender=name,
         plan=plan,
     )
     handlers["list_tasks"] = lambda: list_tasks(repo_root=repo_root)
@@ -512,22 +532,50 @@ def _teammate_handlers(
         repo_root=repo_root,
         task_id=task_id,
         evidence=evidence,
+        owner=name,
     )
     if allow_write:
         handlers["write_file"] = lambda path, content: write_file(
             repo_root=cwd(),
             path=path,
             content=content,
-            enforce_permissions=True,
+            enforce_risk_checks=True,
         )
     return handlers
 
 
 def _run_read_only_bash(command: str, *, repo_root: Path) -> str:
-    normalized = command.strip().lower()
-    if not any(normalized == prefix.strip() or normalized.startswith(prefix) for prefix in READ_ONLY_BASH_PREFIXES):
-        return "Permission denied: teammate bash is read-only"
-    return run_bash(command, repo_root=repo_root, enforce_permissions=True)
+    return run_read_only_bash(command, repo_root=repo_root)
+
+
+def _wait_for_plan_decision(
+    *,
+    repo_root: Path,
+    name: str,
+    request_id: str,
+    messages: list[dict[str, Any]],
+) -> str:
+    """保持 teammate 线程存活，直到收到对应审批、关机请求或超时。"""
+    from osc_agent.harness.protocols import consume_inbox
+
+    deadline = time.monotonic() + IDLE_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        inbox = consume_inbox(repo_root, name)
+        if inbox:
+            messages.append({"role": "user", "content": _format_inbox(inbox)})
+        for message in inbox:
+            if message.get("type") == "shutdown_request":
+                return "shutdown"
+            metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+            if (
+                message.get("type") != "plan_approval_response"
+                or metadata.get("request_id") != request_id
+                or message.get("from_agent") != LEAD_AGENT
+            ):
+                continue
+            return "approved" if bool(metadata.get("approve")) else "rejected"
+        time.sleep(PROTOCOL_POLL_INTERVAL_SECONDS)
+    return "timeout"
 
 
 def _ensure_identity(messages: list[dict[str, Any]], *, name: str, role: str) -> None:

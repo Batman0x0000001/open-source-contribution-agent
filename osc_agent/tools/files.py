@@ -12,9 +12,16 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import stat
+import tempfile
+import threading
 
-from osc_agent.harness.permissions import check_file_write, format_blocked, safe_repo_path
+from osc_agent.harness.repository_boundary import safe_repo_path
+from osc_agent.harness.risk import assess_file_write_risk, format_risk_block
+
+_FILE_WRITE_LOCK = threading.RLock()
 
 FILE_TOOLS = [
     {
@@ -80,17 +87,18 @@ def read_file(*, repo_root: Path, path: str, limit: int = 20_000, offset: int = 
     return text[start:end]
 
 
-def write_file(*, repo_root: Path, path: str, content: str, enforce_permissions: bool = True) -> str:
+def write_file(*, repo_root: Path, path: str, content: str, enforce_risk_checks: bool = True) -> str:
     """写入 repo 内文件；父目录不存在时按常见编辑工具行为创建。"""
-    if enforce_permissions:
-        decision = check_file_write(path, content)
+    if enforce_risk_checks:
+        decision = assess_file_write_risk(path, content)
         if not decision.allowed:
-            return format_blocked(decision)
+            return format_risk_block(decision)
 
     try:
-        target = safe_repo_path(repo_root, path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        with _FILE_WRITE_LOCK:
+            target = safe_repo_path(repo_root, path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_text(target, content)
     except (OSError, ValueError) as exc:
         return f"Error: {exc}"
     return f"Wrote {path}"
@@ -102,20 +110,21 @@ def edit_file(
     path: str,
     old_text: str,
     new_text: str,
-    enforce_permissions: bool = True,
+    enforce_risk_checks: bool = True,
 ) -> str:
     """只替换第一次匹配，防止模型一次调用意外改动多个位置。"""
-    if enforce_permissions:
-        decision = check_file_write(path, new_text)
+    if enforce_risk_checks:
+        decision = assess_file_write_risk(path, new_text)
         if not decision.allowed:
-            return format_blocked(decision)
+            return format_risk_block(decision)
 
     try:
-        target = safe_repo_path(repo_root, path)
-        text = target.read_text(encoding="utf-8")
-        if old_text not in text:
-            return f"Error: old_text not found in {path}"
-        target.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
+        with _FILE_WRITE_LOCK:
+            target = safe_repo_path(repo_root, path)
+            text = target.read_text(encoding="utf-8")
+            if old_text not in text:
+                return f"Error: old_text not found in {path}"
+            _atomic_write_text(target, text.replace(old_text, new_text, 1))
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         return f"Error: {exc}"
     return f"Edited {path}"
@@ -134,3 +143,23 @@ def glob_files(*, repo_root: Path, pattern: str) -> str:
         return f"Error: {exc}"
 
     return "\n".join(sorted(matches)) or "(no matches)"
+
+
+def _atomic_write_text(target: Path, content: str) -> None:
+    """在同一目录写临时文件后替换目标，避免失败时截断原文件。"""
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=target.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if target.exists():
+            temporary.chmod(stat.S_IMODE(target.stat().st_mode))
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)

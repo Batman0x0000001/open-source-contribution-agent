@@ -125,3 +125,10 @@ def test_agent_loop_rebuilds_tool_pool_after_connect_mcp(tmp_path):
     assert "mcp__docs__search" in second_tools
     assert "mcp__docs__search" not in fake_messages.calls[0]["system"]
     assert "mcp__docs__search" in fake_messages.calls[1]["system"]
+
+
+def test_mcp_connections_are_isolated_by_session():
+    connect_mcp("docs", session_id="one")
+
+    assert {tool["name"] for tool in assemble_tool_pool([], session_id="one")}
+    assert assemble_tool_pool([], session_id="two") == []

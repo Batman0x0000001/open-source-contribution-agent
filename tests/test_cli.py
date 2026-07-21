@@ -17,10 +17,11 @@ def test_inspect_command_prints_repo_map(tmp_path):
     assert "README.md" in result.output
 
 
-def test_draft_pr_command_uses_pr_tool(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli, "draft_pr", lambda repo_root: f"Title: Draft for {repo_root.name}")
+def test_draft_pr_is_only_available_in_contribute_command_group():
+    root_result = runner.invoke(cli.app, ["--help"])
+    contribute_result = runner.invoke(cli.app, ["contribute", "--help"])
 
-    result = runner.invoke(cli.app, ["draft-pr", "--repo", str(tmp_path)])
-
-    assert result.exit_code == 0
-    assert f"Title: Draft for {tmp_path.name}" in result.output
+    assert root_result.exit_code == 0
+    assert "draft-pr" not in root_result.output
+    assert contribute_result.exit_code == 0
+    assert "draft-pr" in contribute_result.output

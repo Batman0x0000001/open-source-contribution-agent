@@ -39,7 +39,7 @@ CONNECT_MCP_TOOL = {
 }
 
 _DISALLOWED_MCP_CHARS = re.compile(r"[^A-Za-z0-9_-]")
-_mcp_clients: dict[str, "MCPClient"] = {}
+_mcp_clients: dict[str, dict[str, "MCPClient"]] = {}
 
 
 class MCPClient:
@@ -74,23 +74,28 @@ def prefixed_mcp_tool_name(server_name: str, tool_name: str) -> str:
     return f"mcp__{normalize_mcp_name(server_name)}__{normalize_mcp_name(tool_name)}"
 
 
-def connect_mcp(server_name: str) -> str:
+def connect_mcp(server_name: str, *, session_id: str = "default") -> str:
     name = server_name.strip()
-    if name in _mcp_clients:
+    clients = _mcp_clients.setdefault(session_id, {})
+    if name in clients:
         return f"MCP server '{name}' already connected"
     factory = MOCK_SERVERS.get(name)
     if factory is None:
         return "Unknown MCP server '{}'. Available: {}".format(name, ", ".join(sorted(MOCK_SERVERS)))
     client = factory()
-    _mcp_clients[name] = client
+    clients[name] = client
     discovered = ", ".join(prefixed_mcp_tool_name(name, tool["name"]) for tool in client.tools)
     return f"Connected to '{name}'. Discovered tools: {discovered}"
 
 
-def assemble_tool_pool(builtin_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def assemble_tool_pool(
+    builtin_tools: list[dict[str, Any]],
+    *,
+    session_id: str = "default",
+) -> list[dict[str, Any]]:
     """每轮重新组装工具池；connect_mcp 后新工具才能进入下一轮 prompt。"""
     tools = [copy.deepcopy(tool) for tool in builtin_tools]
-    for server_name, client in _mcp_clients.items():
+    for server_name, client in _mcp_clients.get(session_id, {}).items():
         for tool_def in client.tools:
             tools.append(
                 {
@@ -102,9 +107,13 @@ def assemble_tool_pool(builtin_tools: list[dict[str, Any]]) -> list[dict[str, An
     return tools
 
 
-def assemble_tool_handlers(base_handlers: dict[str, Any]) -> dict[str, Any]:
+def assemble_tool_handlers(
+    base_handlers: dict[str, Any],
+    *,
+    session_id: str = "default",
+) -> dict[str, Any]:
     handlers = dict(base_handlers)
-    for server_name, client in _mcp_clients.items():
+    for server_name, client in _mcp_clients.get(session_id, {}).items():
         for tool_def in client.tools:
             original_name = tool_def["name"]
             exposed_name = prefixed_mcp_tool_name(server_name, original_name)
@@ -114,9 +123,12 @@ def assemble_tool_handlers(base_handlers: dict[str, Any]) -> dict[str, Any]:
     return handlers
 
 
-def reset_mcp_clients() -> None:
+def reset_mcp_clients(session_id: str | None = None) -> None:
     """测试用：清空已连接 server，避免跨测试污染动态工具池。"""
-    _mcp_clients.clear()
+    if session_id is None:
+        _mcp_clients.clear()
+    else:
+        _mcp_clients.pop(session_id, None)
 
 
 def _annotated_description(tool_def: dict[str, Any]) -> str:

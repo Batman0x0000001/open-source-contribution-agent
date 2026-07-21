@@ -25,6 +25,9 @@ append_trace 记录触发事件
 from __future__ import annotations
 
 import json
+import os
+import secrets
+import threading
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -32,6 +35,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from osc_agent.harness.trace import append_trace
+
+_schedule_lock = threading.RLock()
 
 CRON_TOOLS = [
     {
@@ -96,23 +101,25 @@ def schedule_check(*, repo_root: Path, cron: str, prompt: str, enabled: bool = T
     if not prompt.strip():
         return "Error: prompt is required"
 
-    schedules = _load_schedules(repo_root)
-    schedule = CronSchedule(
-        id=f"cron_{uuid.uuid4().hex[:8]}",
-        cron=cron.strip(),
-        prompt=prompt.strip(),
-        enabled=enabled,
-        created_at=_now().isoformat(),
-    )
-    schedules.append(schedule)
-    _save_schedules(repo_root, schedules)
+    with _schedule_lock:
+        schedules = _load_schedules(repo_root)
+        schedule = CronSchedule(
+            id=f"cron_{uuid.uuid4().hex[:8]}",
+            cron=cron.strip(),
+            prompt=prompt.strip(),
+            enabled=enabled,
+            created_at=_now().isoformat(),
+        )
+        schedules.append(schedule)
+        _save_schedules(repo_root, schedules)
     append_trace(repo_root, "schedule_check", {"schedule_id": schedule.id, "cron": schedule.cron})
     return json.dumps(asdict(schedule), ensure_ascii=False, indent=2)
 
 
 def list_schedules(*, repo_root: Path) -> str:
     """返回当前 repo 的定时任务列表，包含已禁用任务，便于用户审计。"""
-    schedules = _load_schedules(repo_root)
+    with _schedule_lock:
+        schedules = _load_schedules(repo_root)
     if not schedules:
         return "(no schedules)"
     return "\n".join(
@@ -123,45 +130,47 @@ def list_schedules(*, repo_root: Path) -> str:
 
 def cancel_schedule(*, repo_root: Path, schedule_id: str) -> str:
     """取消任务采用禁用而非删除，保留审计痕迹并避免误删历史。"""
-    schedules = _load_schedules(repo_root)
-    for schedule in schedules:
-        if schedule.id == schedule_id:
-            schedule.enabled = False
-            _save_schedules(repo_root, schedules)
-            append_trace(repo_root, "cancel_schedule", {"schedule_id": schedule_id})
-            return f"Canceled schedule {schedule_id}"
-    return f"Error: unknown schedule {schedule_id}"
+    with _schedule_lock:
+        schedules = _load_schedules(repo_root)
+        for schedule in schedules:
+            if schedule.id == schedule_id:
+                schedule.enabled = False
+                _save_schedules(repo_root, schedules)
+                append_trace(repo_root, "cancel_schedule", {"schedule_id": schedule_id})
+                return f"Canceled schedule {schedule_id}"
+        return f"Error: unknown schedule {schedule_id}"
 
 
 def collect_cron_notifications(repo_root: Path, *, now: datetime | None = None) -> list[str]:
     """每轮 agent loop 开始时调用：检查到期任务并生成独立通知文本。"""
     current = now or _now()
     minute_marker = current.strftime("%Y-%m-%d %H:%M")
-    schedules = _load_schedules(repo_root)
-    changed = False
-    notifications: list[str] = []
+    with _schedule_lock:
+        schedules = _load_schedules(repo_root)
+        changed = False
+        notifications: list[str] = []
 
-    for schedule in schedules:
-        if not schedule.enabled or schedule.last_fired_at == minute_marker:
-            continue
-        if not cron_matches(schedule.cron, current):
-            continue
-        # 同一分钟只触发一次；标记写盘后即使 agent loop 重试也不会重复注入。
-        schedule.last_fired_at = minute_marker
-        changed = True
-        notifications.append(
-            "<task_notification>\n"
-            f"  <task_id>{schedule.id}</task_id>\n"
-            "  <status>scheduled</status>\n"
-            f"  <cron>{schedule.cron}</cron>\n"
-            f"  <summary>[Scheduled] {schedule.prompt}</summary>\n"
-            "</task_notification>"
-        )
-        append_trace(repo_root, "cron_fired", {"schedule_id": schedule.id, "cron": schedule.cron})
+        for schedule in schedules:
+            if not schedule.enabled or schedule.last_fired_at == minute_marker:
+                continue
+            if not cron_matches(schedule.cron, current):
+                continue
+            # 同一分钟只触发一次；检查与标记在同一临界区，避免并发重复注入。
+            schedule.last_fired_at = minute_marker
+            changed = True
+            notifications.append(
+                "<task_notification>\n"
+                f"  <task_id>{schedule.id}</task_id>\n"
+                "  <status>scheduled</status>\n"
+                f"  <cron>{schedule.cron}</cron>\n"
+                f"  <summary>[Scheduled] {schedule.prompt}</summary>\n"
+                "</task_notification>"
+            )
+            append_trace(repo_root, "cron_fired", {"schedule_id": schedule.id, "cron": schedule.cron})
 
-    if changed:
-        _save_schedules(repo_root, schedules)
-    return notifications
+        if changed:
+            _save_schedules(repo_root, schedules)
+        return notifications
 
 
 def validate_cron(cron: str) -> str | None:
@@ -205,33 +214,41 @@ def schedules_path(repo_root: Path) -> Path:
 
 
 def _load_schedules(repo_root: Path) -> list[CronSchedule]:
-    path = schedules_path(repo_root)
-    if not path.exists():
-        return []
-    data = json.loads(path.read_text(encoding="utf-8"))
-    schedules: list[CronSchedule] = []
-    for item in data.get("schedules", []):
-        cron = str(item.get("cron", ""))
-        if validate_cron(cron):
-            continue
-        schedules.append(
-            CronSchedule(
-                id=str(item.get("id", "")),
-                cron=cron,
-                prompt=str(item.get("prompt", "")),
-                enabled=bool(item.get("enabled", True)),
-                created_at=str(item.get("created_at", "")),
-                last_fired_at=item.get("last_fired_at"),
+    with _schedule_lock:
+        path = schedules_path(repo_root)
+        if not path.exists():
+            return []
+        data = json.loads(path.read_text(encoding="utf-8"))
+        schedules: list[CronSchedule] = []
+        for item in data.get("schedules", []):
+            cron = str(item.get("cron", ""))
+            if validate_cron(cron):
+                continue
+            schedules.append(
+                CronSchedule(
+                    id=str(item.get("id", "")),
+                    cron=cron,
+                    prompt=str(item.get("prompt", "")),
+                    enabled=bool(item.get("enabled", True)),
+                    created_at=str(item.get("created_at", "")),
+                    last_fired_at=item.get("last_fired_at"),
+                )
             )
-        )
-    return schedules
+        return schedules
 
 
 def _save_schedules(repo_root: Path, schedules: list[CronSchedule]) -> None:
-    path = schedules_path(repo_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"schedules": [asdict(schedule) for schedule in schedules]}
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    with _schedule_lock:
+        path = schedules_path(repo_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"schedules": [asdict(schedule) for schedule in schedules]}
+        temp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+        try:
+            temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(temp, path)
+        finally:
+            if temp.exists():
+                temp.unlink()
 
 
 def _validate_field(field: str, minimum: int, maximum: int) -> str | None:

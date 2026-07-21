@@ -17,6 +17,8 @@ summary 返回给主 Agent
 from __future__ import annotations
 
 from pathlib import Path
+import shlex
+import subprocess
 from time import perf_counter
 from typing import Any, Callable
 
@@ -26,23 +28,14 @@ from osc_agent.harness.trace import append_trace, preview
 from osc_agent.tools.files import FILE_TOOLS, glob_files, read_file
 from osc_agent.tools.git import GIT_TOOLS, git_status
 from osc_agent.tools.repo import REPO_TOOLS, inspect_repo
-from osc_agent.tools.shell import BASH_TOOL, run_bash
+from osc_agent.tools.shell import BASH_TOOL
 
 SUBAGENT_ROLES = {"issue_analyzer", "repo_mapper", "test_analyzer", "doc_reviewer"}
 SUBAGENT_MAX_ROUNDS = 30
-READ_ONLY_BASH_PREFIXES = (
-    "dir",
-    "findstr ",
-    "git diff",
-    "git log",
-    "git show",
-    "git status",
-    "grep ",
-    "ls",
-    "pwd",
-    "rg ",
-    "type ",
-)
+READ_ONLY_EXECUTABLES = ("findstr", "git", "grep", "rg")
+READ_ONLY_GIT_SUBCOMMANDS = {"diff", "log", "show", "status"}
+READ_ONLY_COMMAND_TIMEOUT_SECONDS = 120
+READ_ONLY_OUTPUT_LIMIT = 50_000
 
 SUBAGENT_TOOL = {
     "name": "subagent",
@@ -96,18 +89,67 @@ def _extract_text(content: Any) -> str:
     return str(content)
 
 
-def _run_read_only_bash(command: str, *, repo_root: Path) -> str:
-    """子 agent 的 bash 只能做只读检查，避免分析任务产生写入副作用。"""
-    normalized = command.strip().lower()
-    if not any(normalized == prefix.strip() or normalized.startswith(prefix) for prefix in READ_ONLY_BASH_PREFIXES):
+def run_read_only_bash(command: str, *, repo_root: Path) -> str:
+    """以参数数组执行受限查询命令，禁止 shell 拼接、重定向和仓库外路径。"""
+    if any(marker in command for marker in ("&", "|", ";", "<", ">", "`", "\r", "\n")):
+        return "Permission denied: shell operators are not allowed in read-only commands"
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError as exc:
+        return f"Permission denied: invalid read-only command: {exc}"
+    if not argv or argv[0].lower() not in READ_ONLY_EXECUTABLES:
         return "Permission denied: subagent bash is read-only"
-    return run_bash(command, repo_root=repo_root, enforce_permissions=True)
+
+    executable = argv[0].lower()
+    if executable == "git":
+        if len(argv) < 2 or argv[1].lower() not in READ_ONLY_GIT_SUBCOMMANDS:
+            return "Permission denied: only git diff/log/show/status are read-only"
+        if any(arg == "--output" or arg.startswith("--output=") for arg in argv[2:]):
+            return "Permission denied: git output files are not allowed"
+        if argv[1].lower() == "diff":
+            argv[2:2] = ["--no-ext-diff", "--no-textconv"]
+        elif argv[1].lower() in {"log", "show"}:
+            argv.insert(2, "--no-textconv")
+    elif executable == "rg":
+        if any(arg == "--pre" or arg.startswith("--pre=") for arg in argv[1:]):
+            return "Permission denied: rg preprocessors are not allowed"
+        argv.insert(1, "--no-config")
+
+    if any(_argument_escapes_repo(arg) for arg in argv[1:]):
+        return "Permission denied: read-only command path escapes repository"
+
+    try:
+        completed = subprocess.run(
+            argv,
+            shell=False,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=READ_ONLY_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return f"Error: read-only command timed out after {READ_ONLY_COMMAND_TIMEOUT_SECONDS} seconds"
+    except OSError as exc:
+        return f"Error: read-only command failed: {exc}"
+
+    output = ((completed.stdout or "") + (completed.stderr or "")).strip() or "(no output)"
+    if completed.returncode != 0:
+        output = f"Error: read-only command exited with code {completed.returncode}\n{output}"
+    return output[:READ_ONLY_OUTPUT_LIMIT]
+
+
+def _argument_escapes_repo(argument: str) -> bool:
+    candidate = argument.split("=", 1)[-1]
+    path = Path(candidate)
+    return path.is_absolute() or ".." in path.parts
 
 
 def _subagent_handlers(repo_root: Path) -> dict[str, Any]:
     """子 agent 只拿到只读工具；不暴露 subagent，防止递归委派。"""
     return {
-        "bash": lambda command: _run_read_only_bash(command, repo_root=repo_root),
+        "bash": lambda command: run_read_only_bash(command, repo_root=repo_root),
         "read_file": lambda path, limit=20_000, offset=0: read_file(
             repo_root=repo_root,
             path=path,
