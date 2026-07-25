@@ -11,6 +11,7 @@ from osc_agent.runtime.gateway import ModelCompleted, ModelGatewayError, ModelRe
 from osc_agent.runtime.models import (
     AssistantDelta,
     AssistantMessageCompleted,
+    Blocked,
     Cancelled,
     Complete,
     ContextCompacted,
@@ -36,6 +37,7 @@ from osc_agent.runtime.models import (
     SessionMetadata,
     SessionRuntimeState,
 )
+from osc_agent.runtime.hooks import StopHookPayload
 from osc_agent.runtime.tool_orchestration import run_tools
 
 
@@ -44,6 +46,16 @@ class AgentRuntime:
         self.dependencies = dependencies
 
     async def query(self, params: QueryParams) -> AsyncIterator[RuntimeEvent]:
+        store = self.dependencies.session_store
+        if store is None:
+            async for event in self._query_locked(params):
+                yield event
+            return
+        with store.lease(params.session_id):
+            async for event in self._query_locked(params):
+                yield event
+
+    async def _query_locked(self, params: QueryParams) -> AsyncIterator[RuntimeEvent]:
         state = QueryState(session_id=params.session_id)
         runtime_state = SessionRuntimeState()
         messages = list(params.messages)
@@ -61,13 +73,22 @@ class AgentRuntime:
             model = snapshot.metadata.model
             system_prompt = snapshot.metadata.system_prompt
             capabilities = snapshot.metadata.capabilities
+            completion_requirements = snapshot.metadata.completion_requirements
             runtime_state = snapshot.runtime_state
             if runtime_state.capabilities is not None:
                 capabilities = capabilities.intersect(runtime_state.capabilities)
+            if runtime_state.completion_requirements is not None:
+                completion_requirements = completion_requirements.tighten(
+                    runtime_state.completion_requirements
+                )
             if runtime_state.worktree is not None:
                 if self.dependencies.worktree_manager is None:
                     raise ValueError("resume of a worktree session requires WorktreeManager")
                 self.dependencies.worktree_manager.validate_session(runtime_state.worktree)
+            interrupted = _repair_interrupted_tool_uses(snapshot.messages)
+            if interrupted is not None:
+                messages = [*snapshot.messages, interrupted, *params.messages]
+                store.append_message(params.session_id, interrupted)
             for message in params.messages:
                 store.append_message(params.session_id, message)
         else:
@@ -75,15 +96,18 @@ class AgentRuntime:
             model = params.model
             system_prompt = params.system_prompt
             capabilities = params.capabilities
+            completion_requirements = params.completion_requirements
             if store is not None:
                 store.create(
                     SessionMetadata(
+                        schema_version=4,
                         session_id=params.session_id,
                         repository_root=repository_root,
                         initial_working_directory=repository_root,
                         model=params.model,
                         system_prompt=params.system_prompt,
                         capabilities=params.capabilities,
+                        completion_requirements=params.completion_requirements,
                     )
                 )
                 for message in messages:
@@ -91,6 +115,11 @@ class AgentRuntime:
         transcript = SessionTranscript(session_id=params.session_id, messages=messages)
         working_directory = (
             runtime_state.worktree.path if runtime_state.worktree is not None else repository_root
+        )
+        runtime_state.instruction_state = self.dependencies.instruction_resolver.activate_for_path(
+            Path(working_directory),
+            ".",
+            runtime_state.instruction_state,
         )
         tool_context = ToolUseContext(
             session_id=params.session_id,
@@ -101,6 +130,9 @@ class AgentRuntime:
             permission_mode=runtime_state.permission_mode,
             plan_path=runtime_state.plan_path,
             worktree=runtime_state.worktree,
+            instruction_state=runtime_state.instruction_state,
+            file_observations=runtime_state.file_observations,
+            completion_requirements=completion_requirements,
         )
         started_at = self.dependencies.monotonic()
         force_compact_reason: str | None = None
@@ -215,6 +247,44 @@ class AgentRuntime:
                     state.stop_reason = failure.reason
                     yield RunStopped(transition=failure)
                     return
+                tool_context.transcript_messages = transcript.snapshot()
+                stop_result = await self.dependencies.tool_executor.hooks.run_stop(
+                    StopHookPayload(messages=transcript.snapshot()),
+                    tool_context,
+                )
+                if stop_result.blocking_reasons:
+                    reasons = tuple(stop_result.blocking_reasons)
+                    state.stop_block_count = (
+                        state.stop_block_count + 1
+                        if reasons == state.last_stop_reasons
+                        else 1
+                    )
+                    state.last_stop_reasons = reasons
+                    blocking_message = RuntimeMessage(
+                        role="user",
+                        content=[
+                            TextBlock(
+                                text=(
+                                    "<completion-gate>\n"
+                                    + "\n".join(f"- {reason}" for reason in reasons)
+                                    + "\nContinue working and satisfy these evidence requirements before finishing."
+                                    "\n</completion-gate>"
+                                )
+                            )
+                        ],
+                    )
+                    transcript.append(blocking_message)
+                    if store is not None:
+                        store.append_message(params.session_id, blocking_message)
+                    if state.stop_block_count >= 3:
+                        transition = Blocked(
+                            reason="completion requirements remained unmet after three stop attempts"
+                        )
+                        state.status = "blocked"
+                        state.stop_reason = transition.reason
+                        yield RunStopped(transition=transition)
+                        return
+                    continue
                 state.status = "completed"
                 state.stop_reason = completed.stop_reason
                 yield RunCompleted(transition=Complete(reason=completed.stop_reason))
@@ -252,6 +322,9 @@ class AgentRuntime:
                                 plan_path=tool_context.plan_path,
                                 worktree=tool_context.worktree,
                                 capabilities=tool_context.capabilities,
+                                instruction_state=tool_context.instruction_state,
+                                file_observations=tool_context.file_observations,
+                                completion_requirements=tool_context.completion_requirements,
                             ),
                         )
                     if update.result is not None and update.tool_use_id is not None:
@@ -304,6 +377,50 @@ def _tool_result_message(calls: list[ToolUseBlock], results: dict[str, ToolResul
             for call in calls
         ],
     )
+
+
+def _repair_interrupted_tool_uses(messages: list[RuntimeMessage]) -> RuntimeMessage | None:
+    """只修复 transcript 尾部悬空调用；中间配对错误说明权威日志已损坏。"""
+
+    known: set[str] = set()
+    resolved: set[str] = set()
+    pending: dict[str, ToolUseBlock] = {}
+    for message in messages:
+        if message.role == "assistant":
+            if pending:
+                raise ValueError("session contains unresolved tool calls before a later assistant message")
+            for block in message.content:
+                if not isinstance(block, ToolUseBlock):
+                    continue
+                if block.id in known:
+                    raise ValueError(f"session contains duplicate tool use id: {block.id}")
+                known.add(block.id)
+                pending[block.id] = block
+            continue
+        for block in message.content:
+            if not isinstance(block, ToolResultBlock):
+                continue
+            if block.tool_use_id not in known:
+                raise ValueError(
+                    f"session contains tool result without a matching tool use: {block.tool_use_id}"
+                )
+            if block.tool_use_id in resolved:
+                raise ValueError(f"session contains duplicate tool result: {block.tool_use_id}")
+            resolved.add(block.tool_use_id)
+            pending.pop(block.tool_use_id, None)
+    if not pending:
+        return None
+    interrupted = {
+        tool_use_id: ToolResult(
+            error=ToolError(
+                code="PROCESS_INTERRUPTED",
+                message="the previous process ended before this tool call completed",
+                retryable=True,
+            )
+        )
+        for tool_use_id in pending
+    }
+    return _tool_result_message(list(pending.values()), interrupted)
 
 
 def _budget_failure(

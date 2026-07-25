@@ -26,6 +26,11 @@ class SkillLoader:
                 raw_manifest["allowed_tools"] = frozenset(raw_manifest["allowed_tools"])
             if isinstance(raw_manifest.get("resources"), list):
                 raw_manifest["resources"] = tuple(raw_manifest["resources"])
+            completion = raw_manifest.get("completion")
+            if isinstance(completion, dict):
+                for field in ("required_evidence", "waivable_evidence"):
+                    if isinstance(completion.get(field), list):
+                        completion[field] = frozenset(completion[field])
             manifest = SkillManifest.model_validate(raw_manifest)
             descriptors.append(
                 SkillDescriptor(

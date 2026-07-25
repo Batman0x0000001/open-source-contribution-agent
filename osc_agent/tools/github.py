@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from http.client import IncompleteRead
 import json
 import os
+from pathlib import Path
+import subprocess
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -17,6 +19,7 @@ from osc_agent.runtime.models import (
     ToolError,
     ToolResult,
     ToolUseContext,
+    ToolResultBlock,
     ValidationFailure,
     ValidationResult,
     ValidationSuccess,
@@ -32,6 +35,14 @@ class GitHubIssue(ContractModel):
     url: str
     labels: list[str]
     updated_at: str
+    comments: list["GitHubComment"] = Field(default_factory=list)
+
+
+class GitHubComment(ContractModel):
+    author: str
+    body: str
+    created_at: str
+    url: str
 
 
 class GitHubListIssuesInput(ContractModel):
@@ -57,7 +68,7 @@ class GitHubListIssuesTool(BaseTool[GitHubListIssuesInput, GitHubListIssuesOutpu
         return True
 
     async def validate_input(self, input: GitHubListIssuesInput, context: ToolUseContext) -> ValidationResult:
-        return _validate_repo_url(input.repo_url)
+        return _validate_remote(input.repo_url, context)
 
     async def call(self, input: GitHubListIssuesInput, context: ToolUseContext) -> ToolResult:
         result = await asyncio.to_thread(
@@ -74,6 +85,7 @@ class GitHubListIssuesTool(BaseTool[GitHubListIssuesInput, GitHubListIssuesOutpu
 class GitHubGetIssueInput(ContractModel):
     repo_url: str = Field(min_length=1, description="Public GitHub repository URL.")
     issue_number: int = Field(ge=1)
+    max_comments: int = Field(default=30, ge=0, le=100)
 
 
 class GitHubGetIssueOutput(ContractModel):
@@ -93,13 +105,44 @@ class GitHubGetIssueTool(BaseTool[GitHubGetIssueInput, GitHubGetIssueOutput]):
         return True
 
     async def validate_input(self, input: GitHubGetIssueInput, context: ToolUseContext) -> ValidationResult:
-        return _validate_repo_url(input.repo_url)
+        valid = _validate_remote(input.repo_url, context)
+        return valid
 
     async def call(self, input: GitHubGetIssueInput, context: ToolUseContext) -> ToolResult:
-        result = await asyncio.to_thread(fetch_issue, input.repo_url, input.issue_number)
+        result = await asyncio.to_thread(
+            fetch_issue,
+            input.repo_url,
+            input.issue_number,
+            max_comments=input.max_comments,
+        )
         if not result.get("ok"):
             return _github_tool_error(result)
         return ToolResult(data={"issue": _normalize_issue(result["issue"])})
+
+
+def _validate_remote(repo_url: str, context: ToolUseContext) -> ValidationResult:
+    valid = _validate_repo_url(repo_url)
+    if isinstance(valid, ValidationFailure):
+        return valid
+    remote = _local_origin(Path(context.working_directory))
+    requested = parse_github_repo(repo_url)
+    if (
+        remote is not None
+        and tuple(part.casefold() for part in remote)
+        != tuple(part.casefold() for part in requested)
+        and not _remote_mismatch_approved(
+            context,
+            local_origin=remote,
+            requested_repository=requested,
+        )
+    ):
+        return ValidationFailure(
+            reason=(
+                f"repo_url does not match local origin {remote[0]}/{remote[1]}; "
+                "ask the user with purpose=remote_mismatch and bind the exact repository pair"
+            )
+        )
+    return ValidationSuccess()
 
 
 def _validate_repo_url(repo_url: str) -> ValidationResult:
@@ -119,6 +162,15 @@ def _normalize_issue(issue: dict[str, Any]) -> dict[str, Any]:
         "url": str(issue.get("html_url") or ""),
         "labels": sorted(_issue_labels(issue)),
         "updated_at": str(issue.get("updated_at") or ""),
+        "comments": [
+            {
+                "author": str((comment.get("user") or {}).get("login") or ""),
+                "body": str(comment.get("body") or ""),
+                "created_at": str(comment.get("created_at") or ""),
+                "url": str(comment.get("html_url") or ""),
+            }
+            for comment in issue.get("_comments") or []
+        ],
     }
 
 
@@ -164,7 +216,13 @@ def fetch_issues(
     return {"ok": True, "issues": issues}
 
 
-def fetch_issue(repo_url: str, issue_number: int, token: str | None = None) -> dict[str, Any]:
+def fetch_issue(
+    repo_url: str,
+    issue_number: int,
+    token: str | None = None,
+    *,
+    max_comments: int = 30,
+) -> dict[str, Any]:
     try:
         owner, repo = parse_github_repo(repo_url)
     except ValueError as exc:
@@ -178,6 +236,14 @@ def fetch_issue(repo_url: str, issue_number: int, token: str | None = None) -> d
     issue = result.get("data") or {}
     if issue.get("pull_request"):
         return {"ok": False, "error": "requested number is a pull request", "issue": {}}
+    if max_comments:
+        comments = _github_get_json(
+            f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments?per_page={max_comments}",
+            token,
+        )
+        if not comments["ok"]:
+            return {"ok": False, "error": comments["error"], "issue": {}}
+        issue["_comments"] = list(comments.get("data") or [])[:max_comments]
     return {"ok": True, "issue": issue}
 
 
@@ -206,3 +272,84 @@ def _issue_labels(issue: dict[str, Any]) -> set[str]:
         str(label.get("name", "") if isinstance(label, dict) else label).casefold()
         for label in issue.get("labels") or []
     }
+
+
+def _local_origin(repo_root: Path) -> tuple[str, str] | None:
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != repo_root.resolve():
+            return None
+        completed = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    value = completed.stdout.strip()
+    if completed.returncode != 0 or not value:
+        return None
+    if value.startswith("git@github.com:"):
+        value = "https://github.com/" + value.removeprefix("git@github.com:")
+    elif value.startswith("ssh://git@github.com/"):
+        value = "https://github.com/" + value.removeprefix("ssh://git@github.com/")
+    try:
+        return parse_github_repo(value)
+    except ValueError:
+        return None
+
+
+def _remote_mismatch_approved(
+    context: ToolUseContext,
+    *,
+    local_origin: tuple[str, str],
+    requested_repository: tuple[str, str],
+) -> bool:
+    expected_local = "/".join(part.casefold() for part in local_origin)
+    expected_requested = "/".join(part.casefold() for part in requested_repository)
+    for message in context.transcript_messages:
+        for block in message.content:
+            if not isinstance(block, ToolResultBlock) or not isinstance(block.content, dict):
+                continue
+            data = block.content.get("data")
+            if not isinstance(data, dict):
+                continue
+            questions = data.get("questions")
+            answers = data.get("answers")
+            if not isinstance(questions, list) or not isinstance(answers, list):
+                continue
+            approved_ids = {
+                str(answer.get("question_id"))
+                for answer in answers
+                if isinstance(answer, dict)
+                and answer.get("selected_option_id") == "proceed"
+            }
+            if any(
+                isinstance(question, dict)
+                and question.get("purpose") == "remote_mismatch"
+                and str(question.get("id")) in approved_ids
+                and isinstance(question.get("remote_mismatch_reference"), dict)
+                and str(
+                    question["remote_mismatch_reference"].get("local_origin") or ""
+                ).casefold()
+                == expected_local
+                and str(
+                    question["remote_mismatch_reference"].get("requested_repository") or ""
+                ).casefold()
+                == expected_requested
+                for question in questions
+            ):
+                return True
+    return False

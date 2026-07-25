@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     anthropic_base_url: str | None = Field(default=None, validation_alias="ANTHROPIC_BASE_URL")
-    model_id: str = Field(default="claude-3-5-sonnet-latest", validation_alias="MODEL_ID")
+    model_id: str | None = Field(default=None, validation_alias="MODEL_ID")
     max_agent_rounds: int = Field(default=30, gt=0, validation_alias="OSC_AGENT_MAX_ROUNDS")
     max_total_tokens: int = Field(default=200_000, gt=0, validation_alias="OSC_AGENT_MAX_TOKENS")
     agent_deadline_seconds: int = Field(default=1_800, ge=0, validation_alias="OSC_AGENT_DEADLINE_SECONDS")
@@ -27,6 +27,6 @@ class Settings(BaseSettings):
 
 def load_settings() -> Settings:
     """读取环境变量并组装运行配置，测试中可不提供真实 API key。"""
-    load_dotenv(override=True)
+    load_dotenv(override=False)
 
     return Settings()

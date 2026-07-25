@@ -65,3 +65,17 @@ def test_removed_minimum_version_capabilities_are_absent() -> None:
         path.read_text(encoding="utf-8") for path in (PACKAGE_ROOT / "agents").glob("*.py")
     )
     assert "background" not in agent_sources
+
+
+def test_agent_registry_has_no_file_or_plugin_loading_path() -> None:
+    agent_sources = "\n".join(
+        path.read_text(encoding="utf-8") for path in (PACKAGE_ROOT / "agents").glob("*.py")
+    )
+    for forbidden in (
+        ".osc_agent/agents",
+        ".claude/agents",
+        "load_agent",
+        "plugin_agent",
+        "AgentLoader",
+    ):
+        assert forbidden not in agent_sources

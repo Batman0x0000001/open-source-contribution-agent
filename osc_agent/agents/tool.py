@@ -1,34 +1,41 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Literal
-from uuid import uuid4
 
-from pydantic import Field
+from pydantic import Field, JsonValue, ValidationError
 
 from osc_agent.agents.definitions import AgentInvocation
+from osc_agent.agents.registry import AgentRegistry
 from osc_agent.agents.runner import AgentRunner
-from osc_agent.isolation.worktree import WorktreeManager
-from osc_agent.runtime.models import ContractModel, ToolResult, ToolUseContext, ValidationFailure, ValidationResult, ValidationSuccess
+from osc_agent.runtime.models import (
+    ContractModel,
+    ToolError,
+    ToolResult,
+    ToolUseContext,
+)
 from osc_agent.runtime.tool import BaseTool
+from osc_agent.tools.git import git_workspace_fingerprint
+
+
+MAX_AGENT_OUTPUT_CHARS = 30_000
 
 
 class AgentToolInput(ContractModel):
     agent: str = Field(min_length=1)
-    prompt: str = Field(min_length=1)
-    mode: Literal["inline", "fork"] = "inline"
-    isolation: Literal["worktree"] | None = None
+    task: str = Field(min_length=1, max_length=4_000)
+    arguments: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class AgentToolOutput(ContractModel):
-    task_id: str
-    session_id: str
+    agent: str
     status: Literal["completed", "failed", "cancelled"]
-    output: str = ""
+    child_session_id: str
+    result: JsonValue = None
     error: str | None = None
-    worktree_path: str | None = None
-    worktree_branch: str | None = None
+    workspace_fingerprint: str | None = None
 
 
 class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
@@ -36,48 +43,168 @@ class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
     input_model = AgentToolInput
     output_model = AgentToolOutput
 
-    def __init__(self, runner: AgentRunner, manager: WorktreeManager) -> None:
+    def __init__(self, runner: AgentRunner, registry: AgentRegistry) -> None:
         self.runner = runner
-        self.manager = manager
+        self.registry = registry
+        self._semaphores: dict[str, asyncio.Semaphore] = {}
 
     @property
     def description(self) -> str:
-        available = "; ".join(
-            f"{definition.name}: {definition.description}"
-            for definition in self.runner.list_definitions()
+        available = []
+        for registration in self.registry.list():
+            schema = json.dumps(
+                registration.input_model.model_json_schema(mode="validation"),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            available.append(
+                f"{registration.definition.name}: {registration.definition.description}; "
+                f"arguments schema={schema}"
+            )
+        return (
+            "Run one code-registered child Agent with a bounded task and validated arguments. "
+            f"Available: {'; '.join(available) if available else 'none'}"
         )
-        return f"Run a child Agent inline or with a forked transcript. Available: {available or 'none'}"
 
-    async def validate_input(self, input: AgentToolInput, context: ToolUseContext) -> ValidationResult:
-        return ValidationSuccess()
+    def is_read_only(self, input: AgentToolInput) -> bool:
+        registration = self.registry.get(input.agent)
+        return bool(registration and registration.read_only)
+
+    def is_concurrency_safe(self, input: AgentToolInput) -> bool:
+        registration = self.registry.get(input.agent)
+        return bool(registration and registration.concurrency_safe)
+
+    def is_destructive(self, input: AgentToolInput) -> bool:
+        registration = self.registry.get(input.agent)
+        return bool(registration and not registration.read_only)
 
     async def call(self, input: AgentToolInput, context: ToolUseContext) -> ToolResult:
-        worktree = None
-        working_directory = context.working_directory
-        if input.isolation == "worktree":
-            name = f"agent-{uuid4().hex[:12]}"
-            worktree = await asyncio.to_thread(
-                self.manager.create,
-                Path(context.working_directory),
-                name,
+        registration = self.registry.get(input.agent)
+        if registration is None:
+            return _error("AGENT_NOT_FOUND", f"unknown agent: {input.agent}")
+        try:
+            arguments = registration.input_model.model_validate(
+                input.arguments,
+                context={"repository_root": context.working_directory},
             )
-            working_directory = worktree.path
-        result = await self.runner.run(
-            AgentInvocation(
-                agent_name=input.agent,
-                prompt=input.prompt,
-                mode=input.mode,
-                parent_session_id=context.session_id,
-                working_directory=working_directory,
-                caller_capabilities=context.capabilities,
-                parent_messages=context.transcript_messages if input.mode == "fork" else [],
-            )
+        except ValidationError as exc:
+            return _error("AGENT_INPUT_INVALID", str(exc))
+
+        semaphore = self._semaphores.setdefault(
+            input.agent,
+            asyncio.Semaphore(registration.max_parallel),
         )
-        data = result.model_dump(mode="json")
-        if worktree is not None:
-            if await asyncio.to_thread(self.manager.is_dirty, worktree) or await asyncio.to_thread(self.manager.commits_ahead, worktree) > 0:
-                data.update({"worktree_path": worktree.path, "worktree_branch": worktree.branch})
-            else:
-                await asyncio.to_thread(self.manager.remove, worktree)
-                data.update({"worktree_path": None, "worktree_branch": None})
-        return ToolResult(data=data)
+        async with semaphore:
+            before = None
+            workspace_fingerprint = None
+            if registration.read_only:
+                before = await _fingerprint(context)
+                if isinstance(before, ToolResult):
+                    return before
+            prompt = (
+                f"Task:\n{input.task}\n\n"
+                + registration.prompt_builder(arguments)
+            )
+            parent_messages = (
+                context.transcript_messages
+                if registration.definition.context_policy == "fork"
+                else []
+            )
+            try:
+                run = await self.runner.run(
+                    AgentInvocation(
+                        agent_name=input.agent,
+                        prompt=prompt,
+                        mode=(
+                            "fork"
+                            if registration.definition.context_policy == "fork"
+                            else "inline"
+                        ),
+                        parent_session_id=context.session_id,
+                        working_directory=context.working_directory,
+                        caller_capabilities=context.capabilities,
+                        parent_messages=parent_messages,
+                    )
+                )
+            except asyncio.CancelledError:
+                if registration.read_only:
+                    guard_error, workspace_fingerprint = await _guard_result(before, context)
+                    if guard_error is not None:
+                        return guard_error
+                raise
+            except Exception:
+                if registration.read_only:
+                    guard_error, workspace_fingerprint = await _guard_result(before, context)
+                    if guard_error is not None:
+                        return guard_error
+                raise
+            if registration.read_only:
+                guard_error, workspace_fingerprint = await _guard_result(before, context)
+                if guard_error is not None:
+                    return guard_error
+        if run.status != "completed":
+            return ToolResult(
+                data={
+                    "agent": input.agent,
+                    "status": run.status,
+                    "child_session_id": run.session_id,
+                    "result": None,
+                    "error": run.error or run.status,
+                    "workspace_fingerprint": workspace_fingerprint,
+                }
+            )
+        if len(run.output) > MAX_AGENT_OUTPUT_CHARS:
+            return _error("AGENT_OUTPUT_INVALID", "agent output exceeds the 30000 character limit")
+        try:
+            raw_output = json.loads(run.output)
+            output = registration.output_model.model_validate(
+                raw_output,
+                context={"repository_root": context.working_directory},
+            )
+        except (json.JSONDecodeError, ValidationError) as exc:
+            return _error("AGENT_OUTPUT_INVALID", str(exc))
+        return ToolResult(
+            data={
+                "agent": input.agent,
+                "status": "completed",
+                "child_session_id": run.session_id,
+                "result": output.model_dump(mode="json"),
+                "error": None,
+                "workspace_fingerprint": workspace_fingerprint,
+            }
+        )
+
+
+def _error(code: str, message: str) -> ToolResult:
+    return ToolResult(error=ToolError(code=code, message=message))
+
+
+async def _fingerprint(context: ToolUseContext) -> str | ToolResult:
+    try:
+        return await asyncio.to_thread(
+            git_workspace_fingerprint,
+            repo_root=Path(context.working_directory),
+        )
+    except (OSError, ValueError) as exc:
+        return _error(
+            "AGENT_READ_ONLY_GUARD_FAILED",
+            f"unable to verify read-only Agent workspace: {exc}",
+        )
+
+
+async def _guard_result(
+    before: str | ToolResult | None,
+    context: ToolUseContext,
+) -> tuple[ToolResult | None, str | None]:
+    after = await _fingerprint(context)
+    if isinstance(after, ToolResult):
+        return after, None
+    if before != after:
+        return (
+            _error(
+                "AGENT_READ_ONLY_VIOLATION",
+                "read-only Agent changed Git-visible repository state; changes were preserved for inspection",
+            ),
+            after,
+        )
+    return None, after

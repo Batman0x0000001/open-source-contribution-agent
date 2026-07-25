@@ -4,7 +4,12 @@ from typing import Literal
 
 from pydantic import Field, JsonValue
 
-from osc_agent.runtime.models import CapabilityScope, FrozenContractModel, RuntimeMessage
+from osc_agent.runtime.models import (
+    CapabilityScope,
+    CompletionRequirements,
+    FrozenContractModel,
+    RuntimeMessage,
+)
 
 
 class SkillManifest(FrozenContractModel):
@@ -18,6 +23,7 @@ class SkillManifest(FrozenContractModel):
     user_invocable: bool = True
     disable_model_invocation: bool = False
     resources: tuple[str, ...] = ()
+    completion: CompletionRequirements = Field(default_factory=CompletionRequirements)
     input_schema: dict[str, JsonValue]
     output_schema: dict[str, JsonValue]
 
@@ -46,3 +52,6 @@ class SkillResult(FrozenContractModel):
     output: JsonValue = None
     error: str | None = None
     capabilities: CapabilityScope | None = None
+    completion_requirements: CompletionRequirements = Field(
+        default_factory=CompletionRequirements
+    )

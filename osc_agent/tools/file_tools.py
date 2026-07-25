@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from hashlib import sha256
 from pathlib import Path
 
 from pydantic import Field
@@ -9,8 +10,12 @@ from osc_agent.tools.path_policy import (
     normalize_repo_relative_path,
     normalize_repo_relative_pattern,
 )
+from osc_agent.tools.path_policy import safe_repo_path
+from osc_agent.runtime.instructions import RepositoryInstructionResolver
 from osc_agent.runtime.models import (
     ContractModel,
+    ContextUpdate,
+    FileObservation,
     ToolError,
     ToolResult,
     ToolUseContext,
@@ -19,7 +24,7 @@ from osc_agent.runtime.models import (
     ValidationSuccess,
 )
 from osc_agent.runtime.tool import BaseTool
-from osc_agent.tools.files import edit_file, glob_files, read_file, write_file
+from osc_agent.tools.files import edit_file, glob_files, write_file
 
 
 class ReadFileInput(ContractModel):
@@ -32,6 +37,7 @@ class ReadFileOutput(ContractModel):
     path: str
     content: str
     offset: int = Field(ge=0)
+    complete: bool
 
 
 class ReadFileTool(BaseTool[ReadFileInput, ReadFileOutput]):
@@ -39,6 +45,9 @@ class ReadFileTool(BaseTool[ReadFileInput, ReadFileOutput]):
     description = "Read a UTF-8 text file inside the current repository boundary."
     input_model = ReadFileInput
     output_model = ReadFileOutput
+
+    def __init__(self, instructions: RepositoryInstructionResolver | None = None) -> None:
+        self.instructions = instructions or RepositoryInstructionResolver()
 
     def is_read_only(self, input: ReadFileInput) -> bool:
         return True
@@ -54,16 +63,36 @@ class ReadFileTool(BaseTool[ReadFileInput, ReadFileOutput]):
         return _validate_path(input.path)
 
     async def call(self, input: ReadFileInput, context: ToolUseContext) -> ToolResult:
-        content = await asyncio.to_thread(
-            read_file,
-            repo_root=Path(context.working_directory),
+        root = Path(context.working_directory)
+        try:
+            target = safe_repo_path(root, input.path)
+            text = await asyncio.to_thread(target.read_text, encoding="utf-8")
+            stat = await asyncio.to_thread(target.stat)
+            instruction_state = self.instructions.activate_for_path(
+                root, input.path, context.instruction_state
+            )
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            return ToolResult(error=ToolError(code="FILE_OPERATION_FAILED", message=str(exc)))
+        content = text[input.offset : input.offset + input.limit]
+        complete = input.offset == 0 and len(content) == len(text)
+        observation = FileObservation(
             path=input.path,
-            limit=input.limit,
-            offset=input.offset,
+            content_hash=sha256(text.encode("utf-8")).hexdigest(),
+            mtime_ns=stat.st_mtime_ns,
+            complete=complete,
         )
-        if content.startswith("Error: "):
-            return _file_error(content)
-        return ToolResult(data={"path": input.path, "content": content, "offset": input.offset})
+        return ToolResult(
+            data={
+                "path": input.path,
+                "content": content,
+                "offset": input.offset,
+                "complete": complete,
+            },
+            context_update=ContextUpdate(
+                instruction_state=instruction_state,
+                file_observations={input.path: observation},
+            ),
+        )
 
 
 class WriteFileInput(ContractModel):
@@ -82,9 +111,31 @@ class WriteFileTool(BaseTool[WriteFileInput, WriteFileOutput]):
     input_model = WriteFileInput
     output_model = WriteFileOutput
 
+    def __init__(self, instructions: RepositoryInstructionResolver | None = None) -> None:
+        self.instructions = instructions or RepositoryInstructionResolver()
+
     def is_destructive(self, input: WriteFileInput) -> bool:
         # 创建或覆盖文件都必须经过统一 Permission pipeline。
         return True
+
+    def permission_risk(self, input: WriteFileInput) -> str:
+        return "write"
+
+    def permission_preview(
+        self,
+        input: WriteFileInput,
+        context: ToolUseContext,
+    ) -> dict[str, object]:
+        try:
+            target = safe_repo_path(Path(context.working_directory), input.path)
+            operation = "replace" if target.exists() else "create"
+        except ValueError:
+            operation = "invalid"
+        return {
+            "path": input.path,
+            "chars": len(input.content),
+            "operation": operation,
+        }
 
     async def validate_input(
         self,
@@ -94,9 +145,25 @@ class WriteFileTool(BaseTool[WriteFileInput, WriteFileOutput]):
         return _validate_path(input.path)
 
     async def call(self, input: WriteFileInput, context: ToolUseContext) -> ToolResult:
+        root = Path(context.working_directory)
+        instruction_state = self.instructions.activate_for_path(
+            root, input.path, context.instruction_state
+        )
+        if instruction_state != context.instruction_state:
+            return ToolResult(
+                error=ToolError(
+                    code="REPOSITORY_INSTRUCTIONS_DISCOVERED",
+                    message="new repository instructions were activated; review them and retry the write",
+                    retryable=True,
+                ),
+                context_update=ContextUpdate(instruction_state=instruction_state),
+            )
+        stale = await asyncio.to_thread(_existing_file_guard, root, input.path, context)
+        if stale is not None:
+            return stale
         output = await asyncio.to_thread(
             write_file,
-            repo_root=Path(context.working_directory),
+            repo_root=root,
             path=input.path,
             content=input.content,
             # 风险授权已由 ToolExecutor 统一完成，底层函数只负责安全写入算法。
@@ -104,7 +171,11 @@ class WriteFileTool(BaseTool[WriteFileInput, WriteFileOutput]):
         )
         if output.startswith("Error: "):
             return _file_error(output)
-        return ToolResult(data={"path": input.path, "chars_written": len(input.content)})
+        observation = await asyncio.to_thread(_observe_written_file, root, input.path)
+        return ToolResult(
+            data={"path": input.path, "chars_written": len(input.content)},
+            context_update=ContextUpdate(file_observations={input.path: observation}),
+        )
 
 
 class EditFileInput(ContractModel):
@@ -124,8 +195,25 @@ class EditFileTool(BaseTool[EditFileInput, EditFileOutput]):
     input_model = EditFileInput
     output_model = EditFileOutput
 
+    def __init__(self, instructions: RepositoryInstructionResolver | None = None) -> None:
+        self.instructions = instructions or RepositoryInstructionResolver()
+
     def is_destructive(self, input: EditFileInput) -> bool:
         return True
+
+    def permission_risk(self, input: EditFileInput) -> str:
+        return "write"
+
+    def permission_preview(
+        self,
+        input: EditFileInput,
+        context: ToolUseContext,
+    ) -> dict[str, object]:
+        return {
+            "path": input.path,
+            "old_text_chars": len(input.old_text),
+            "new_text_chars": len(input.new_text),
+        }
 
     async def validate_input(
         self,
@@ -135,9 +223,25 @@ class EditFileTool(BaseTool[EditFileInput, EditFileOutput]):
         return _validate_path(input.path)
 
     async def call(self, input: EditFileInput, context: ToolUseContext) -> ToolResult:
+        root = Path(context.working_directory)
+        instruction_state = self.instructions.activate_for_path(
+            root, input.path, context.instruction_state
+        )
+        if instruction_state != context.instruction_state:
+            return ToolResult(
+                error=ToolError(
+                    code="REPOSITORY_INSTRUCTIONS_DISCOVERED",
+                    message="new repository instructions were activated; review them and retry the edit",
+                    retryable=True,
+                ),
+                context_update=ContextUpdate(instruction_state=instruction_state),
+            )
+        stale = await asyncio.to_thread(_existing_file_guard, root, input.path, context)
+        if stale is not None:
+            return stale
         output = await asyncio.to_thread(
             edit_file,
-            repo_root=Path(context.working_directory),
+            repo_root=root,
             path=input.path,
             old_text=input.old_text,
             new_text=input.new_text,
@@ -145,7 +249,11 @@ class EditFileTool(BaseTool[EditFileInput, EditFileOutput]):
         )
         if output.startswith("Error: "):
             return _file_error(output)
-        return ToolResult(data={"path": input.path, "replacements": 1})
+        observation = await asyncio.to_thread(_observe_written_file, root, input.path)
+        return ToolResult(
+            data={"path": input.path, "replacements": 1},
+            context_update=ContextUpdate(file_observations={input.path: observation}),
+        )
 
 
 class GlobInput(ContractModel):
@@ -201,3 +309,48 @@ def _validate_path(path: str) -> ValidationResult:
 
 def _file_error(output: str) -> ToolResult:
     return ToolResult(error=ToolError(code="FILE_OPERATION_FAILED", message=output.removeprefix("Error: ")))
+
+
+def _existing_file_guard(
+    root: Path,
+    path: str,
+    context: ToolUseContext,
+) -> ToolResult | None:
+    target = safe_repo_path(root, path)
+    if not target.exists():
+        return None
+    observation = context.file_observations.get(path)
+    if observation is None or not observation.complete:
+        return ToolResult(
+            error=ToolError(
+                code="FILE_NOT_FULLY_READ",
+                message="existing files must be read completely before editing or overwriting",
+                retryable=True,
+            )
+        )
+    try:
+        text = target.read_text(encoding="utf-8")
+        stat = target.stat()
+    except (OSError, UnicodeDecodeError) as exc:
+        return ToolResult(error=ToolError(code="FILE_OPERATION_FAILED", message=str(exc)))
+    current_hash = sha256(text.encode("utf-8")).hexdigest()
+    if current_hash != observation.content_hash or stat.st_mtime_ns != observation.mtime_ns:
+        return ToolResult(
+            error=ToolError(
+                code="FILE_CHANGED_SINCE_READ",
+                message="file changed after it was read; read the full file again before writing",
+                retryable=True,
+            )
+        )
+    return None
+
+
+def _observe_written_file(root: Path, path: str) -> FileObservation:
+    target = safe_repo_path(root, path)
+    text = target.read_text(encoding="utf-8")
+    return FileObservation(
+        path=path,
+        content_hash=sha256(text.encode("utf-8")).hexdigest(),
+        mtime_ns=target.stat().st_mtime_ns,
+        complete=True,
+    )

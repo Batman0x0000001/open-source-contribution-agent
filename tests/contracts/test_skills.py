@@ -4,7 +4,10 @@ import asyncio
 from pathlib import Path
 
 from osc_agent.agents.definitions import AgentDefinition, AgentInvocation, AgentRunResult
-from osc_agent.runtime.models import CapabilityScope, RuntimeMessage, TextBlock, ToolUseContext
+from osc_agent.runtime.models import CapabilityScope, RuntimeMessage, TextBlock, ToolUseBlock, ToolUseContext
+from osc_agent.runtime.tool import ToolRegistry
+from osc_agent.runtime.tool_execution import ToolExecutor
+from osc_agent.runtime.tool_orchestration import run_tools
 from osc_agent.skills.catalog import SkillCatalog
 from osc_agent.skills.executor import SkillExecutor
 from osc_agent.skills.loader import SkillLoader
@@ -19,6 +22,7 @@ def write_skill(
     source_text: str = "Review carefully.",
     context: str = "inline",
     allowed_tools: str = "[read, write]",
+    completion: str = "",
 ) -> Path:
     path = root / name / "SKILL.md"
     path.parent.mkdir(parents=True)
@@ -30,6 +34,7 @@ description: Review a change
 when_to_use: Before submitting a change
 allowed_tools: {allowed_tools}
 context: {context}
+{completion}
 input_schema:
   type: object
   properties:
@@ -119,7 +124,6 @@ def test_fork_skill_uses_agent_runner_and_validates_structured_output(tmp_path: 
             self.definition = definition
             self.invocation = invocation
             return AgentRunResult(
-                task_id="task-1",
                 session_id="child-1",
                 status="completed",
                 output='{"verdict":"pass"}',
@@ -141,7 +145,12 @@ def test_fork_skill_uses_agent_runner_and_validates_structured_output(tmp_path: 
 
 
 def test_skill_tool_delegates_to_the_shared_executor(tmp_path: Path) -> None:
-    write_skill(tmp_path)
+    write_skill(
+        tmp_path,
+        completion="""completion:
+  required_evidence: [successful_test, git_change_snapshot]
+  waivable_evidence: [successful_test]""",
+    )
     executor = SkillExecutor(SkillCatalog([SkillLoader(tmp_path, source="project")]))
     tool = SkillTool(executor)
     context = ToolUseContext(session_id="session-1", working_directory="C:/repo", repository_root="C:/repo", state_directory="C:/state")
@@ -153,3 +162,37 @@ def test_skill_tool_delegates_to_the_shared_executor(tmp_path: Path) -> None:
     assert result.data["status"] == "inline"
     assert len(result.new_messages) == 1
     assert "Review carefully." in result.new_messages[0].content[0].text
+    assert result.context_update is not None
+    assert result.context_update.completion_requirements is not None
+    assert result.context_update.completion_requirements.required_evidence == {
+        "successful_test",
+        "git_change_snapshot",
+    }
+
+    registry = ToolRegistry([tool])
+
+    async def execute_through_runtime_path():
+        return [
+            update
+            async for update in run_tools(
+                [
+                    ToolUseBlock(
+                        id="skill-call",
+                        name="skill",
+                        input={
+                            "skill": "review",
+                            "arguments": {"target": "change.py"},
+                        },
+                    )
+                ],
+                registry=registry,
+                executor=ToolExecutor(registry),
+                context=context,
+            )
+        ]
+
+    updates = asyncio.run(execute_through_runtime_path())
+    assert updates[-1].context.completion_requirements.required_evidence == {
+        "successful_test",
+        "git_change_snapshot",
+    }

@@ -6,7 +6,9 @@ from typing import Awaitable, Callable
 
 from pydantic import JsonValue
 
-from osc_agent.agents.definitions import AgentDefinition
+from osc_agent.agents.explore import build_explore_registration
+from osc_agent.agents.verify import build_verify_registration
+from osc_agent.agents.registry import AgentRegistry
 from osc_agent.agents.runner import AgentRunner
 from osc_agent.agents.tool import AgentTool
 from osc_agent.config import Settings
@@ -22,6 +24,9 @@ from osc_agent.runtime.session_store import FileToolResultStore
 from osc_agent.runtime.context import ContextPipeline, GatewayContextSummarizer
 from osc_agent.runtime.state_paths import ApplicationStatePaths
 from osc_agent.isolation.worktree import WorktreeManager
+from osc_agent.runtime.instructions import RepositoryInstructionResolver
+from osc_agent.runtime.hooks import HookRegistry
+from osc_agent.runtime.completion import CompletionEvidenceStopHook
 from osc_agent.skills.catalog import SkillCatalog
 from osc_agent.skills.executor import SkillExecutor
 from osc_agent.skills.loader import SkillLoader
@@ -40,11 +45,13 @@ class ApplicationServices:
     tool_registry: ToolRegistry
     tool_executor: ToolExecutor
     runtime: AgentRuntime
+    agent_registry: AgentRegistry
     agent_runner: AgentRunner
     skill_catalog: SkillCatalog
     skill_executor: SkillExecutor
     skill_command_runner: SkillCommandRunner
     query_config: QueryConfig
+    general_capabilities: CapabilityScope
     discovery_prompt: str
 
 
@@ -69,6 +76,9 @@ def build_application(
 ) -> ApplicationServices:
     """唯一生产组装根：一个 Runtime、ToolExecutor、SkillExecutor 和权限链。"""
 
+    if not settings.model_id:
+        raise ValueError("MODEL_ID is required for model execution")
+    model_id = settings.model_id
     query_config = QueryConfig(
         max_rounds=settings.max_agent_rounds,
         max_total_tokens=settings.max_total_tokens,
@@ -78,14 +88,19 @@ def build_application(
     state_paths = ApplicationStatePaths.for_repository(repo_root)
     tool_result_store = FileToolResultStore(state_paths.tool_results)
     worktree_manager = WorktreeManager(state_paths.worktrees)
+    instruction_resolver = RepositoryInstructionResolver()
     catalog = build_skill_catalog(repo_root)
     registry = build_core_tool_registry(
         worktree_manager=worktree_manager,
         tool_result_store=tool_result_store,
+        instruction_resolver=instruction_resolver,
     )
     registry.register(ReadSkillResourceTool(catalog))
+    hooks = HookRegistry()
+    hooks.register_stop(CompletionEvidenceStopHook())
     executor = ToolExecutor(
         registry,
+        hooks=hooks,
         dependencies=ToolExecutionDependencies(
             approval_handler=approval_handler,
             question_handler=question_handler,
@@ -105,59 +120,75 @@ def build_application(
             session_store=FileSessionStore(state_paths.sessions),
             state_directory=str(state_paths.repository),
             worktree_manager=worktree_manager,
+            instruction_resolver=instruction_resolver,
             context_pipeline=ContextPipeline(
                 tool_result_store=tool_result_store,
-                summarizer=GatewayContextSummarizer(gateway, model=settings.model_id),
+                summarizer=GatewayContextSummarizer(gateway, model=model_id),
+                instruction_resolver=instruction_resolver,
             ),
         )
     )
-    general_base_prompt = (
-        "Work inside the supplied repository. Use tools and skills for evidence, make only requested "
-        "changes, and report verification results."
+    agent_registry = AgentRegistry(
+        [
+            build_explore_registration(model=model_id),
+            build_verify_registration(model=model_id),
+        ]
     )
-    general = AgentDefinition(
-        name="general",
-        description="General coding agent",
-        system_prompt=general_base_prompt,
-        model=settings.model_id,
-        capabilities=CapabilityScope(),
-        config=query_config,
-    )
-    runner = AgentRunner(runtime, [general], default_model=settings.model_id)
-    discovery_prompt = _discovery_prompt(catalog, runner)
+    runner = AgentRunner(runtime, agent_registry, default_model=model_id)
     skill_executor = SkillExecutor(catalog, agent_runner=runner, query_config=query_config)
+    registry.register(SkillTool(skill_executor))
+    registry.register(AgentTool(runner, agent_registry))
+    general_capabilities = CapabilityScope(allowed_tools=frozenset(registry.names()))
+    discovery_prompt = _discovery_prompt(
+        catalog,
+        agent_registry,
+        general_capabilities,
+    )
     skill_command_runner = SkillCommandRunner(
         skill_executor,
         runtime,
-        model=settings.model_id,
+        model=model_id,
         config=query_config,
-        system_prompt=f"Follow the invoked Skill instructions and use repository evidence.\n\n{discovery_prompt}",
+        system_prompt="Follow the invoked Skill instructions and use repository evidence.",
+        discovery_prompt=lambda capabilities: _discovery_prompt(
+            catalog,
+            agent_registry,
+            capabilities,
+        ),
     )
-    registry.register(SkillTool(skill_executor))
-    registry.register(AgentTool(runner, worktree_manager))
     return ApplicationServices(
         tool_registry=registry,
         tool_executor=executor,
         runtime=runtime,
+        agent_registry=agent_registry,
         agent_runner=runner,
         skill_catalog=catalog,
         skill_executor=skill_executor,
         skill_command_runner=skill_command_runner,
         query_config=query_config,
+        general_capabilities=general_capabilities,
         discovery_prompt=discovery_prompt,
     )
 
 
-def _discovery_prompt(catalog: SkillCatalog, runner: AgentRunner) -> str:
+def _discovery_prompt(
+    catalog: SkillCatalog,
+    agent_registry: AgentRegistry,
+    capabilities: CapabilityScope,
+) -> str:
     skills = [
         f"- {item.manifest.name}: {item.manifest.description}"
         for item in catalog.list()
         if not item.manifest.disable_model_invocation
     ]
-    agents = [
-        f"- {item.name}: {item.description}"
-        for item in runner.list_definitions()
-    ]
+    agents = (
+        [
+            f"- {item.definition.name}: {item.definition.description}"
+            for item in agent_registry.list()
+        ]
+        if capabilities.permits_tool("agent")
+        else []
+    )
     return (
         "<available_skills>\n"
         + ("\n".join(skills) if skills else "(none)")

@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 
 from osc_agent.agents.definitions import AgentDefinition, AgentInvocation, AgentRunResult
+from osc_agent.agents.registry import AgentRegistry
 from osc_agent.runtime.models import (
     AssistantMessageCompleted,
+    Cancelled,
     StartQueryParams,
     RunStopped,
     RuntimeMessage,
@@ -19,20 +21,18 @@ class AgentRunner:
     def __init__(
         self,
         runtime: AgentRuntime,
-        definitions: list[AgentDefinition],
+        registry: AgentRegistry,
         *,
         default_model: str,
     ) -> None:
         if not default_model:
             raise ValueError("default_model must not be empty")
         self.runtime = runtime
+        self.registry = registry
         self.default_model = default_model
-        self._definitions = {definition.name: definition for definition in definitions}
-        if len(self._definitions) != len(definitions):
-            raise ValueError("duplicate agent definition")
 
     def list_definitions(self) -> list[AgentDefinition]:
-        return [self._definitions[name] for name in sorted(self._definitions)]
+        return [registration.definition for registration in self.registry.list()]
 
     async def run(self, invocation: AgentInvocation) -> AgentRunResult:
         definition = self._definition(invocation.agent_name)
@@ -43,13 +43,11 @@ class AgentRunner:
         definition: AgentDefinition,
         invocation: AgentInvocation,
     ) -> AgentRunResult:
-        task_id = self.runtime.dependencies.new_id()
         session_id = self.runtime.dependencies.new_id()
-        return await self._execute(task_id, session_id, definition, invocation)
+        return await self._execute(session_id, definition, invocation)
 
     async def _execute(
         self,
-        task_id: str,
         session_id: str,
         definition: AgentDefinition,
         invocation: AgentInvocation,
@@ -78,23 +76,21 @@ class AgentRunner:
                     output = [block.text for block in event.message.content if isinstance(block, TextBlock)]
                 elif isinstance(event, RunStopped):
                     return AgentRunResult(
-                        task_id=task_id,
                         session_id=session_id,
-                        status="failed",
+                        status="cancelled" if isinstance(event.transition, Cancelled) else "failed",
                         output="\n".join(output),
                         error=event.transition.reason,
                     )
         except asyncio.CancelledError:
-            return AgentRunResult(task_id=task_id, session_id=session_id, status="cancelled")
+            raise
         return AgentRunResult(
-            task_id=task_id,
             session_id=session_id,
             status="completed",
             output="\n".join(output),
         )
 
     def _definition(self, name: str) -> AgentDefinition:
-        try:
-            return self._definitions[name]
-        except KeyError as exc:
-            raise KeyError(f"unknown agent definition: {name}") from exc
+        registration = self.registry.get(name)
+        if registration is None:
+            raise KeyError(f"unknown agent definition: {name}")
+        return registration.definition

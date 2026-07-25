@@ -35,6 +35,14 @@ class Tool(Protocol[InputT, OutputT]):
 
     def is_destructive(self, input: InputT) -> bool: ...
 
+    def permission_risk(self, input: InputT) -> str: ...
+
+    def permission_preview(
+        self,
+        input: InputT,
+        context: ToolUseContext,
+    ) -> dict[str, JsonValue]: ...
+
     async def validate_input(
         self,
         input: InputT,
@@ -73,6 +81,16 @@ class BaseTool(Generic[InputT, OutputT]):
 
     def is_destructive(self, input: InputT) -> bool:
         return False
+
+    def permission_risk(self, input: InputT) -> str:
+        return "destructive"
+
+    def permission_preview(
+        self,
+        input: InputT,
+        context: ToolUseContext,
+    ) -> dict[str, JsonValue]:
+        return _bounded_preview(input.model_dump(mode="json"))
 
     async def validate_input(
         self,
@@ -118,6 +136,9 @@ class ToolRegistry:
         tool = self._tools.get(name)
         return tool if tool is not None and tool.is_enabled() else None
 
+    def names(self) -> list[str]:
+        return sorted(name for name, tool in self._tools.items() if tool.is_enabled())
+
     def available(self, context: ToolUseContext) -> list[Tool[ContractModel, ContractModel]]:
         return [
             tool
@@ -134,3 +155,18 @@ class ToolRegistry:
             }
             for tool in self.available(context)
         ]
+
+
+def _bounded_preview(values: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """默认预览必须有界，并避免把常见凭据字段回显到审批界面。"""
+
+    preview: dict[str, JsonValue] = {}
+    for key, value in values.items():
+        lowered = key.casefold()
+        if any(marker in lowered for marker in ("token", "secret", "password", "api_key")):
+            preview[key] = "[REDACTED]"
+        elif isinstance(value, str) and len(value) > 500:
+            preview[key] = value[:500] + f"… [{len(value)} chars]"
+        else:
+            preview[key] = value
+    return preview

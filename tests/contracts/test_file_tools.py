@@ -33,6 +33,7 @@ def test_core_registry_has_one_authoritative_definition_per_migrated_tool() -> N
         "write_file",
         "edit_file",
         "glob",
+        "grep",
         "powershell",
         "git_status",
         "git_diff",
@@ -69,7 +70,12 @@ def test_read_file_is_input_sensitive_behavior_object(tmp_path: Path) -> None:
     assert tool.is_read_only(ReadFileInput(path="example.txt")) is True
     assert tool.is_concurrency_safe(ReadFileInput(path="example.txt")) is True
     assert result.error is None
-    assert result.data == {"path": "example.txt", "content": "bcd", "offset": 1}
+    assert result.data == {
+        "path": "example.txt",
+        "content": "bcd",
+        "offset": 1,
+        "complete": False,
+    }
 
 
 def test_write_file_requires_permission_and_uses_atomic_legacy_algorithm(tmp_path: Path) -> None:
@@ -142,6 +148,18 @@ def test_edit_file_requires_approval_and_replaces_once(tmp_path: Path) -> None:
         registry,
         dependencies=ToolExecutionDependencies(approval_handler=approve),
     )
+    read = asyncio.run(
+        executor.execute(
+            ToolUseBlock(id="read-before-edit", name="read_file", input={"path": "example.txt"}),
+            context(tmp_path),
+        )
+    )
+    edit_context = context(tmp_path).model_copy(
+        update={
+            "file_observations": read.context_update.file_observations,
+            "instruction_state": read.context_update.instruction_state,
+        }
+    )
     result = asyncio.run(
         executor.execute(
             ToolUseBlock(
@@ -149,7 +167,7 @@ def test_edit_file_requires_approval_and_replaces_once(tmp_path: Path) -> None:
                 name="edit_file",
                 input={"path": "example.txt", "old_text": "old", "new_text": "new"},
             ),
-            context(tmp_path),
+            edit_context,
         )
     )
 
@@ -175,3 +193,108 @@ def test_glob_returns_structured_paths_and_is_concurrency_safe(tmp_path: Path) -
     assert tool.is_read_only(GlobInput(pattern="src/*.py")) is True
     assert tool.is_concurrency_safe(GlobInput(pattern="src/*.py")) is True
     assert result.data == {"paths": ["src/a.py", "src/b.py"]}
+
+
+def test_partial_read_cannot_authorize_an_existing_file_edit(tmp_path: Path) -> None:
+    target = tmp_path / "example.txt"
+    target.write_text("abcdef", encoding="utf-8")
+
+    async def approve(_decision: Ask) -> bool:
+        return True
+
+    executor = ToolExecutor(
+        build_core_tool_registry(),
+        dependencies=ToolExecutionDependencies(approval_handler=approve),
+    )
+    read = asyncio.run(
+        executor.execute(
+            ToolUseBlock(
+                id="partial",
+                name="read_file",
+                input={"path": "example.txt", "limit": 3},
+            ),
+            context(tmp_path),
+        )
+    )
+    edit_context = context(tmp_path).model_copy(
+        update={"file_observations": read.context_update.file_observations}
+    )
+    edited = asyncio.run(
+        executor.execute(
+            ToolUseBlock(
+                id="edit",
+                name="edit_file",
+                input={"path": "example.txt", "old_text": "abc", "new_text": "xyz"},
+            ),
+            edit_context,
+        )
+    )
+
+    assert edited.error and edited.error.code == "FILE_NOT_FULLY_READ"
+    assert target.read_text(encoding="utf-8") == "abcdef"
+
+
+def test_external_change_after_read_is_rejected(tmp_path: Path) -> None:
+    target = tmp_path / "example.txt"
+    target.write_text("before", encoding="utf-8")
+
+    async def approve(_decision: Ask) -> bool:
+        return True
+
+    executor = ToolExecutor(
+        build_core_tool_registry(),
+        dependencies=ToolExecutionDependencies(approval_handler=approve),
+    )
+    read = asyncio.run(
+        executor.execute(
+            ToolUseBlock(id="read", name="read_file", input={"path": "example.txt"}),
+            context(tmp_path),
+        )
+    )
+    target.write_text("changed externally", encoding="utf-8")
+    edit_context = context(tmp_path).model_copy(
+        update={"file_observations": read.context_update.file_observations}
+    )
+    edited = asyncio.run(
+        executor.execute(
+            ToolUseBlock(
+                id="edit",
+                name="edit_file",
+                input={"path": "example.txt", "old_text": "before", "new_text": "after"},
+            ),
+            edit_context,
+        )
+    )
+
+    assert edited.error and edited.error.code == "FILE_CHANGED_SINCE_READ"
+    assert target.read_text(encoding="utf-8") == "changed externally"
+
+
+def test_new_nested_instruction_blocks_first_write_and_activates_context(
+    tmp_path: Path,
+) -> None:
+    nested = tmp_path / "src"
+    nested.mkdir()
+    (nested / "AGENTS.md").write_text("Use src conventions.", encoding="utf-8")
+
+    async def approve(_decision: Ask) -> bool:
+        return True
+
+    executor = ToolExecutor(
+        build_core_tool_registry(),
+        dependencies=ToolExecutionDependencies(approval_handler=approve),
+    )
+    result = asyncio.run(
+        executor.execute(
+            ToolUseBlock(
+                id="write",
+                name="write_file",
+                input={"path": "src/new.py", "content": "value = 1\n"},
+            ),
+            context(tmp_path),
+        )
+    )
+
+    assert result.error and result.error.code == "REPOSITORY_INSTRUCTIONS_DISCOVERED"
+    assert result.context_update.instruction_state.active_paths == ["src/AGENTS.md"]
+    assert not (nested / "new.py").exists()

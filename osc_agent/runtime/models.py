@@ -76,6 +76,52 @@ class WorktreeSession(ContractModel):
     base_commit: str = Field(min_length=1)
 
 
+class InstructionDocument(FrozenContractModel):
+    path: str = Field(min_length=1)
+    kind: Literal["agents", "claude"]
+    scope_directory: str
+    content_hash: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+
+
+class RepositoryInstructionState(ContractModel):
+    active_paths: list[str] = Field(default_factory=list)
+
+
+class FileObservation(ContractModel):
+    path: str = Field(min_length=1)
+    content_hash: str = Field(min_length=1)
+    mtime_ns: int = Field(ge=0)
+    complete: bool
+
+
+EvidenceKind: TypeAlias = Literal[
+    "successful_test",
+    "git_change_snapshot",
+    "independent_verification",
+]
+
+
+class CompletionRequirements(FrozenContractModel):
+    required_evidence: frozenset[EvidenceKind] = Field(default_factory=frozenset)
+    waivable_evidence: frozenset[EvidenceKind] = Field(default_factory=frozenset)
+
+    @model_validator(mode="after")
+    def waivers_must_be_required(self) -> "CompletionRequirements":
+        if not self.waivable_evidence <= self.required_evidence:
+            raise ValueError("waivable evidence must also be required")
+        return self
+
+    def tighten(self, other: "CompletionRequirements") -> "CompletionRequirements":
+        """合并要求时只能收紧；已有非豁免要求不能被后续调用降级。"""
+
+        return CompletionRequirements(
+            required_evidence=self.required_evidence | other.required_evidence,
+            waivable_evidence=self.waivable_evidence
+            | (other.waivable_evidence - self.required_evidence),
+        )
+
+
 class ContextUpdate(ContractModel):
     """Tool 声明的上下文修改，由 Runtime 统一应用。"""
 
@@ -86,6 +132,11 @@ class ContextUpdate(ContractModel):
     worktree: WorktreeSession | None = None
     clear_worktree: bool = False
     capabilities: CapabilityScope | None = None
+    instruction_state: RepositoryInstructionState | None = None
+    replace_instruction_state: bool = False
+    file_observations: dict[str, FileObservation] | None = None
+    replace_file_observations: bool = False
+    completion_requirements: CompletionRequirements | None = None
 
 
 class ToolError(ContractModel):
@@ -128,7 +179,11 @@ class Deny(ContractModel):
 
 class Ask(ContractModel):
     decision: Literal["ask"] = "ask"
+    tool_name: str = Field(min_length=1)
     prompt: str = Field(min_length=1)
+    working_directory: str = Field(min_length=1)
+    risk: Literal["write", "process", "destructive", "external"]
+    preview: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 PermissionDecision: TypeAlias = Annotated[
@@ -147,6 +202,9 @@ class ToolUseContext(ContractModel):
     permission_mode: Literal["default", "plan"] = "default"
     plan_path: str | None = None
     worktree: WorktreeSession | None = None
+    instruction_state: RepositoryInstructionState = Field(default_factory=RepositoryInstructionState)
+    file_observations: dict[str, FileObservation] = Field(default_factory=dict)
+    completion_requirements: CompletionRequirements = Field(default_factory=CompletionRequirements)
 
 
 class ToolExecutionUpdate(ContractModel):
@@ -181,6 +239,7 @@ class StartQueryParams(FrozenContractModel):
     messages: list[RuntimeMessage] = Field(default_factory=list)
     repository_root: str = Field(min_length=1)
     capabilities: CapabilityScope = Field(default_factory=CapabilityScope)
+    completion_requirements: CompletionRequirements = Field(default_factory=CompletionRequirements)
     config: QueryConfig = Field(default_factory=QueryConfig)
     @model_validator(mode="after")
     def start_requires_messages(self) -> "StartQueryParams":
@@ -204,12 +263,14 @@ QueryParams: TypeAlias = Annotated[
 
 
 class SessionMetadata(FrozenContractModel):
+    schema_version: Literal[4]
     session_id: str = Field(min_length=1)
     repository_root: str = Field(min_length=1)
     initial_working_directory: str = Field(min_length=1)
     model: str = Field(min_length=1)
     system_prompt: str = ""
     capabilities: CapabilityScope = Field(default_factory=CapabilityScope)
+    completion_requirements: CompletionRequirements = Field(default_factory=CompletionRequirements)
 
 
 class SessionRuntimeState(ContractModel):
@@ -217,6 +278,9 @@ class SessionRuntimeState(ContractModel):
     plan_path: str | None = None
     worktree: WorktreeSession | None = None
     capabilities: CapabilityScope | None = None
+    instruction_state: RepositoryInstructionState = Field(default_factory=RepositoryInstructionState)
+    file_observations: dict[str, FileObservation] = Field(default_factory=dict)
+    completion_requirements: CompletionRequirements | None = None
 
 
 class SessionSnapshot(ContractModel):
@@ -233,6 +297,8 @@ class QueryState(ContractModel):
     reactive_compaction_count: int = Field(default=0, ge=0)
     no_progress_rounds: int = Field(default=0, ge=0)
     last_tool_signature: str | None = None
+    stop_block_count: int = Field(default=0, ge=0)
+    last_stop_reasons: tuple[str, ...] = ()
     status: Literal["running", "completed", "blocked", "failed", "cancelled"] = "running"
     stop_reason: str | None = None
 

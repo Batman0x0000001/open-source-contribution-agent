@@ -17,20 +17,21 @@ def test_new_file_tools_do_not_import_legacy_schema_registry() -> None:
         for alias in node.names
     }
 
-    assert imported_names == {"edit_file", "glob_files", "read_file", "write_file"}
+    assert imported_names == {"edit_file", "glob_files", "write_file"}
     assert "FILE_TOOLS" not in imported_names
 
 
 def test_core_registry_registers_each_tool_once() -> None:
     source = (PROJECT_ROOT / "osc_agent" / "tools" / "core.py").read_text(encoding="utf-8")
 
-    assert source.count("ReadFileTool()") == 1
-    assert source.count("WriteFileTool()") == 1
-    assert source.count("EditFileTool()") == 1
+    assert source.count("ReadFileTool(instructions)") == 1
+    assert source.count("WriteFileTool(instructions)") == 1
+    assert source.count("EditFileTool(instructions)") == 1
     assert source.count("GlobTool()") == 1
+    assert source.count("GrepTool(instructions)") == 1
     assert source.count("ShellTool()") == 1
     assert source.count("GitStatusTool()") == 1
-    assert source.count("GitDiffTool()") == 1
+    assert source.count("GitDiffTool(tool_result_store)") == 1
     assert source.count("GitLogTool()") == 1
     assert source.count("GitHubListIssuesTool()") == 1
     assert source.count("GitHubGetIssueTool()") == 1
@@ -39,8 +40,8 @@ def test_core_registry_registers_each_tool_once() -> None:
     assert source.count("WritePlanTool()") == 1
     assert source.count("ReadPlanTool()") == 1
     assert source.count("ExitPlanModeTool()") == 1
-    assert source.count("EnterWorktreeTool(worktree_manager)") == 1
-    assert source.count("ExitWorktreeTool(worktree_manager)") == 1
+    assert source.count("EnterWorktreeTool(worktree_manager, instructions)") == 1
+    assert source.count("ExitWorktreeTool(worktree_manager, instructions)") == 1
     assert source.count("ReadToolResultTool(tool_result_store)") == 1
 
 

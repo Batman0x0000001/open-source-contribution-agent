@@ -4,8 +4,10 @@ import json
 import os
 from pathlib import Path
 import threading
-from typing import Annotated, Literal, Protocol, TypeAlias
+from contextlib import contextmanager
+from typing import Annotated, ContextManager, Iterator, Literal, Protocol, TypeAlias
 
+import portalocker
 from pydantic import Field
 
 from osc_agent.runtime.models import (
@@ -30,6 +32,8 @@ class ToolResultStore(Protocol):
 
 
 class SessionStore(Protocol):
+    def lease(self, session_id: str) -> ContextManager[None]: ...
+
     def create(self, metadata: SessionMetadata) -> None: ...
 
     def append_message(self, session_id: str, message: RuntimeMessage) -> None: ...
@@ -71,6 +75,22 @@ class FileSessionStore:
         self.root = sessions_root.resolve()
         self._lock = threading.RLock()
 
+    @contextmanager
+    def lease(self, session_id: str) -> Iterator[None]:
+        lock_root = self.root / ".locks"
+        lock_root.mkdir(parents=True, exist_ok=True)
+        lock_path = lock_root / f"{_safe_name(session_id)}.lock"
+        try:
+            with portalocker.Lock(
+                lock_path,
+                mode="a",
+                timeout=0,
+                flags=portalocker.LOCK_EX | portalocker.LOCK_NB,
+            ):
+                yield
+        except portalocker.exceptions.LockException as exc:
+            raise ValueError(f"SESSION_IN_USE: session is active in another process: {session_id}") from exc
+
     def create(self, metadata: SessionMetadata) -> None:
         path = self._path(metadata.session_id)
         with self._lock:
@@ -96,13 +116,27 @@ class FileSessionStore:
         metadata: SessionMetadata | None = None
         messages: list[RuntimeMessage] = []
         state = SessionRuntimeState()
+        with self._lock:
+            self._recover_partial_tail(path)
         with self._lock, path.open("r", encoding="utf-8") as stream:
             for line_number, line in enumerate(stream, start=1):
                 if not line.strip():
                     continue
                 try:
+                    raw_record = json.loads(line)
+                    if (
+                        isinstance(raw_record, dict)
+                        and raw_record.get("type") == "metadata"
+                        and (
+                            not isinstance(raw_record.get("metadata"), dict)
+                            or raw_record["metadata"].get("schema_version") != 4
+                        )
+                    ):
+                        raise ValueError(
+                            "unsupported session schema version; V4 requires schema_version=4"
+                        )
                     record = _RecordEnvelope.model_validate_json(
-                        json.dumps({"record": json.loads(line)}, ensure_ascii=False)
+                        json.dumps({"record": raw_record}, ensure_ascii=False)
                     ).record
                 except Exception as exc:
                     raise ValueError(f"invalid session record at line {line_number}: {exc}") from exc
@@ -117,6 +151,33 @@ class FileSessionStore:
         if metadata is None:
             raise ValueError("session metadata is missing")
         return SessionSnapshot(metadata=metadata, messages=messages, runtime_state=state)
+
+    @staticmethod
+    def _recover_partial_tail(path: Path) -> None:
+        raw = path.read_bytes()
+        if not raw or raw.endswith(b"\n"):
+            return
+        _prefix, separator, tail = raw.rpartition(b"\n")
+        try:
+            json.loads(tail.decode("utf-8"))
+            with path.open("ab") as stream:
+                stream.write(b"\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            return
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            if not separator:
+                raise ValueError("session contains an incomplete first record")
+        recovery = path.with_suffix(path.suffix + ".corrupt-tail")
+        suffix = 1
+        while recovery.exists():
+            recovery = path.with_suffix(path.suffix + f".corrupt-tail-{suffix}")
+            suffix += 1
+        recovery.write_bytes(tail)
+        with path.open("wb") as stream:
+            stream.write(raw[: len(raw) - len(tail)])
+            stream.flush()
+            os.fsync(stream.fileno())
 
     def _path(self, session_id: str) -> Path:
         return self.root / f"{_safe_name(session_id)}.jsonl"

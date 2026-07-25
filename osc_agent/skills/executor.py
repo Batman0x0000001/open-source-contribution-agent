@@ -49,6 +49,7 @@ class SkillExecutor:
                 status="inline",
                 rendered_prompt=prompt,
                 capabilities=capabilities,
+                completion_requirements=descriptor.manifest.completion,
             )
         if self.agent_runner is None:
             return SkillResult(name=invocation.name, status="failed", error="fork skill requires AgentRunner")
@@ -84,6 +85,7 @@ class SkillExecutor:
             name=invocation.name,
             status="completed",
             output=output.model_dump(mode="json"),
+            completion_requirements=descriptor.manifest.completion,
         )
 
 

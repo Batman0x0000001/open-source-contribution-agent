@@ -15,6 +15,7 @@ from osc_agent.runtime.gateway import (
 )
 from osc_agent.runtime.models import (
     CapabilityScope,
+    CompletionRequirements,
     ContractModel,
     ContextUpdate,
     QueryConfig,
@@ -24,12 +25,15 @@ from osc_agent.runtime.models import (
     RunCompleted,
     RunStopped,
     RuntimeMessage,
+    SessionMetadata,
     TextBlock,
     ToolResult,
     ToolResultBlock,
     ToolUseBlock,
     ToolUseContext,
 )
+from osc_agent.runtime.completion import CompletionEvidenceStopHook
+from osc_agent.runtime.hooks import HookRegistry
 from osc_agent.runtime.query import AgentRuntime
 from osc_agent.runtime.tool import BaseTool, ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
@@ -90,13 +94,13 @@ async def collect(runtime: AgentRuntime, query_params: QueryParams):
     return [event async for event in runtime.query(query_params)]
 
 
-def runtime(gateway: FakeGateway, tools=None, session_store=None) -> AgentRuntime:
+def runtime(gateway: FakeGateway, tools=None, session_store=None, hooks=None) -> AgentRuntime:
     registry = ToolRegistry(tools or [])
     return AgentRuntime(
         QueryDependencies(
             model_gateway=gateway,
             tool_registry=registry,
-            tool_executor=ToolExecutor(registry),
+            tool_executor=ToolExecutor(registry, hooks=hooks),
             session_store=session_store,
         )
     )
@@ -128,6 +132,38 @@ def test_query_streams_text_and_completes() -> None:
         "run_completed",
     ]
     assert isinstance(events[-1], RunCompleted)
+
+
+def test_completion_gate_blocks_three_identical_stop_attempts() -> None:
+    final = ModelCompleted(
+        message=RuntimeMessage(
+            role="assistant",
+            content=[TextBlock(text="done without evidence")],
+        ),
+        stop_reason="end_turn",
+    )
+    gateway = FakeGateway([[final], [final], [final]])
+    hooks = HookRegistry()
+    hooks.register_stop(CompletionEvidenceStopHook())
+    query_params = StartQueryParams(
+        session_id="completion-gate",
+        model="test-model",
+        messages=[RuntimeMessage(role="user", content=[TextBlock(text="implement")])],
+        repository_root="C:/repo",
+        completion_requirements=CompletionRequirements(
+            required_evidence=frozenset(
+                {"successful_test", "git_change_snapshot"}
+            )
+        ),
+    )
+
+    events = asyncio.run(
+        collect(runtime(gateway, hooks=hooks), query_params)
+    )
+
+    assert isinstance(events[-1], RunStopped)
+    assert events[-1].transition.kind == "blocked"
+    assert len(gateway.requests) == 3
 
 
 def test_tool_result_is_appended_in_protocol_order_before_next_round() -> None:
@@ -299,6 +335,58 @@ def test_resume_replays_complete_tool_pairs_and_appends_new_user_message(tmp_pat
     assert [tool["name"] for tool in request.tools] == ["echo"]
     assert any(isinstance(block, ToolUseBlock) and block.id == "call-1" for message in request.messages for block in message.content)
     assert any(isinstance(block, ToolResultBlock) and block.tool_use_id == "call-1" for message in request.messages for block in message.content)
+    assert request.messages[-1].content[0].text == "continue"
+
+
+def test_resume_repairs_interrupted_tool_use_before_new_user_message(
+    tmp_path: Path,
+) -> None:
+    store = FileSessionStore(tmp_path / "sessions")
+    store.create(
+        SessionMetadata(
+            schema_version=4,
+            session_id="interrupted",
+            repository_root=str(tmp_path),
+            initial_working_directory=str(tmp_path),
+            model="saved-model",
+            capabilities=CapabilityScope(allowed_tools=frozenset({"echo"})),
+        )
+    )
+    store.append_message(
+        "interrupted",
+        RuntimeMessage(role="user", content=[TextBlock(text="initial")]),
+    )
+    store.append_message(
+        "interrupted",
+        RuntimeMessage(
+            role="assistant",
+            content=[ToolUseBlock(id="dangling", name="echo", input={"value": "x"})],
+        ),
+    )
+    gateway = FakeGateway(
+        [[ModelCompleted(message=RuntimeMessage(role="assistant", content=[TextBlock(text="done")]), stop_reason="end_turn")]]
+    )
+
+    asyncio.run(
+        collect(
+            runtime(gateway, [EchoTool()], store),
+            ResumeQueryParams(
+                session_id="interrupted",
+                repository_root=str(tmp_path),
+                messages=[RuntimeMessage(role="user", content=[TextBlock(text="continue")])],
+            ),
+        )
+    )
+
+    request = gateway.requests[0]
+    repair = next(
+        block
+        for message in request.messages
+        for block in message.content
+        if isinstance(block, ToolResultBlock) and block.tool_use_id == "dangling"
+    )
+    assert repair.is_error is True
+    assert repair.content["error"]["code"] == "PROCESS_INTERRUPTED"
     assert request.messages[-1].content[0].text == "continue"
 
 

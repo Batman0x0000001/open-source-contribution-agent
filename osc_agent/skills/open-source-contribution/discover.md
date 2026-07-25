@@ -3,12 +3,17 @@
 ## Input and prerequisites
 
 - Use the invocation `repo_url`, current Session transcript, and actual repository cwd.
+- Follow the active repository `AGENTS.md` and `CLAUDE.md` instructions. If same-scope files conflict for this task, ask the user which constraint to follow.
 - Read README, contribution guidance, changelog, manifests, entry points, tests, and a depth-limited tree. Missing files are not errors.
 
 ## Execution
 
-1. Explain the core runtime path and project conventions using file/function evidence.
-2. Inspect current open issues when tools permit, but do not invent remote state.
+1. Explain the core runtime path and project conventions using `grep`, Read, and file/function evidence.
+2. Inspect current open issues and bounded maintainer comments when tools permit. If `repo_url`
+   differs from local `origin`, ask with `purpose: remote_mismatch` and bind
+   `remote_mismatch_reference.local_origin` plus
+   `remote_mismatch_reference.requested_repository` to their normalized `owner/repository`
+   values. Approval for one pair never authorizes another repository.
 3. Derive 1–3 contribution candidates from issues or concrete code gaps. For each give scope, files, verification, risk, and maintainer-acceptance likelihood.
 4. Use `ask_user_question` to let the user select one candidate or provide a focused alternative.
 

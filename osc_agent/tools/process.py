@@ -11,6 +11,9 @@ from pydantic import BaseModel, ConfigDict
 
 class CommandKind(str, Enum):
     TEST = "test"
+    BUILD = "build"
+    LINT = "lint"
+    TYPECHECK = "typecheck"
     OTHER = "other"
 
 
@@ -29,7 +32,25 @@ class CommandResult(BaseModel):
 
 
 def classify_command(command: str) -> CommandKind:
-    return CommandKind.TEST if re.search(r"(^|\s)(pytest|py\.test|tox|nox)(\s|$)|python\s+-m\s+(pytest|unittest)", command.casefold()) else CommandKind.OTHER
+    lowered = command.casefold()
+    test_patterns = (
+        r"(^|\s)(pytest|py\.test|tox|nox)(\s|$)",
+        r"python\s+-m\s+(pytest|unittest)",
+        r"(^|\s)(npm|pnpm|yarn)\s+(run\s+)?test(\s|$)",
+        r"(^|\s)cargo\s+test(\s|$)",
+        r"(^|\s)go\s+test(\s|$)",
+        r"(^|\s)dotnet\s+test(\s|$)",
+        r"(^|\s)(mvn|mvnw|gradle|gradlew)(\.cmd)?\s+.*\btest\b",
+    )
+    if any(re.search(pattern, lowered) for pattern in test_patterns):
+        return CommandKind.TEST
+    if re.search(r"(^|\s)(npm|pnpm|yarn)\s+(run\s+)?build(\s|$)|(^|\s)(cargo|go|dotnet)\s+build(\s|$)", lowered):
+        return CommandKind.BUILD
+    if re.search(r"(^|\s)(ruff|eslint|pylint)(\s|$)|(^|\s)(npm|pnpm|yarn)\s+(run\s+)?lint(\s|$)", lowered):
+        return CommandKind.LINT
+    if re.search(r"(^|\s)(mypy|pyright|tsc)(\s|$)|(^|\s)(npm|pnpm|yarn)\s+(run\s+)?typecheck(\s|$)", lowered):
+        return CommandKind.TYPECHECK
+    return CommandKind.OTHER
 
 
 async def run_command(

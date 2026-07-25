@@ -7,6 +7,7 @@ from osc_agent.runtime.models import Ask, ToolUseBlock, ToolUseContext
 from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
 from tests.contracts.registry_factory import build_test_tool_registry as build_core_tool_registry
 from osc_agent.tools.shell import ShellInput, ShellTool
+from osc_agent.tools.process import CommandKind, classify_command
 
 
 def context(root: Path) -> ToolUseContext:
@@ -44,15 +45,18 @@ def test_read_only_shell_executes_without_approval(tmp_path: Path) -> None:
     )
 
     assert result.error is None
-    assert "output" in result.data
+    assert result.data["success"] is True
+    assert result.data["exit_code"] == 0
 
 
 def test_non_read_only_shell_requires_one_explicit_approval(tmp_path: Path) -> None:
     approvals = 0
+    request: Ask | None = None
 
     async def approve(decision: Ask) -> bool:
-        nonlocal approvals
+        nonlocal approvals, request
         approvals += 1
+        request = decision
         return True
 
     executor = ToolExecutor(
@@ -67,8 +71,14 @@ def test_non_read_only_shell_requires_one_explicit_approval(tmp_path: Path) -> N
     )
 
     assert approvals == 1
+    assert request is not None
+    assert request.tool_name == "powershell"
+    assert request.working_directory == str(tmp_path)
+    assert request.risk == "process"
+    assert request.preview["command"] == "python -c \"print('ok')\""
     assert result.error is None
-    assert "ok" in result.data["output"]
+    assert "ok" in result.data["stdout"]
+    assert result.data["command_kind"] == "other"
 
 
 def test_denied_shell_pattern_is_rejected_before_permission_prompt(tmp_path: Path) -> None:
@@ -94,7 +104,132 @@ def test_denied_shell_pattern_is_rejected_before_permission_prompt(tmp_path: Pat
     assert approvals == 0
 
 
+def test_powershell_ast_rejects_git_alias_and_hidden_command_runners(
+    tmp_path: Path,
+) -> None:
+    executor = ToolExecutor(build_core_tool_registry())
+    commands = [
+        "git -c alias.publish=push publish origin HEAD",
+        "$command = 'git'; & $command push origin HEAD",
+        "cmd /c git push origin HEAD",
+        "pwsh -Command 'git push origin HEAD'",
+        "gh pr create --fill",
+    ]
+
+    for index, command in enumerate(commands):
+        result = asyncio.run(
+            executor.execute(
+                ToolUseBlock(
+                    id=f"blocked-{index}",
+                    name="powershell",
+                    input={"command": command},
+                ),
+                context(tmp_path),
+            )
+        )
+        assert result.error and result.error.code == "TOOL_VALIDATION_FAILED"
+
+
+def test_powershell_ast_allows_direct_read_only_git_command(tmp_path: Path) -> None:
+    result = asyncio.run(
+        ToolExecutor(build_core_tool_registry()).execute(
+            ToolUseBlock(
+                id="read-only-git",
+                name="powershell",
+                input={"command": "git status --short"},
+            ),
+            context(tmp_path),
+        )
+    )
+
+    assert result.error is None
+
+
 def test_powershell_process_does_not_use_shell_true() -> None:
     source = (Path(__file__).resolve().parents[2] / "osc_agent" / "tools" / "process.py").read_text(encoding="utf-8")
     assert "create_subprocess_exec" in source
     assert "shell=True" not in source
+
+
+def test_command_classification_covers_common_project_verification() -> None:
+    assert classify_command("python -m pytest -q") is CommandKind.TEST
+    assert classify_command("npm test") is CommandKind.TEST
+    assert classify_command("cargo test") is CommandKind.TEST
+    assert classify_command("go test ./...") is CommandKind.TEST
+    assert classify_command("dotnet test") is CommandKind.TEST
+    assert classify_command("mvn test") is CommandKind.TEST
+    assert classify_command("ruff check .") is CommandKind.LINT
+    assert classify_command("mypy src") is CommandKind.TYPECHECK
+    assert classify_command("python script.py") is CommandKind.OTHER
+
+
+def test_nonzero_powershell_result_is_structured(tmp_path: Path) -> None:
+    async def approve(_decision: Ask) -> bool:
+        return True
+
+    result = asyncio.run(
+        ToolExecutor(
+            build_core_tool_registry(),
+            dependencies=ToolExecutionDependencies(approval_handler=approve),
+        ).execute(
+            ToolUseBlock(
+                id="failed",
+                name="powershell",
+                input={"command": "Write-Output bad; exit 3"},
+            ),
+            context(tmp_path),
+        )
+    )
+
+    assert result.error is None
+    assert result.data["success"] is False
+    assert result.data["exit_code"] == 3
+    assert "bad" in result.data["stdout"]
+    assert result.data["termination_reason"] == "nonzero_exit"
+
+
+def test_powershell_timeout_is_a_typed_error(tmp_path: Path) -> None:
+    async def approve(_decision: Ask) -> bool:
+        return True
+
+    result = asyncio.run(
+        ToolExecutor(
+            build_core_tool_registry(),
+            dependencies=ToolExecutionDependencies(approval_handler=approve),
+        ).execute(
+            ToolUseBlock(
+                id="timeout",
+                name="powershell",
+                input={
+                    "command": "Start-Sleep -Seconds 2",
+                    "timeout_seconds": 1,
+                },
+            ),
+            context(tmp_path),
+        )
+    )
+
+    assert result.error and result.error.code == "POWERSHELL_TIMEOUT"
+    assert result.error.retryable is True
+
+
+def test_cancelling_powershell_propagates_cancellation_after_killing_child(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        tool = ShellTool()
+        task = asyncio.create_task(
+            tool.call(
+                ShellInput(command="Start-Sleep -Seconds 10"),
+                context(tmp_path),
+            )
+        )
+        await asyncio.sleep(0.1)
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=2)
+        except asyncio.CancelledError:
+            return
+        raise AssertionError("PowerShell cancellation was not propagated")
+
+    asyncio.run(run())

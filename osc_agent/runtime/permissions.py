@@ -35,6 +35,12 @@ class DefaultPermissionPolicy:
         ):
             return Deny(reason=f"tool {tool.name} is not allowed in plan mode")
         if tool.is_destructive(input):
-            return Ask(prompt=f"Allow destructive tool call {tool.name}?")
+            return Ask(
+                tool_name=tool.name,
+                prompt=f"Allow {tool.permission_risk(input)} tool call {tool.name}?",
+                working_directory=context.working_directory,
+                risk=tool.permission_risk(input),
+                preview=tool.permission_preview(input, context),
+            )
         updated_input: dict[str, JsonValue] = input.model_dump(mode="json")
         return Allow(updated_input=updated_input)

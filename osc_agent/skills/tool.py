@@ -66,7 +66,10 @@ class SkillTool(BaseTool[SkillToolInput, SkillToolOutput]):
             },
             new_messages=new_messages,
             context_update=(
-                ContextUpdate(capabilities=result.capabilities)
+                ContextUpdate(
+                    capabilities=result.capabilities,
+                    completion_requirements=result.completion_requirements,
+                )
                 if result.status == "inline" and result.capabilities is not None
                 else None
             ),

@@ -19,6 +19,7 @@ class AgentDefinition(FrozenContractModel):
     model: str | None = None
     capabilities: CapabilityScope = Field(default_factory=CapabilityScope)
     config: QueryConfig = Field(default_factory=QueryConfig)
+    context_policy: Literal["minimal", "fork"] = "minimal"
 
 
 class AgentInvocation(FrozenContractModel):
@@ -38,7 +39,6 @@ class AgentInvocation(FrozenContractModel):
 
 
 class AgentRunResult(FrozenContractModel):
-    task_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     status: Literal["completed", "failed", "cancelled"]
     output: str = ""

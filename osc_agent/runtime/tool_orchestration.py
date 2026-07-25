@@ -116,4 +116,27 @@ def _apply_context_update(
         values["worktree"] = update.worktree
     if update.capabilities is not None:
         values["capabilities"] = context.capabilities.intersect(update.capabilities)
+    if update.instruction_state is not None:
+        values["instruction_state"] = (
+            update.instruction_state
+            if update.replace_instruction_state
+            else type(update.instruction_state)(
+                active_paths=sorted(
+                    set(context.instruction_state.active_paths)
+                    | set(update.instruction_state.active_paths)
+                )
+            )
+        )
+    if update.file_observations is not None:
+        values["file_observations"] = (
+            update.file_observations
+            if update.replace_file_observations
+            else {**context.file_observations, **update.file_observations}
+        )
+    elif update.replace_file_observations:
+        values["file_observations"] = {}
+    if update.completion_requirements is not None:
+        values["completion_requirements"] = context.completion_requirements.tighten(
+            update.completion_requirements
+        )
     return context.model_copy(update=values, deep=True)

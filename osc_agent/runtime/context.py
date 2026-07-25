@@ -15,6 +15,7 @@ from osc_agent.runtime.models import (
     ToolUseContext,
 )
 from osc_agent.runtime.gateway import ModelCompleted, ModelGateway, ModelRequest
+from osc_agent.runtime.instructions import RepositoryInstructionResolver
 from osc_agent.runtime.session_store import ToolResultStore
 
 
@@ -134,9 +135,11 @@ class ContextPipeline:
         *,
         summarizer: ContextSummarizer | None = None,
         tool_result_store: ToolResultStore | None = None,
+        instruction_resolver: RepositoryInstructionResolver | None = None,
     ) -> None:
         self.summarizer = summarizer or DeterministicContextSummarizer()
         self.tool_result_store = tool_result_store or MemoryToolResultStore()
+        self.instruction_resolver = instruction_resolver or RepositoryInstructionResolver()
 
     async def project(
         self,
@@ -167,7 +170,7 @@ class ContextPipeline:
         else:
             summary = ContextSummary(text="No summary generated")
 
-        reminder = _runtime_reminder(runtime_context)
+        reminder = _runtime_reminder(runtime_context, self.instruction_resolver)
 
         return ContextProjection(
             messages=messages,
@@ -240,7 +243,10 @@ class ContextPipeline:
         return projection, summary
 
 
-def _runtime_reminder(context: ToolUseContext | None) -> str:
+def _runtime_reminder(
+    context: ToolUseContext | None,
+    instruction_resolver: RepositoryInstructionResolver | None = None,
+) -> str:
     if context is None:
         return ""
     lines = [
@@ -261,6 +267,26 @@ def _runtime_reminder(context: ToolUseContext | None) -> str:
                 f"worktree_base_commit: {context.worktree.base_commit}",
             ]
         )
+    documents = (instruction_resolver or RepositoryInstructionResolver()).load(
+        Path(context.working_directory),
+        context.instruction_state,
+    )
+    if documents:
+        lines.append("<repository_instructions>")
+        lines.append(
+            "Files at the same scope have equal priority. If AGENTS.md and CLAUDE.md contain a "
+            "task-relevant conflict, ask the user before mutating files."
+        )
+        for document in documents:
+            lines.extend(
+                [
+                    f'<instruction path="{document.path}" kind="{document.kind}" '
+                    f'scope="{document.scope_directory}" hash="{document.content_hash}">',
+                    document.content,
+                    "</instruction>",
+                ]
+            )
+        lines.append("</repository_instructions>")
     lines.append("</session_runtime>")
     return "\n".join(lines)
 

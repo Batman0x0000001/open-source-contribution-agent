@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Callable
 
 from pydantic import JsonValue
 
@@ -13,12 +14,22 @@ from osc_agent.skills.models import SkillInvocation
 class SkillCommandRunner:
     """把显式 inline Skill 调用转换为同一个 AgentRuntime 的首条用户消息。"""
 
-    def __init__(self, executor: SkillExecutor, runtime: AgentRuntime, *, model: str, config: QueryConfig, system_prompt: str) -> None:
+    def __init__(
+        self,
+        executor: SkillExecutor,
+        runtime: AgentRuntime,
+        *,
+        model: str,
+        config: QueryConfig,
+        system_prompt: str,
+        discovery_prompt: Callable[[CapabilityScope], str] | None = None,
+    ) -> None:
         self.executor = executor
         self.runtime = runtime
         self.model = model
         self.config = config
         self.system_prompt = system_prompt
+        self.discovery_prompt = discovery_prompt
 
     async def run(
         self,
@@ -42,14 +53,19 @@ class SkillCommandRunner:
         )
         if result.status != "inline":
             raise ValueError(result.error or "explicit skill command requires an inline skill")
+        runtime_capabilities = result.capabilities or scope
+        system_prompt = self.system_prompt
+        if self.discovery_prompt is not None:
+            system_prompt += "\n\n" + self.discovery_prompt(runtime_capabilities)
         async for event in self.runtime.query(
             StartQueryParams(
                 session_id=session_id,
                 model=self.model,
-                system_prompt=self.system_prompt,
+                system_prompt=system_prompt,
                 messages=[RuntimeMessage(role="user", content=[TextBlock(text=result.rendered_prompt)])],
                 repository_root=working_directory,
-                capabilities=result.capabilities or scope,
+                capabilities=runtime_capabilities,
+                completion_requirements=result.completion_requirements,
                 config=self.config,
             )
         ):

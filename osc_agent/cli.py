@@ -32,19 +32,20 @@ def run_agent(
     task = prompt or typer.prompt("Task")
     session_id = str(uuid4())
     services = _application(repo)
+    settings = load_settings()
 
     async def execute() -> None:
         events = services.runtime.query(
             StartQueryParams(
                 session_id=session_id,
-                model=load_settings().model_id,
+                model=settings.model_id or "",
                 system_prompt=(
                     "Use repository evidence and the smallest safe change that satisfies the task.\n\n"
                     + services.discovery_prompt
                 ),
                 messages=[RuntimeMessage(role="user", content=[TextBlock(text=task)])],
                 repository_root=str(repo),
-                capabilities=CapabilityScope(),
+                capabilities=services.general_capabilities,
                 config=services.query_config,
             )
         )
@@ -161,6 +162,8 @@ def _application(repo: Path) -> ApplicationServices:
     settings = load_settings()
     if not settings.anthropic_api_key:
         raise typer.BadParameter("ANTHROPIC_API_KEY is required for model execution")
+    if not settings.model_id:
+        raise typer.BadParameter("MODEL_ID is required for model execution")
     return build_application(
         settings=settings,
         repo_root=repo,
@@ -170,30 +173,38 @@ def _application(repo: Path) -> ApplicationServices:
 
 
 async def _approve(decision: Ask) -> bool:
+    typer.echo(f"\nTool: {decision.tool_name}")
+    typer.echo(f"Working directory: {decision.working_directory}")
+    typer.echo(f"Risk: {decision.risk}")
+    typer.echo("Input preview:")
+    typer.echo(json.dumps(decision.preview, ensure_ascii=False, indent=2))
     return typer.confirm(decision.prompt, default=False)
 
 
 async def _ask_questions(questions: list[dict[str, JsonValue]]) -> dict[str, str]:
     answers: dict[str, str] = {}
     for question in questions:
+        question_id = str(question["id"])
         text = str(question["question"])
         options = question.get("options", [])
         typer.echo(f"\n{text}")
         labels: list[str] = []
+        option_ids: list[str] = []
         for index, option in enumerate(options, start=1):
             if isinstance(option, dict):
                 label = str(option.get("label", ""))
                 labels.append(label)
+                option_ids.append(str(option.get("id", "")))
                 typer.echo(f"  {index}. {label} — {option.get('description', '')}")
         raw = typer.prompt("Choose a number or enter a custom answer")
         try:
             selected = int(raw)
         except ValueError:
-            answers[text] = raw
+            answers[question_id] = raw
         else:
             if selected < 1 or selected > len(labels):
                 raise typer.BadParameter("question choice is outside the available options")
-            answers[text] = labels[selected - 1]
+            answers[question_id] = option_ids[selected - 1]
     return answers
 
 

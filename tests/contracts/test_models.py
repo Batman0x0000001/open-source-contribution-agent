@@ -6,6 +6,7 @@ from pydantic import TypeAdapter, ValidationError
 from osc_agent.runtime.models import (
     Allow,
     CapabilityScope,
+    CompletionRequirements,
     FrozenContractModel,
     PermissionDecision,
     QueryConfig,
@@ -81,3 +82,23 @@ def test_child_capabilities_can_only_narrow_the_caller_scope() -> None:
     child = CapabilityScope(allowed_tools=frozenset({"read", "shell"}))
 
     assert caller.intersect(child).allowed_tools == frozenset({"read"})
+
+
+def test_completion_requirements_tighten_without_adding_waiver_to_existing_rule() -> None:
+    existing = CompletionRequirements(
+        required_evidence=frozenset({"successful_test"}),
+    )
+    incoming = CompletionRequirements(
+        required_evidence=frozenset(
+            {"successful_test", "git_change_snapshot"}
+        ),
+        waivable_evidence=frozenset({"successful_test"}),
+    )
+
+    tightened = existing.tighten(incoming)
+
+    assert tightened.required_evidence == {
+        "successful_test",
+        "git_change_snapshot",
+    }
+    assert tightened.waivable_evidence == frozenset()
