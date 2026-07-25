@@ -18,61 +18,10 @@ import stat
 import tempfile
 import threading
 
-from osc_agent.harness.repository_boundary import safe_repo_path
-from osc_agent.harness.risk import assess_file_write_risk, format_risk_block
+from osc_agent.tools.path_policy import safe_repo_path
 
 _FILE_WRITE_LOCK = threading.RLock()
-
-FILE_TOOLS = [
-    {
-        "name": "read_file",
-        "description": "Read text from a file inside the target repository.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "limit": {"type": "integer", "default": 20_000},
-                "offset": {"type": "integer", "default": 0},
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "write_file",
-        "description": "Write text to a file inside the target repository.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "content": {"type": "string"},
-            },
-            "required": ["path", "content"],
-        },
-    },
-    {
-        "name": "edit_file",
-        "description": "Replace one occurrence of old_text in a file inside the target repository.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "old_text": {"type": "string"},
-                "new_text": {"type": "string"},
-            },
-            "required": ["path", "old_text", "new_text"],
-        },
-    },
-    {
-        "name": "glob",
-        "description": "List repository files matching a glob pattern.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"pattern": {"type": "string"}},
-            "required": ["pattern"],
-        },
-    },
-]
-
+_LARGE_FILE_WRITE_LIMIT = 500_000
 
 def read_file(*, repo_root: Path, path: str, limit: int = 20_000, offset: int = 0) -> str:
     """读取文件片段，offset/limit 用来控制大文件进入上下文的大小。"""
@@ -90,9 +39,8 @@ def read_file(*, repo_root: Path, path: str, limit: int = 20_000, offset: int = 
 def write_file(*, repo_root: Path, path: str, content: str, enforce_risk_checks: bool = True) -> str:
     """写入 repo 内文件；父目录不存在时按常见编辑工具行为创建。"""
     if enforce_risk_checks:
-        decision = assess_file_write_risk(path, content)
-        if not decision.allowed:
-            return format_risk_block(decision)
+        if len(content) > _LARGE_FILE_WRITE_LIMIT:
+            return "Permission required: large file write requires explicit confirmation"
 
     try:
         with _FILE_WRITE_LOCK:
@@ -114,9 +62,8 @@ def edit_file(
 ) -> str:
     """只替换第一次匹配，防止模型一次调用意外改动多个位置。"""
     if enforce_risk_checks:
-        decision = assess_file_write_risk(path, new_text)
-        if not decision.allowed:
-            return format_risk_block(decision)
+        if len(new_text) > _LARGE_FILE_WRITE_LIMIT:
+            return "Permission required: large file write requires explicit confirmation"
 
     try:
         with _FILE_WRITE_LOCK:

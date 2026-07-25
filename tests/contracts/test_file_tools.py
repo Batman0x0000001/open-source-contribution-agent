@@ -1,0 +1,177 @@
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+from osc_agent.runtime.models import Ask, ToolUseBlock, ToolUseContext
+from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
+from tests.contracts.registry_factory import build_test_tool_registry as build_core_tool_registry
+from osc_agent.tools.file_tools import (
+    EditFileInput,
+    GlobInput,
+    ReadFileInput,
+    ReadFileTool,
+    WriteFileInput,
+)
+
+
+def context(root: Path) -> ToolUseContext:
+    return ToolUseContext(session_id="session-1", working_directory=str(root), repository_root=str(root), state_directory=str(root / "state"))
+
+
+def test_core_registry_has_one_authoritative_definition_per_migrated_tool() -> None:
+    registry = build_core_tool_registry()
+
+    assert registry.get("read_file").input_model is ReadFileInput
+    assert registry.get("write_file").input_model is WriteFileInput
+    assert registry.get("edit_file").input_model is EditFileInput
+    assert registry.get("glob").input_model is GlobInput
+    schemas = registry.schemas(context(Path("C:/repo")))
+    assert all(schema["description"].strip() for schema in schemas)
+    assert [schema["name"] for schema in schemas] == [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "glob",
+        "powershell",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "github_list_issues",
+        "github_get_issue",
+        "ask_user_question",
+        "enter_plan_mode",
+        "write_plan",
+        "read_plan",
+        "exit_plan_mode",
+        "enter_worktree",
+        "exit_worktree",
+        "read_tool_result",
+    ]
+
+
+def test_read_file_is_input_sensitive_behavior_object(tmp_path: Path) -> None:
+    (tmp_path / "example.txt").write_text("abcdef", encoding="utf-8")
+    tool = ReadFileTool()
+    executor = ToolExecutor(build_core_tool_registry())
+
+    result = asyncio.run(
+        executor.execute(
+            ToolUseBlock(
+                id="read-1",
+                name="read_file",
+                input={"path": "example.txt", "offset": 1, "limit": 3},
+            ),
+            context(tmp_path),
+        )
+    )
+
+    assert tool.is_read_only(ReadFileInput(path="example.txt")) is True
+    assert tool.is_concurrency_safe(ReadFileInput(path="example.txt")) is True
+    assert result.error is None
+    assert result.data == {"path": "example.txt", "content": "bcd", "offset": 1}
+
+
+def test_write_file_requires_permission_and_uses_atomic_legacy_algorithm(tmp_path: Path) -> None:
+    registry = build_core_tool_registry()
+    denied = ToolExecutor(registry)
+    call = ToolUseBlock(
+        id="write-1",
+        name="write_file",
+        input={"path": "docs/result.txt", "content": "written"},
+    )
+
+    denied_result = asyncio.run(denied.execute(call, context(tmp_path)))
+    assert denied_result.error and denied_result.error.code == "PERMISSION_REQUIRED"
+    assert not (tmp_path / "docs" / "result.txt").exists()
+
+    async def approve(decision: Ask) -> bool:
+        return True
+
+    approved = ToolExecutor(
+        registry,
+        dependencies=ToolExecutionDependencies(approval_handler=approve),
+    )
+    approved_result = asyncio.run(approved.execute(call, context(tmp_path)))
+
+    assert approved_result.error is None
+    assert approved_result.data == {"path": "docs/result.txt", "chars_written": 7}
+    assert (tmp_path / "docs" / "result.txt").read_text(encoding="utf-8") == "written"
+
+
+def test_file_tools_reject_noncanonical_and_escaping_paths_before_call(tmp_path: Path) -> None:
+    executor = ToolExecutor(build_core_tool_registry())
+
+    result = asyncio.run(
+        executor.execute(
+            ToolUseBlock(id="read-1", name="read_file", input={"path": "../outside.txt"}),
+            context(tmp_path),
+        )
+    )
+
+    assert result.error and result.error.code == "TOOL_VALIDATION_FAILED"
+    assert "non-canonical" in result.error.message
+
+
+def test_file_tool_pydantic_contract_rejects_implicit_types(tmp_path: Path) -> None:
+    executor = ToolExecutor(build_core_tool_registry())
+
+    result = asyncio.run(
+        executor.execute(
+            ToolUseBlock(
+                id="read-1",
+                name="read_file",
+                input={"path": "example.txt", "limit": "3"},
+            ),
+            context(tmp_path),
+        )
+    )
+
+    assert result.error and result.error.code == "TOOL_INPUT_INVALID"
+
+
+def test_edit_file_requires_approval_and_replaces_once(tmp_path: Path) -> None:
+    target = tmp_path / "example.txt"
+    target.write_text("old old", encoding="utf-8")
+
+    async def approve(decision: Ask) -> bool:
+        return True
+
+    registry = build_core_tool_registry()
+    executor = ToolExecutor(
+        registry,
+        dependencies=ToolExecutionDependencies(approval_handler=approve),
+    )
+    result = asyncio.run(
+        executor.execute(
+            ToolUseBlock(
+                id="edit-1",
+                name="edit_file",
+                input={"path": "example.txt", "old_text": "old", "new_text": "new"},
+            ),
+            context(tmp_path),
+        )
+    )
+
+    assert result.error is None
+    assert result.data == {"path": "example.txt", "replacements": 1}
+    assert target.read_text(encoding="utf-8") == "new old"
+
+
+def test_glob_returns_structured_paths_and_is_concurrency_safe(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "b.py").write_text("", encoding="utf-8")
+    (tmp_path / "src" / "a.py").write_text("", encoding="utf-8")
+    registry = build_core_tool_registry()
+    tool = registry.get("glob")
+
+    result = asyncio.run(
+        ToolExecutor(registry).execute(
+            ToolUseBlock(id="glob-1", name="glob", input={"pattern": "src/*.py"}),
+            context(tmp_path),
+        )
+    )
+
+    assert tool.is_read_only(GlobInput(pattern="src/*.py")) is True
+    assert tool.is_concurrency_safe(GlobInput(pattern="src/*.py")) is True
+    assert result.data == {"paths": ["src/a.py", "src/b.py"]}

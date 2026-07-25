@@ -1,0 +1,67 @@
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_ROOT = PROJECT_ROOT / "osc_agent"
+
+
+def _class_definitions(name: str) -> list[Path]:
+    matches: list[Path] = []
+    for path in PACKAGE_ROOT.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if any(isinstance(node, ast.ClassDef) and node.name == name for node in ast.walk(tree)):
+            matches.append(path)
+    return matches
+
+
+def test_old_execution_architecture_is_absent() -> None:
+    forbidden = [
+        PACKAGE_ROOT / "agent_loop.py",
+        PACKAGE_ROOT / "harness",
+        PACKAGE_ROOT / "skills" / "registry.py",
+        PACKAGE_ROOT / "workflows" / "contribution" / "agents.py",
+        PACKAGE_ROOT / "workflows" / "contribution" / "design.py",
+        PACKAGE_ROOT / "workflows" / "contribution" / "discover.py",
+        PACKAGE_ROOT / "workflows" / "contribution" / "implementation.py",
+        PACKAGE_ROOT / "workflows" / "contribution" / "pr_draft.py",
+    ]
+    assert not [path for path in forbidden if path.exists()]
+    assert not (PROJECT_ROOT / "tests_v2").exists()
+
+
+def test_query_and_tool_execution_have_one_authoritative_definition() -> None:
+    assert _class_definitions("AgentRuntime") == [PACKAGE_ROOT / "runtime" / "query.py"]
+    assert _class_definitions("ToolExecutor") == [PACKAGE_ROOT / "runtime" / "tool_execution.py"]
+    assert _class_definitions("SkillExecutor") == [PACKAGE_ROOT / "skills" / "executor.py"]
+
+
+def test_only_provider_calls_anthropic_sdk() -> None:
+    importers: list[Path] = []
+    for path in PACKAGE_ROOT.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            module = node.module if isinstance(node, ast.ImportFrom) else None
+            names = [alias.name for alias in node.names] if isinstance(node, ast.Import) else []
+            if module == "anthropic" or "anthropic" in names:
+                importers.append(path)
+                break
+    assert importers == [PACKAGE_ROOT / "providers" / "anthropic.py"]
+
+
+def test_no_generic_workflow_dsl_was_added() -> None:
+    names = {path.stem.casefold() for path in PACKAGE_ROOT.rglob("*.py")}
+    assert not names & {"dag", "graph", "workflow_dsl", "node_engine"}
+
+
+def test_removed_minimum_version_capabilities_are_absent() -> None:
+    assert not (PACKAGE_ROOT / "tools" / "repo.py").exists()
+    assert not (PACKAGE_ROOT / "tools" / "pr.py").exists()
+    for name in ("docs", "python", "javascript", "tests"):
+        assert not (PACKAGE_ROOT / "skills" / name / "SKILL.md").exists()
+    agent_sources = "\n".join(
+        path.read_text(encoding="utf-8") for path in (PACKAGE_ROOT / "agents").glob("*.py")
+    )
+    assert "background" not in agent_sources

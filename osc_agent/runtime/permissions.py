@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+from typing import Protocol
+
+from pydantic import JsonValue
+
+from osc_agent.runtime.models import Allow, Ask, ContractModel, Deny, PermissionDecision, ToolUseContext
+from osc_agent.runtime.tool import Tool
+
+
+class PermissionPolicy(Protocol):
+    async def decide(
+        self,
+        tool: Tool[ContractModel, ContractModel],
+        input: ContractModel,
+        context: ToolUseContext,
+    ) -> PermissionDecision: ...
+
+
+class DefaultPermissionPolicy:
+    """最小通用策略；业务范围由 capability 和 Tool 专属检查提供。"""
+
+    async def decide(
+        self,
+        tool: Tool[ContractModel, ContractModel],
+        input: ContractModel,
+        context: ToolUseContext,
+    ) -> PermissionDecision:
+        if not context.capabilities.permits_tool(tool.name):
+            return Deny(reason=f"tool {tool.name} is outside the current capability scope")
+        if (
+            context.permission_mode == "plan"
+            and not tool.is_read_only(input)
+            and tool.name != "write_plan"
+        ):
+            return Deny(reason=f"tool {tool.name} is not allowed in plan mode")
+        if tool.is_destructive(input):
+            return Ask(prompt=f"Allow destructive tool call {tool.name}?")
+        updated_input: dict[str, JsonValue] = input.model_dump(mode="json")
+        return Allow(updated_input=updated_input)

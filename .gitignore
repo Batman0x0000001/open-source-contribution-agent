@@ -2,7 +2,10 @@
 __pycache__/
 .vscode
 .pytest*
-agent.log
-examples/
+docs/
+build/
+*.egg-info/
 *.md
 !README.md
+!osc_agent/skills/**/SKILL.md
+!osc_agent/skills/open-source-contribution/*.md
