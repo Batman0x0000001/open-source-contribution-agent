@@ -13,6 +13,9 @@ from pydantic import Field
 from osc_agent.tools.process import (
     CommandKind,
     CommandResult,
+    HostProcessRunner,
+    ProcessRunner,
+    ProcessRequest,
     build_subprocess_environment,
     classify_command,
     run_command,
@@ -109,11 +112,13 @@ class ShellTool(BaseTool[ShellInput, ShellOutput]):
         executable: str | None = None,
         *,
         environment_allowlist: frozenset[str] = frozenset(),
+        process_runner: ProcessRunner | None = None,
     ) -> None:
         self.executable = executable or shutil.which("pwsh") or ""
         if not self.executable:
             raise ValueError("PowerShell 7 executable 'pwsh' was not found on PATH")
         self.environment = build_subprocess_environment(environment_allowlist)
+        self.process_runner = process_runner or HostProcessRunner()
 
     def is_read_only(self, input: ShellInput) -> bool:
         return is_read_only_command(input.command)
@@ -200,13 +205,17 @@ class ShellTool(BaseTool[ShellInput, ShellOutput]):
             timeout_seconds=input.timeout_seconds,
             enforce_risk_checks=False,
             environment=self.environment,
+            process_runner=self.process_runner,
+            context=context,
         )
-        if result.termination_reason in {"timeout", "os_error"}:
+        if result.termination_reason in {"timeout", "os_error", "cancelled"}:
             return ToolResult(
                 error=ToolError(
-                    code="POWERSHELL_TIMEOUT"
-                    if result.termination_reason == "timeout"
-                    else "POWERSHELL_START_FAILED",
+                    code={
+                        "timeout": "POWERSHELL_TIMEOUT",
+                        "os_error": "POWERSHELL_START_FAILED",
+                        "cancelled": "POWERSHELL_CANCELLED",
+                    }[result.termination_reason],
                     message=result.output or result.termination_reason,
                     retryable=result.termination_reason == "timeout",
                 )
@@ -281,6 +290,8 @@ async def run_powershell(
     timeout_seconds: int | float = DEFAULT_TIMEOUT_SECONDS,
     enforce_risk_checks: bool = True,
     environment: dict[str, str] | None = None,
+    process_runner: ProcessRunner | None = None,
+    context: ToolUseContext | None = None,
 ) -> CommandResult:
     """在目标 repo 内执行命令，并统一处理超时、空输出和长度截断。"""
     if enforce_risk_checks:
@@ -294,14 +305,18 @@ async def run_powershell(
                 termination_reason="permission_denied",
             )
 
-    result = await run_command(
-        executable,
-        command,
-        repo_root=repo_root,
-        timeout_seconds=timeout_seconds,
-        environment=(
-            environment if environment is not None else build_subprocess_environment()
+    runner = process_runner or HostProcessRunner()
+    result = await runner.run(
+        ProcessRequest(
+            executable=executable,
+            command=command,
+            repo_root=str(repo_root),
+            timeout_seconds=float(timeout_seconds),
+            environment=(
+                environment if environment is not None else build_subprocess_environment()
+            ),
         ),
+        context,
     )
     return result
 

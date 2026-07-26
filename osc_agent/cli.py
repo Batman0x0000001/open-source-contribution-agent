@@ -37,8 +37,10 @@ from osc_agent.skills.models import SkillInvocation
 app = typer.Typer(help="Claude Code style extensible coding agent.")
 skill_app = typer.Typer(help="List and run validated Skills.")
 session_app = typer.Typer(help="Inspect repository-scoped Sessions.")
+bot_app = typer.Typer(help="Run the optional GitHub App control and worker services.")
 app.add_typer(skill_app, name="skill")
 app.add_typer(session_app, name="session")
+app.add_typer(bot_app, name="bot")
 
 RepoOption = Annotated[Path, typer.Option("--repo", exists=True, file_okay=False, dir_okay=True, resolve_path=True)]
 
@@ -397,6 +399,72 @@ def _message_preview(message: RuntimeMessage) -> str:
                 f"{'error' if block.is_error else 'ok'}]"
             )
     return " ".join(parts)
+
+
+@bot_app.command("serve")
+def bot_serve() -> None:
+    """Run the authenticated GitHub webhook control service."""
+
+    try:
+        import uvicorn
+        from osc_agent.bot.config import BotSettings
+        from osc_agent.bot.server import build_control_app
+
+        settings = BotSettings()
+        application = build_control_app(settings)
+    except (ImportError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    uvicorn.run(application, host=settings.bind_host, port=settings.bind_port)
+
+
+@bot_app.command("worker")
+def bot_worker() -> None:
+    """Run the trusted Agent worker without loading GitHub App credentials."""
+
+    from osc_agent.bot.config import BotWorkerSettings
+    from osc_agent.bot.server import run_worker_forever
+
+    try:
+        asyncio.run(run_worker_forever(BotWorkerSettings()))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    except KeyboardInterrupt:
+        return
+
+
+@bot_app.command("doctor")
+def bot_doctor() -> None:
+    """Validate explicit GitHub App, SQLite, Docker and repository configuration."""
+
+    from pydantic import ValidationError
+    from osc_agent.bot.config import BotSettings
+    from osc_agent.bot.doctor import run_bot_doctor
+
+    try:
+        results = asyncio.run(run_bot_doctor(BotSettings()))
+    except ValidationError as exc:
+        typer.echo(f"FAIL\tconfiguration\t{exc.error_count()} required or invalid settings", err=True)
+        raise typer.Exit(1) from exc
+    for item in results:
+        typer.echo(f"{item.status}\t{item.name}\t{item.message}")
+    if any(item.status == "FAIL" for item in results):
+        raise typer.Exit(1)
+
+
+@bot_app.command("cleanup")
+def bot_cleanup() -> None:
+    """Remove expired terminal Job workspaces and audit records."""
+
+    from pydantic import ValidationError
+    from osc_agent.bot.cleanup import cleanup_bot_state
+    from osc_agent.bot.config import BotSettings
+
+    try:
+        workspaces, records = cleanup_bot_state(BotSettings())
+    except (ValidationError, ValueError, OSError) as exc:
+        typer.echo(f"FAIL\tcleanup\t{str(exc)[:500]}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"PASS\tcleanup\tremoved {workspaces} workspace(s), {records} job record(s)")
 
 
 if __name__ == "__main__":

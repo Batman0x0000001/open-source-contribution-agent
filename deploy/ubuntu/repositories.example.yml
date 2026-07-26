@@ -1,0 +1,18 @@
+repositories:
+  owner/repository:
+    enabled: true
+    image: osa-agent-worker:python311
+    validation_commands:
+      - python -m pytest
+      - python -m pip check
+    denied_paths:
+      - .git/**
+      - .github/workflows/**
+      - .gitmodules
+      - .osc_agent/**
+    max_changed_files: 100
+    max_patch_bytes: 2000000
+    command_timeout_seconds: 1800
+    container_cpus: 2.0
+    container_memory: 4g
+    container_pids: 256

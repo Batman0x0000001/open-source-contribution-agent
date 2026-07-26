@@ -150,7 +150,11 @@ class ToolExecutor:
                                 }
                             )
             else:
-                result = await tool.call(allowed_input, context)
+                execution_context = context.model_copy(
+                    update={"tool_use_id": call.id},
+                    deep=True,
+                )
+                result = await tool.call(allowed_input, execution_context)
         except Exception as exc:  # noqa: BLE001 - Tool 异常必须转换为结构化结果。
             result = _error("TOOL_EXECUTION_FAILED", str(exc) or type(exc).__name__)
 

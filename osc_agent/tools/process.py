@@ -10,8 +10,11 @@ import signal
 import subprocess
 import time
 from collections.abc import Iterable, Mapping
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
+
+from osc_agent.runtime.models import FrozenContractModel, ToolUseContext
 
 
 DEFAULT_SUBPROCESS_ENV_NAMES = frozenset(
@@ -96,6 +99,37 @@ class CommandResult(BaseModel):
     def output(self) -> str:
         return (self.stdout + self.stderr).strip()
 
+
+class ProcessRequest(FrozenContractModel):
+    executable: str
+    command: str
+    repo_root: str
+    timeout_seconds: float
+    environment: dict[str, str]
+
+
+class ProcessRunner(Protocol):
+    async def run(
+        self,
+        request: ProcessRequest,
+        context: ToolUseContext | None,
+    ) -> "CommandResult": ...
+
+
+class HostProcessRunner:
+    async def run(
+        self,
+        request: ProcessRequest,
+        context: ToolUseContext | None,
+    ) -> "CommandResult":
+        del context
+        return await run_command(
+            request.executable,
+            request.command,
+            repo_root=Path(request.repo_root),
+            timeout_seconds=request.timeout_seconds,
+            environment=request.environment,
+        )
 
 def classify_command(command: str) -> CommandKind:
     lowered = command.casefold()

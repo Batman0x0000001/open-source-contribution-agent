@@ -1,0 +1,23 @@
+[Unit]
+Description=OSA Agent GitHub App Control Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=osa-control
+Group=osa-shared
+UMask=0007
+EnvironmentFile=/etc/osc-agent/bot.env
+ExecStart=/opt/osc-agent/venv/bin/osc-agent bot serve
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/osc-agent
+ReadOnlyPaths=/etc/osc-agent
+
+[Install]
+WantedBy=multi-user.target

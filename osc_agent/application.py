@@ -19,7 +19,7 @@ from osc_agent.runtime.models import ApprovalResponse, Ask, CapabilityScope, Que
 from osc_agent.runtime.query import AgentRuntime
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
-from osc_agent.runtime.session_store import FileSessionStore
+from osc_agent.runtime.session_store import FileSessionStore, SessionStore
 from osc_agent.runtime.session_store import FileToolResultStore
 from osc_agent.runtime.context import ContextPipeline, GatewayContextSummarizer
 from osc_agent.runtime.state_paths import ApplicationStatePaths
@@ -34,6 +34,11 @@ from osc_agent.skills.tool import SkillTool
 from osc_agent.skills.resource_tool import ReadSkillResourceTool
 from osc_agent.skills.runner import SkillCommandRunner
 from osc_agent.tools.core import build_core_tool_registry
+from osc_agent.tools.process import ProcessRunner
+from osc_agent.runtime.permissions import PermissionPolicy
+from osc_agent.runtime.tool import Tool
+from osc_agent.runtime.hooks import PreToolHook, StopHook
+from osc_agent.agents.registry import AgentRegistration
 
 
 ApprovalHandler = Callable[[Ask], Awaitable[ApprovalResponse]]
@@ -53,7 +58,7 @@ class ApplicationServices:
     query_config: QueryConfig
     general_capabilities: CapabilityScope
     discovery_prompt: str
-    session_store: FileSessionStore
+    session_store: SessionStore
     state_paths: ApplicationStatePaths
 
 
@@ -99,6 +104,14 @@ def build_application(
     approval_handler: ApprovalHandler | None = None,
     question_handler: QuestionHandler | None = None,
     model_gateway: ModelGateway | None = None,
+    session_store_override: SessionStore | None = None,
+    state_root_override: Path | None = None,
+    process_runner: ProcessRunner | None = None,
+    permission_policy: PermissionPolicy | None = None,
+    extra_tools: tuple[Tool, ...] = (),
+    pre_tool_hooks: tuple[PreToolHook, ...] = (),
+    stop_hooks: tuple[StopHook, ...] = (),
+    agent_registrations: tuple[AgentRegistration, ...] | None = None,
 ) -> ApplicationServices:
     """唯一生产组装根：一个 Runtime、ToolExecutor、SkillExecutor 和权限链。"""
 
@@ -111,8 +124,11 @@ def build_application(
         deadline_seconds=max(settings.agent_deadline_seconds, 1),
         max_no_progress_rounds=settings.no_progress_limit,
     )
-    state_paths = ApplicationStatePaths.for_repository(repo_root)
-    session_store = FileSessionStore(state_paths.sessions)
+    state_paths = ApplicationStatePaths.for_repository(
+        repo_root,
+        state_root=state_root_override,
+    )
+    session_store: SessionStore = session_store_override or FileSessionStore(state_paths.sessions)
     tool_result_store = FileToolResultStore(state_paths.tool_results)
     worktree_manager = WorktreeManager(state_paths.worktrees)
     instruction_resolver = RepositoryInstructionResolver()
@@ -122,12 +138,20 @@ def build_application(
         tool_result_store=tool_result_store,
         instruction_resolver=instruction_resolver,
         subprocess_env_allowlist=settings.subprocess_env_allowlist,
+        process_runner=process_runner,
     )
+    for tool in extra_tools:
+        registry.register(tool)
     registry.register(ReadSkillResourceTool(catalog))
     hooks = HookRegistry()
+    for hook in pre_tool_hooks:
+        hooks.register_pre_tool_use(hook)
     hooks.register_stop(CompletionEvidenceStopHook())
+    for hook in stop_hooks:
+        hooks.register_stop(hook)
     executor = ToolExecutor(
         registry,
+        permission_policy=permission_policy,
         hooks=hooks,
         dependencies=ToolExecutionDependencies(
             approval_handler=approval_handler,
@@ -152,7 +176,7 @@ def build_application(
         )
     )
     agent_registry = AgentRegistry(
-        [
+        list(agent_registrations) if agent_registrations is not None else [
             build_explore_registration(model=model_id),
             build_verify_registration(model=model_id),
         ]

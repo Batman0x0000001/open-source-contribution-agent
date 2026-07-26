@@ -146,6 +146,30 @@ class CompletionEvidenceStopHook:
             ),
             default=None,
         )
+        issue_plan = max(
+            (
+                index
+                for index, call, content in completed
+                if call.name == "submit_issue_plan"
+                and not content.get("error")
+                and isinstance(content.get("data"), dict)
+                and content["data"].get("status") in {"ready", "blocked"}
+            ),
+            default=None,
+        )
+        delivery_draft = max(
+            (
+                (
+                    index,
+                    str(content["data"].get("workspace_fingerprint") or ""),
+                )
+                for index, call, content in completed
+                if call.name == "submit_delivery_draft"
+                and not content.get("error")
+                and isinstance(content.get("data"), dict)
+            ),
+            default=None,
+        )
 
         reasons: list[str] = []
         if (
@@ -182,6 +206,20 @@ class CompletionEvidenceStopHook:
             reasons.append(
                 "No non-empty final git_diff snapshot is bound to the current Git workspace after "
                 "the primary test and independent verification evidence."
+            )
+        if "issue_plan" in required and issue_plan is None:
+            reasons.append("No strict IssuePlanArtifact has been submitted for this planning Session.")
+        if (
+            "delivery_draft" in required
+            and (
+                delivery_draft is None
+                or snapshot is None
+                or delivery_draft[0] <= snapshot[0]
+                or delivery_draft[1] != current_fingerprint
+            )
+        ):
+            reasons.append(
+                "No DeliveryDraft bound to the current workspace was submitted after the final git snapshot."
             )
         return StopHookResult(blocking_reasons=reasons)
 

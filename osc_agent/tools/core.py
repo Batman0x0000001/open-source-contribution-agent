@@ -12,6 +12,7 @@ from osc_agent.tools.search import GrepTool
 from osc_agent.isolation.worktree import WorktreeManager
 from osc_agent.runtime.instructions import RepositoryInstructionResolver
 from osc_agent.runtime.session_store import ToolResultStore
+from osc_agent.tools.process import ProcessRunner
 
 
 def build_core_tool_registry(
@@ -20,6 +21,7 @@ def build_core_tool_registry(
     tool_result_store: ToolResultStore,
     instruction_resolver: RepositoryInstructionResolver | None = None,
     subprocess_env_allowlist: frozenset[str] = frozenset(),
+    process_runner: ProcessRunner | None = None,
 ) -> ToolRegistry:
     """新 Runtime 的唯一内置 Tool 注册入口。"""
 
@@ -31,7 +33,10 @@ def build_core_tool_registry(
             EditFileTool(instructions),
             GlobTool(),
             GrepTool(instructions),
-            ShellTool(environment_allowlist=subprocess_env_allowlist),
+            ShellTool(
+                environment_allowlist=subprocess_env_allowlist,
+                process_runner=process_runner,
+            ),
             GitStatusTool(),
             GitDiffTool(tool_result_store),
             GitLogTool(),

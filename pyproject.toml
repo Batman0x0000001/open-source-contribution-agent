@@ -18,8 +18,22 @@ dependencies = [
   "portalocker>=2.8.0,<4",
 ]
 
+[project.optional-dependencies]
+bot = [
+  "fastapi>=0.115.0,<1",
+  "uvicorn>=0.34.0,<1",
+  "httpx>=0.28.0,<1",
+  "PyJWT[crypto]>=2.10.0,<3",
+]
+
 [project.scripts]
 osc-agent = "osc_agent.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["osc_agent*"]
+
+[tool.setuptools.package-data]
+osc_agent = ["skills/**/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

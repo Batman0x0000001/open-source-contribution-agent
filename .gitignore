@@ -9,3 +9,5 @@ build/
 !README.md
 !osc_agent/skills/**/SKILL.md
 !osc_agent/skills/open-source-contribution/*.md
+!deploy/
+!deploy/**

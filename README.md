@@ -6,6 +6,9 @@
 > 在 Windows Host 上执行，环境变量经过白名单过滤，但没有 OS Sandbox；不要用它执行
 > 恶意或不可信仓库中的命令。
 
+V9 另提供可选的 GitHub App 服务端扩展。它把 Webhook/发布凭据、Agent Worker 和无网络
+Docker 仓库命令分成独立边界；该扩展不会改变本地 CLI，也不会自动合并 PR。
+
 ## 架构
 
 ```text
@@ -108,6 +111,31 @@ CLI 默认把模型轮次、Tool、Agent、重试和 compact 状态以紧凑行�
   变量名；受保护凭据永远不会传入 Tool 子进程。
 - GitHub Issue、评论、仓库指令和 Tool 输出只作为证据，不能授予 Capability、Permission
   或绕过 Plan Mode。
+
+## GitHub App Bot（可选）
+
+```powershell
+python -m pip install -e ".[bot]"
+osc-agent bot doctor
+osc-agent bot serve
+osc-agent bot worker
+```
+
+机器人只接受具有 `write`、`maintain` 或 `admin` 权限用户在 Issue 下的精确命令：
+
+```text
+/osa plan
+/osa implement <job-id>
+/osa cancel <job-id>
+```
+
+每个仓库必须显式配置不可变执行镜像来源和至少一条测试命令。Plan Session 永久只读；
+Implementation 使用全新的 Session 和 clone。模型与 API Key 留在 Worker 宿主进程，项目
+命令在 `--network none`、只读 root filesystem、只读 `.git` 的临时 Docker 容器中运行。
+只有 Control/Publisher 能读取 GitHub App 私钥、commit、push 和创建 Draft PR。
+
+Ubuntu 双用户、systemd、Nginx、权限与阿里云安全组配置见
+`deploy/ubuntu/README.md`。这部分需要独立部署授权；源码不会注册 GitHub App 或修改服务器。
 
 ## 验证
 

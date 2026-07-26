@@ -1,0 +1,24 @@
+[Unit]
+Description=OSA Agent Trusted Worker
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=osa-worker
+Group=osa-shared
+SupplementaryGroups=docker
+UMask=0007
+EnvironmentFile=/etc/osc-agent/worker.env
+ExecStart=/opt/osc-agent/venv/bin/osc-agent bot worker
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/osc-agent
+ReadOnlyPaths=/etc/osc-agent
+
+[Install]
+WantedBy=multi-user.target

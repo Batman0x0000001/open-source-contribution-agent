@@ -99,6 +99,8 @@ EvidenceKind: TypeAlias = Literal[
     "successful_test",
     "git_change_snapshot",
     "independent_verification",
+    "issue_plan",
+    "delivery_draft",
 ]
 
 
@@ -207,6 +209,7 @@ PermissionDecision: TypeAlias = Annotated[
 
 class ToolUseContext(ContractModel):
     session_id: str = Field(min_length=1)
+    tool_use_id: str | None = None
     working_directory: str = Field(min_length=1)
     repository_root: str = Field(min_length=1)
     state_directory: str = Field(min_length=1)
