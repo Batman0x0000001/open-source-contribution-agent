@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Literal
 
 from osc_agent.runtime.context import SessionTranscript
 from osc_agent.runtime.dependencies import QueryDependencies
@@ -17,6 +17,7 @@ from osc_agent.runtime.models import (
     ContextCompacted,
     Failed,
     ModelRequestStarted,
+    ModelRetryScheduled,
     QueryConfig,
     QueryParams,
     ResumeQueryParams,
@@ -52,8 +53,23 @@ class AgentRuntime:
                 yield event
             return
         with store.lease(params.session_id):
-            async for event in self._query_locked(params):
-                yield event
+            try:
+                async for event in self._query_locked(params):
+                    yield event
+            except asyncio.CancelledError:
+                snapshot = store.load(params.session_id)
+                if snapshot is not None:
+                    store.save_state(
+                        params.session_id,
+                        snapshot.runtime_state.model_copy(
+                            update={
+                                "last_status": "cancelled",
+                                "last_reason": "query was cancelled",
+                            },
+                            deep=True,
+                        ),
+                    )
+                raise
 
     async def _query_locked(self, params: QueryParams) -> AsyncIterator[RuntimeEvent]:
         state = QueryState(session_id=params.session_id)
@@ -133,7 +149,13 @@ class AgentRuntime:
             instruction_state=runtime_state.instruction_state,
             file_observations=runtime_state.file_observations,
             completion_requirements=completion_requirements,
+            permission_grants=runtime_state.permission_grants,
         )
+        if store is not None:
+            store.save_state(
+                params.session_id,
+                _session_state(tool_context, status="running"),
+            )
         started_at = self.dependencies.monotonic()
         force_compact_reason: str | None = None
 
@@ -142,6 +164,15 @@ class AgentRuntime:
             if failure is not None:
                 state.status = "failed"
                 state.stop_reason = failure.reason
+                if store is not None:
+                    store.save_state(
+                        params.session_id,
+                        _session_state(
+                            tool_context,
+                            status="failed",
+                            reason=failure.reason,
+                        ),
+                    )
                 yield RunStopped(transition=failure)
                 return
 
@@ -180,11 +211,51 @@ class AgentRuntime:
             )
             completed: ModelCompleted | None = None
             try:
-                async for event in self.dependencies.model_gateway.stream(request):
-                    if isinstance(event, ModelTextDelta):
-                        yield AssistantDelta(text=event.text)
-                    else:
-                        completed = event
+                remaining = max(
+                    params.config.deadline_seconds
+                    - (self.dependencies.monotonic() - started_at),
+                    0.001,
+                )
+                async with asyncio.timeout(remaining):
+                    async for event in self.dependencies.model_gateway.stream(request):
+                        if isinstance(event, ModelTextDelta):
+                            yield AssistantDelta(text=event.text)
+                        elif isinstance(event, ModelRetryScheduled):
+                            yield event
+                        else:
+                            completed = event
+            except TimeoutError:
+                failure = Failed(
+                    error_code="DEADLINE_EXCEEDED",
+                    reason=f"query exceeded {params.config.deadline_seconds} seconds",
+                    retryable=False,
+                )
+                state.status = "failed"
+                state.stop_reason = failure.reason
+                if store is not None:
+                    store.save_state(
+                        params.session_id,
+                        _session_state(
+                            tool_context,
+                            status="failed",
+                            reason=failure.reason,
+                        ),
+                    )
+                yield RunStopped(transition=failure)
+                return
+            except asyncio.CancelledError:
+                state.status = "cancelled"
+                state.stop_reason = "model request was cancelled"
+                if store is not None:
+                    store.save_state(
+                        params.session_id,
+                        _session_state(
+                            tool_context,
+                            status="cancelled",
+                            reason=state.stop_reason,
+                        ),
+                    )
+                raise
             except ModelGatewayError as exc:
                 if (
                     exc.code == "CONTEXT_LENGTH_EXCEEDED"
@@ -200,6 +271,15 @@ class AgentRuntime:
                 )
                 state.status = "failed"
                 state.stop_reason = failure.reason
+                if store is not None:
+                    store.save_state(
+                        params.session_id,
+                        _session_state(
+                            tool_context,
+                            status="failed",
+                            reason=failure.reason,
+                        ),
+                    )
                 yield RunStopped(transition=failure)
                 return
             except Exception as exc:  # noqa: BLE001 - 未知 Provider 错误在 Runtime 边界结构化。
@@ -210,6 +290,15 @@ class AgentRuntime:
                 )
                 state.status = "failed"
                 state.stop_reason = failure.reason
+                if store is not None:
+                    store.save_state(
+                        params.session_id,
+                        _session_state(
+                            tool_context,
+                            status="failed",
+                            reason=failure.reason,
+                        ),
+                    )
                 yield RunStopped(transition=failure)
                 return
 
@@ -221,6 +310,15 @@ class AgentRuntime:
                 )
                 state.status = "failed"
                 state.stop_reason = failure.reason
+                if store is not None:
+                    store.save_state(
+                        params.session_id,
+                        _session_state(
+                            tool_context,
+                            status="failed",
+                            reason=failure.reason,
+                        ),
+                    )
                 yield RunStopped(transition=failure)
                 return
 
@@ -245,6 +343,15 @@ class AgentRuntime:
                     )
                     state.status = "failed"
                     state.stop_reason = failure.reason
+                    if store is not None:
+                        store.save_state(
+                            params.session_id,
+                            _session_state(
+                                tool_context,
+                                status="failed",
+                                reason=failure.reason,
+                            ),
+                        )
                     yield RunStopped(transition=failure)
                     return
                 tool_context.transcript_messages = transcript.snapshot()
@@ -282,11 +389,29 @@ class AgentRuntime:
                         )
                         state.status = "blocked"
                         state.stop_reason = transition.reason
+                        if store is not None:
+                            store.save_state(
+                                params.session_id,
+                                _session_state(
+                                    tool_context,
+                                    status="blocked",
+                                    reason=transition.reason,
+                                ),
+                            )
                         yield RunStopped(transition=transition)
                         return
                     continue
                 state.status = "completed"
                 state.stop_reason = completed.stop_reason
+                if store is not None:
+                    store.save_state(
+                        params.session_id,
+                        _session_state(
+                            tool_context,
+                            status="completed",
+                            reason=completed.stop_reason,
+                        ),
+                    )
                 yield RunCompleted(transition=Complete(reason=completed.stop_reason))
                 return
 
@@ -325,6 +450,8 @@ class AgentRuntime:
                                 instruction_state=tool_context.instruction_state,
                                 file_observations=tool_context.file_observations,
                                 completion_requirements=tool_context.completion_requirements,
+                                permission_grants=tool_context.permission_grants,
+                                last_status="running",
                             ),
                         )
                     if update.result is not None and update.tool_use_id is not None:
@@ -351,6 +478,15 @@ class AgentRuntime:
                     store.append_message(params.session_id, result_message)
                 state.status = "cancelled"
                 state.stop_reason = "tool execution was cancelled"
+                if store is not None:
+                    store.save_state(
+                        params.session_id,
+                        _session_state(
+                            tool_context,
+                            status="cancelled",
+                            reason=state.stop_reason,
+                        ),
+                    )
                 yield RunStopped(transition=Cancelled(reason=state.stop_reason))
                 return
 
@@ -376,6 +512,26 @@ def _tool_result_message(calls: list[ToolUseBlock], results: dict[str, ToolResul
             )
             for call in calls
         ],
+    )
+
+
+def _session_state(
+    context: ToolUseContext,
+    *,
+    status: Literal["running", "completed", "blocked", "failed", "cancelled"],
+    reason: str | None = None,
+) -> SessionRuntimeState:
+    return SessionRuntimeState(
+        permission_mode=context.permission_mode,
+        plan_path=context.plan_path,
+        worktree=context.worktree,
+        capabilities=context.capabilities,
+        instruction_state=context.instruction_state,
+        file_observations=context.file_observations,
+        completion_requirements=context.completion_requirements,
+        permission_grants=context.permission_grants,
+        last_status=status,
+        last_reason=reason,
     )
 
 

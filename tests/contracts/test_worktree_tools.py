@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 
 from osc_agent.isolation.worktree import WorktreeManager
-from osc_agent.runtime.models import Ask, ToolUseBlock, ToolUseContext, WorktreeSession
+from osc_agent.runtime.models import ApprovalResponse, Ask, ToolUseBlock, ToolUseContext, WorktreeSession
 from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
 from tests.contracts.registry_factory import build_test_tool_registry as build_core_tool_registry
 
@@ -16,10 +16,10 @@ def context(root: Path) -> ToolUseContext:
 def test_worktree_name_is_validated_before_approval(tmp_path: Path) -> None:
     approvals = 0
 
-    async def approve(decision: Ask) -> bool:
+    async def approve(decision: Ask) -> ApprovalResponse:
         nonlocal approvals
         approvals += 1
-        return True
+        return ApprovalResponse(choice="allow_once")
 
     result = asyncio.run(
         ToolExecutor(
@@ -48,8 +48,8 @@ def test_worktree_mutations_use_permission_pipeline(monkeypatch, tmp_path: Path)
     registry = build_core_tool_registry(tmp_path)
     denied = asyncio.run(ToolExecutor(registry).execute(call, context(tmp_path)))
 
-    async def approve(decision: Ask) -> bool:
-        return True
+    async def approve(decision: Ask) -> ApprovalResponse:
+        return ApprovalResponse(choice="allow_once")
 
     approved = asyncio.run(
         ToolExecutor(

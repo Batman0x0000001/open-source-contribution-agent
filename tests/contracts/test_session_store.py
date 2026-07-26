@@ -167,3 +167,55 @@ def test_valid_final_record_without_newline_is_normalized_before_append(
     )
 
     assert store.load("session-1").messages[0].content[0].text == "after recovery"
+
+
+def test_session_overviews_are_sorted_and_latest_skips_invalid(
+    tmp_path: Path,
+) -> None:
+    store = FileSessionStore(tmp_path)
+    for session_id in ("older", "newer"):
+        store.create(
+            SessionMetadata(
+                schema_version=4,
+                session_id=session_id,
+                repository_root=str(tmp_path),
+                initial_working_directory=str(tmp_path),
+                model="test",
+            )
+        )
+        store.save_state(
+            session_id,
+            SessionRuntimeState(last_status="completed", last_reason="end_turn"),
+        )
+    older = tmp_path / "older.jsonl"
+    newer = tmp_path / "newer.jsonl"
+    older.touch()
+    newer.touch()
+    invalid = tmp_path / "invalid.jsonl"
+    invalid.write_text("{broken\n", encoding="utf-8")
+    invalid.touch()
+
+    overviews = store.list_overviews()
+
+    assert {item.session_id for item in overviews} == {"older", "newer", "invalid"}
+    assert next(item for item in overviews if item.session_id == "invalid").status == "invalid"
+    assert store.latest_session_id() in {"older", "newer"}
+
+
+def test_v4_session_defaults_new_v8_runtime_fields(tmp_path: Path) -> None:
+    store = FileSessionStore(tmp_path)
+    store.create(
+        SessionMetadata(
+            schema_version=4,
+            session_id="v4",
+            repository_root=str(tmp_path),
+            initial_working_directory=str(tmp_path),
+            model="test",
+        )
+    )
+
+    snapshot = store.load("v4")
+
+    assert snapshot is not None
+    assert snapshot.runtime_state.permission_grants == []
+    assert snapshot.runtime_state.last_status is None

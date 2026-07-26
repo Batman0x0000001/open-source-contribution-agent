@@ -83,8 +83,12 @@ def test_github_external_json_is_normalized_before_runtime(monkeypatch, tmp_path
         "updated_at": "2026-07-22T00:00:00Z",
         "comments": [],
     }
-    assert listed.data == {"issues": [expected]}
-    assert fetched.data == {"issue": expected}
+    trust_marker = {
+        "content_source": "github",
+        "trust": "untrusted_external",
+    }
+    assert listed.data == {**trust_marker, "issues": [expected]}
+    assert fetched.data == {**trust_marker, "issue": expected}
 
 
 def test_github_tool_rejects_non_github_url_before_network(monkeypatch, tmp_path: Path) -> None:

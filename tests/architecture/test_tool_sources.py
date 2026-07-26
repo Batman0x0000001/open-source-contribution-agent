@@ -29,7 +29,7 @@ def test_core_registry_registers_each_tool_once() -> None:
     assert source.count("EditFileTool(instructions)") == 1
     assert source.count("GlobTool()") == 1
     assert source.count("GrepTool(instructions)") == 1
-    assert source.count("ShellTool()") == 1
+    assert source.count("ShellTool(environment_allowlist=subprocess_env_allowlist)") == 1
     assert source.count("GitStatusTool()") == 1
     assert source.count("GitDiffTool(tool_result_store)") == 1
     assert source.count("GitLogTool()") == 1

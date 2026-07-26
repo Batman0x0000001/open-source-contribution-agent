@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import asyncio
+import hashlib
+import json
+import os
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -10,9 +13,11 @@ from pydantic import JsonValue, ValidationError
 from osc_agent.runtime.hooks import HookRegistry, PostToolUsePayload, PreToolUsePayload
 from osc_agent.runtime.models import (
     Allow,
+    ApprovalResponse,
     Ask,
     ContractModel,
     Deny,
+    PermissionGrant,
     ToolError,
     ToolResult,
     ToolUseBlock,
@@ -24,7 +29,7 @@ from osc_agent.runtime.tool import Tool, ToolRegistry
 from osc_agent.tools.git import git_workspace_fingerprint
 
 
-ApprovalHandler = Callable[[Ask], Awaitable[bool]]
+ApprovalHandler = Callable[[Ask], Awaitable[ApprovalResponse]]
 QuestionHandler = Callable[[list[dict[str, JsonValue]]], Awaitable[dict[str, str]]]
 
 
@@ -62,12 +67,22 @@ class ToolExecutor:
             return _error("TOOL_VALIDATION_FAILED", validation.reason)
 
         permission = await self.permission_policy.decide(tool, parsed, context)
-        generally_allowed_input = await self._resolve_permission(permission, parsed, tool)
+        generally_allowed_input = await self._resolve_permission(
+            permission,
+            parsed,
+            tool,
+            context,
+        )
         if isinstance(generally_allowed_input, ToolResult):
             return generally_allowed_input
 
         tool_permission = await tool.check_permissions(generally_allowed_input, context)
-        allowed_input = await self._resolve_permission(tool_permission, generally_allowed_input, tool)
+        allowed_input = await self._resolve_permission(
+            tool_permission,
+            generally_allowed_input,
+            tool,
+            context,
+        )
         if isinstance(allowed_input, ToolResult):
             return allowed_input
 
@@ -151,14 +166,32 @@ class ToolExecutor:
         decision: Allow | Deny | Ask,
         input: ContractModel,
         tool: Tool[ContractModel, ContractModel],
+        context: ToolUseContext,
     ) -> ContractModel | ToolResult:
         if isinstance(decision, Deny):
             return _error("PERMISSION_DENIED", decision.reason)
         if isinstance(decision, Ask):
+            grant = _permission_grant(decision, input, context)
+            if grant is not None and grant in context.permission_grants:
+                return input
             if self.dependencies.approval_handler is None:
                 return _error("PERMISSION_REQUIRED", decision.prompt)
-            if not await self.dependencies.approval_handler(decision):
+            response = await self.dependencies.approval_handler(decision)
+            if not isinstance(response, ApprovalResponse):
+                return _error(
+                    "PERMISSION_RESPONSE_INVALID",
+                    "approval handler must return ApprovalResponse",
+                )
+            if response.choice == "deny":
                 return _error("PERMISSION_DENIED", decision.prompt)
+            if response.choice == "allow_for_session":
+                if grant is None:
+                    return _error(
+                        "PERMISSION_RESPONSE_INVALID",
+                        "this permission risk cannot be remembered for the session",
+                    )
+                if grant not in context.permission_grants:
+                    context.permission_grants.append(grant)
             return input
         try:
             return tool.input_model.model_validate(decision.updated_input)
@@ -191,3 +224,31 @@ def _validate_output(
 
 def _error(code: str, message: str) -> ToolResult:
     return ToolResult(error=ToolError(code=code, message=message))
+
+
+def _permission_grant(
+    decision: Ask,
+    input: ContractModel,
+    context: ToolUseContext,
+) -> PermissionGrant | None:
+    if decision.risk not in {"write", "process"}:
+        return None
+    working_directory = os.path.normcase(str(Path(context.working_directory).resolve()))
+    canonical = json.dumps(
+        input.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    fingerprint = hashlib.sha256(
+        (
+            f"{decision.tool_name}\0{decision.risk}\0"
+            f"{working_directory}\0{canonical}"
+        ).encode("utf-8")
+    ).hexdigest()
+    return PermissionGrant(
+        tool_name=decision.tool_name,
+        risk=decision.risk,
+        working_directory=working_directory,
+        input_fingerprint=fingerprint,
+    )

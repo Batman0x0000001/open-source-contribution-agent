@@ -8,6 +8,7 @@ from pydantic import Field
 from osc_agent.runtime.hooks import HookBlock, HookContinue, HookRegistry
 from osc_agent.runtime.models import (
     Ask,
+    ApprovalResponse,
     CapabilityScope,
     ContractModel,
     Deny,
@@ -59,6 +60,16 @@ class DestructiveTool(EchoTool):
 
     def is_destructive(self, input: EchoInput) -> bool:
         return True
+
+
+class ProcessTool(DestructiveTool):
+    name = "process"
+
+    def is_read_only(self, input: EchoInput) -> bool:
+        return False
+
+    def permission_risk(self, input: EchoInput) -> str:
+        return "process"
 
 
 class DestructiveDeniedByTool(DestructiveTool):
@@ -125,8 +136,8 @@ def test_destructive_tool_requires_explicit_approval() -> None:
         context(),
     ))
 
-    async def approve(decision: Ask) -> bool:
-        return True
+    async def approve(decision: Ask) -> ApprovalResponse:
+        return ApprovalResponse(choice="allow_once")
 
     approved = ToolExecutor(
         ToolRegistry([tool]),
@@ -145,8 +156,8 @@ def test_destructive_tool_requires_explicit_approval() -> None:
 def test_general_approval_does_not_bypass_tool_specific_permission() -> None:
     tool = DestructiveDeniedByTool()
 
-    async def approve(decision: Ask) -> bool:
-        return True
+    async def approve(decision: Ask) -> ApprovalResponse:
+        return ApprovalResponse(choice="allow_once")
 
     executor = ToolExecutor(
         ToolRegistry([tool]),
@@ -160,6 +171,60 @@ def test_general_approval_does_not_bypass_tool_specific_permission() -> None:
     assert result.error and result.error.code == "PERMISSION_DENIED"
     assert result.error.message == "tool-specific denial"
     assert tool.calls == 0
+
+
+def test_session_permission_matches_exact_validated_input_and_cwd() -> None:
+    approvals = 0
+
+    async def approve(_decision: Ask) -> ApprovalResponse:
+        nonlocal approvals
+        approvals += 1
+        return ApprovalResponse(choice="allow_for_session")
+
+    tool = ProcessTool()
+    executor = ToolExecutor(
+        ToolRegistry([tool]),
+        dependencies=ToolExecutionDependencies(approval_handler=approve),
+    )
+    tool_context = context()
+
+    for call_id in ("first", "second"):
+        result = asyncio.run(
+            executor.execute(
+                ToolUseBlock(id=call_id, name=tool.name, input={"value": "same"}),
+                tool_context,
+            )
+        )
+        assert result.error is None
+    changed = asyncio.run(
+        executor.execute(
+            ToolUseBlock(id="changed", name=tool.name, input={"value": "different"}),
+            tool_context,
+        )
+    )
+
+    assert changed.error is None
+    assert approvals == 2
+    assert len(tool_context.permission_grants) == 2
+
+
+def test_cached_session_permission_cannot_bypass_plan_mode() -> None:
+    async def approve(_decision: Ask) -> ApprovalResponse:
+        return ApprovalResponse(choice="allow_for_session")
+
+    tool = ProcessTool()
+    executor = ToolExecutor(
+        ToolRegistry([tool]),
+        dependencies=ToolExecutionDependencies(approval_handler=approve),
+    )
+    tool_context = context()
+    call = ToolUseBlock(id="first", name=tool.name, input={"value": "same"})
+    assert asyncio.run(executor.execute(call, tool_context)).error is None
+    tool_context.permission_mode = "plan"
+
+    blocked = asyncio.run(executor.execute(call, tool_context))
+
+    assert blocked.error and blocked.error.code == "PERMISSION_DENIED"
 
 
 def test_validation_and_pre_hook_run_before_call() -> None:

@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from osc_agent.runtime.models import WorktreeSession
+from osc_agent.tools.process import build_subprocess_environment
 
 
 class WorktreeManager:
@@ -91,13 +92,14 @@ class WorktreeManager:
     def _git(cwd: Path, *arguments: str) -> str:
         try:
             completed = subprocess.run(
-                ["git", *arguments],
+                ["git", "-c", f"safe.directory={cwd.resolve()}", *arguments],
                 cwd=cwd,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 timeout=30,
+                env=build_subprocess_environment(),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ValueError(f"git command failed: {exc}") from exc

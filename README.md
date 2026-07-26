@@ -2,6 +2,10 @@
 
 一个采用 Claude Code 最小通用设计的 Python Agent：入口 Skill、子 Agent 和 Tool 全部复用同一个 `AgentRuntime`，完整 Session transcript 是唯一恢复依据。
 
+> 当前版本定位为本地单用户开发者预览版，面向可信用户操作明确选择的仓库。PowerShell
+> 在 Windows Host 上执行，环境变量经过白名单过滤，但没有 OS Sandbox；不要用它执行
+> 恶意或不可信仓库中的命令。
+
 ## 架构
 
 ```text
@@ -26,8 +30,13 @@ Session JSONL / Git Worktree Isolation
 - Session、Plan、Tool Result 和 Worktree 保存在按仓库哈希隔离的用户数据目录，不污染目标仓库。
 - Git worktree 提供真实执行隔离；脏 worktree 不会被静默删除。
 - PowerShell Tool 明确调用 PowerShell 7 (`pwsh`)；本版本不提供 Bash 兼容入口。
+- Tool 子进程只接收运行必需环境变量和用户显式允许的非敏感变量；API Key、Token、
+  Secret、Password 等凭据名称始终被过滤。
 - destructive permission 会显示 Tool、工作目录、风险和有界输入预览；PowerShell
   不允许直接执行 Git 写操作。
+- `write`/`process` 权限可选择仅本次或当前 Session；Session 记忆只匹配完全相同的
+  Tool、风险、工作目录和规范化输入，destructive/external 永不缓存。
+- 所有模型消费者共享有界指数退避重试；失败的部分流不会进入 transcript 或触发 Tool。
 - GitHub Tool 当前只读；不会自动 push、评论或创建远程 PR。
 - Contribution 可把两个独立的大型仓库调查问题交给只读 Explore 子 Agent；主 Agent
   只接收经过验证的证据报告。
@@ -52,13 +61,28 @@ python -m pip install -e .
 
 ```powershell
 osc-agent run --repo C:\path\to\repo "分析并修复这个问题"
+osc-agent run --repo C:\path\to\repo "分析并修复这个问题" --once
 osc-agent contribute --repo C:\path\to\repo --repo-url https://github.com/org/repo
 osc-agent resume --repo C:\path\to\repo <session-id>
+osc-agent resume --repo C:\path\to\repo --latest
+osc-agent session list --repo C:\path\to\repo
+osc-agent session show <session-id> --repo C:\path\to\repo
+osc-agent doctor --repo C:\path\to\repo
+osc-agent doctor --repo C:\path\to\repo --local-only
 osc-agent skill list --repo C:\path\to\repo
 osc-agent skill run open-source-contribution --repo C:\path\to\repo --arguments '{"repo_url":"https://github.com/org/repo","goal":null}'
 ```
 
-`run`、`contribute` 和 inline `skill run` 会先打印 Session ID。恢复不读取旧 Contribution Run 或阶段状态。
+`run`、`resume`、`contribute` 和 inline `skill run` 会先打印 Session ID。在交互式
+终端中，它们默认在每轮结束后继续接收同一 Session 的下一条消息；使用 `--once`
+保持脚本化单轮行为。输入 `/exit`、Ctrl+C（位于输入提示）或 EOF 可退出。
+
+CLI 默认把模型轮次、Tool、Agent、重试和 compact 状态以紧凑行写入 stderr，并在每轮
+结束后根据类型化 Tool Result 显示确定性摘要。`--quiet` 只隐藏实时状态，不隐藏摘要。
+
+`doctor` 默认发送一次最小模型请求验证真实连接，因此会消耗极少量 Token；
+`--local-only` 只执行配置、PowerShell、ripgrep、Git、状态目录、Skill 和 Agent 检查。
+模型请求默认最多尝试三次，可通过 `.env.example` 中的重试变量调整。
 
 ## 扩展
 
@@ -70,7 +94,20 @@ osc-agent skill run open-source-contribution --repo C:\path\to\repo --arguments 
 - Agent Registry 不扫描项目、用户、Plugin 或 Markdown Agent 文件。
 - 只有出现真实消费者时才增加 Task、MCP Transport 或更高层编排，不预建通用 Workflow DSL。
 
-Skill 来源优先级为 `project > user > builtin`。
+内置 Skill 名称是保留名称，项目或用户 Skill 不能覆盖。模型只能发现和调用内置 Skill；
+非内置 Skill 必须由用户通过精确的 `osc-agent skill run <name>` 显式调用。对于非保留的
+同名 Skill，显式解析仍采用 `project > user`。
+
+## Host 执行边界
+
+- 自动无需批准的 PowerShell 命令仅限受约束的 `rg` 和只读 Git 子命令；其他命令需要
+  人工批准，提示会明确说明它运行在 Host 且没有 OS Sandbox。
+- PowerShell Provider（例如 `Env:`、Registry、`Variable:`、`Cert:`）被硬拒绝，批准也
+  不能绕过。
+- `OSC_AGENT_SUBPROCESS_ENV_ALLOWLIST` 接受 JSON 字符串数组，只用于额外放行非敏感
+  变量名；受保护凭据永远不会传入 Tool 子进程。
+- GitHub Issue、评论、仓库指令和 Tool 输出只作为证据，不能授予 Capability、Permission
+  或绕过 Plan Mode。
 
 ## 验证
 

@@ -79,13 +79,14 @@ def test_catalog_keeps_body_lazy_until_invocation(tmp_path: Path) -> None:
     assert "Original body." not in result.rendered_prompt
 
 
-def test_project_skill_overrides_user_and_builtin_sources(tmp_path: Path) -> None:
+def test_builtin_skill_name_is_reserved_from_user_and_project_overrides(tmp_path: Path) -> None:
     builtin = tmp_path / "builtin"
     user = tmp_path / "user"
     project = tmp_path / "project"
     write_skill(builtin, source_text="builtin")
     write_skill(user, source_text="user")
-    project_path = write_skill(project, source_text="project")
+    write_skill(project, source_text="project")
+    builtin_path = builtin / "review" / "SKILL.md"
 
     catalog = SkillCatalog(
         [
@@ -95,12 +96,29 @@ def test_project_skill_overrides_user_and_builtin_sources(tmp_path: Path) -> Non
         ]
     )
 
+    assert catalog.get("review").path == str(builtin_path.resolve())
+    assert [item.source for item in catalog.blocked_overrides()] == ["project", "user"]
+
+
+def test_project_skill_still_overrides_user_for_non_reserved_name(tmp_path: Path) -> None:
+    user = tmp_path / "user"
+    project = tmp_path / "project"
+    write_skill(user, source_text="user")
+    project_path = write_skill(project, source_text="project")
+
+    catalog = SkillCatalog(
+        [
+            SkillLoader(project, source="project"),
+            SkillLoader(user, source="user"),
+        ]
+    )
+
     assert catalog.get("review").path == str(project_path.resolve())
 
 
 def test_skill_input_is_strictly_validated_by_generated_pydantic_model(tmp_path: Path) -> None:
     write_skill(tmp_path)
-    executor = SkillExecutor(SkillCatalog([SkillLoader(tmp_path, source="project")]))
+    executor = SkillExecutor(SkillCatalog([SkillLoader(tmp_path, source="builtin")]))
 
     result = asyncio.run(executor.execute(invoke(arguments={"target": 123})))
 
@@ -151,7 +169,7 @@ def test_skill_tool_delegates_to_the_shared_executor(tmp_path: Path) -> None:
   required_evidence: [successful_test, git_change_snapshot]
   waivable_evidence: [successful_test]""",
     )
-    executor = SkillExecutor(SkillCatalog([SkillLoader(tmp_path, source="project")]))
+    executor = SkillExecutor(SkillCatalog([SkillLoader(tmp_path, source="builtin")]))
     tool = SkillTool(executor)
     context = ToolUseContext(session_id="session-1", working_directory="C:/repo", repository_root="C:/repo", state_directory="C:/state")
 
@@ -196,3 +214,44 @@ def test_skill_tool_delegates_to_the_shared_executor(tmp_path: Path) -> None:
         "successful_test",
         "git_change_snapshot",
     }
+
+
+def test_model_invocation_hard_rejects_non_builtin_skill(tmp_path: Path) -> None:
+    write_skill(tmp_path)
+    executor = SkillExecutor(SkillCatalog([SkillLoader(tmp_path, source="project")]))
+
+    result = asyncio.run(
+        executor.execute(
+            invoke().model_copy(update={"trigger": "model"})
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error == "model invocation is restricted to built-in skills"
+
+    explicit = asyncio.run(
+        executor.execute(
+            invoke().model_copy(update={"trigger": "user"})
+        )
+    )
+    assert explicit.status == "inline"
+
+
+def test_skill_tool_only_describes_builtin_model_skills(tmp_path: Path) -> None:
+    builtin = tmp_path / "builtin"
+    project = tmp_path / "project"
+    write_skill(builtin, name="builtin-review")
+    write_skill(project, name="project-review")
+    tool = SkillTool(
+        SkillExecutor(
+            SkillCatalog(
+                [
+                    SkillLoader(builtin, source="builtin"),
+                    SkillLoader(project, source="project"),
+                ]
+            )
+        )
+    )
+
+    assert "builtin-review" in tool.description
+    assert "project-review" not in tool.description

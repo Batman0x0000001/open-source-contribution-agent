@@ -35,7 +35,7 @@ class SkillTool(BaseTool[SkillToolInput, SkillToolOutput]):
         available = [
             f"{item.manifest.name}: {item.manifest.description}"
             for item in self.executor.catalog.list()
-            if not item.manifest.disable_model_invocation
+            if item.source == "builtin" and not item.manifest.disable_model_invocation
         ]
         suffix = "; ".join(available) if available else "none"
         return f"Invoke one model-available Skill through the shared SkillExecutor. Available: {suffix}"

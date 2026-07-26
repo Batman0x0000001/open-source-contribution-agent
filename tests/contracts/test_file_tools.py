@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from osc_agent.runtime.models import Ask, ToolUseBlock, ToolUseContext
+from osc_agent.runtime.models import ApprovalResponse, Ask, ToolUseBlock, ToolUseContext
 from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
 from tests.contracts.registry_factory import build_test_tool_registry as build_core_tool_registry
 from osc_agent.tools.file_tools import (
@@ -91,8 +91,8 @@ def test_write_file_requires_permission_and_uses_atomic_legacy_algorithm(tmp_pat
     assert denied_result.error and denied_result.error.code == "PERMISSION_REQUIRED"
     assert not (tmp_path / "docs" / "result.txt").exists()
 
-    async def approve(decision: Ask) -> bool:
-        return True
+    async def approve(decision: Ask) -> ApprovalResponse:
+        return ApprovalResponse(choice="allow_once")
 
     approved = ToolExecutor(
         registry,
@@ -140,8 +140,8 @@ def test_edit_file_requires_approval_and_replaces_once(tmp_path: Path) -> None:
     target = tmp_path / "example.txt"
     target.write_text("old old", encoding="utf-8")
 
-    async def approve(decision: Ask) -> bool:
-        return True
+    async def approve(decision: Ask) -> ApprovalResponse:
+        return ApprovalResponse(choice="allow_once")
 
     registry = build_core_tool_registry()
     executor = ToolExecutor(
@@ -199,8 +199,8 @@ def test_partial_read_cannot_authorize_an_existing_file_edit(tmp_path: Path) -> 
     target = tmp_path / "example.txt"
     target.write_text("abcdef", encoding="utf-8")
 
-    async def approve(_decision: Ask) -> bool:
-        return True
+    async def approve(_decision: Ask) -> ApprovalResponse:
+        return ApprovalResponse(choice="allow_once")
 
     executor = ToolExecutor(
         build_core_tool_registry(),
@@ -238,8 +238,8 @@ def test_external_change_after_read_is_rejected(tmp_path: Path) -> None:
     target = tmp_path / "example.txt"
     target.write_text("before", encoding="utf-8")
 
-    async def approve(_decision: Ask) -> bool:
-        return True
+    async def approve(_decision: Ask) -> ApprovalResponse:
+        return ApprovalResponse(choice="allow_once")
 
     executor = ToolExecutor(
         build_core_tool_registry(),
@@ -277,8 +277,8 @@ def test_new_nested_instruction_blocks_first_write_and_activates_context(
     nested.mkdir()
     (nested / "AGENTS.md").write_text("Use src conventions.", encoding="utf-8")
 
-    async def approve(_decision: Ask) -> bool:
-        return True
+    async def approve(_decision: Ask) -> ApprovalResponse:
+        return ApprovalResponse(choice="allow_once")
 
     executor = ToolExecutor(
         build_core_tool_registry(),

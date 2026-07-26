@@ -13,6 +13,7 @@ from pydantic import Field
 from osc_agent.runtime.models import ContractModel, ToolError, ToolResult, ToolUseContext
 from osc_agent.runtime.session_store import ToolResultStore
 from osc_agent.runtime.tool import BaseTool
+from osc_agent.tools.process import build_subprocess_environment
 
 
 MAX_GIT_OUTPUT_CHARS = 50_000
@@ -167,14 +168,24 @@ def _run_git(
 ) -> str:
     try:
         completed = subprocess.run(
-            ["git", "-c", "core.fsmonitor=false", *arguments],
+            [
+                "git",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                f"safe.directory={repo_root.resolve()}",
+                *arguments,
+            ],
             cwd=repo_root,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=30,
-            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+            env={
+                **build_subprocess_environment(),
+                "GIT_OPTIONAL_LOCKS": "0",
+            },
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"Error: {exc}"
@@ -435,11 +446,21 @@ def _require_git(
 def _require_git_bytes(repo_root: Path, arguments: list[str]) -> bytes:
     try:
         completed = subprocess.run(
-            ["git", "-c", "core.fsmonitor=false", *arguments],
+            [
+                "git",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                f"safe.directory={repo_root.resolve()}",
+                *arguments,
+            ],
             cwd=repo_root,
             capture_output=True,
             timeout=30,
-            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+            env={
+                **build_subprocess_environment(),
+                "GIT_OPTIONAL_LOCKS": "0",
+            },
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ValueError(str(exc)) from exc

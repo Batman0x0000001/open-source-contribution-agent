@@ -9,6 +9,7 @@ from osc_agent.application import build_application
 from osc_agent.config import Settings
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
 from osc_agent.runtime.models import (
+    ApprovalResponse,
     ResumeQueryParams,
     RunCompleted,
     RuntimeMessage,
@@ -171,8 +172,8 @@ def test_contribution_skill_runs_through_plan_worktree_draft_and_resume(monkeypa
         ]
     )
 
-    async def approve(_decision) -> bool:
-        return True
+    async def approve(_decision) -> ApprovalResponse:
+        return ApprovalResponse(choice="allow_once")
 
     async def answer(questions):
         return {questions[0]["id"]: "small_fix"}

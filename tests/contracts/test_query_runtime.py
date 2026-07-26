@@ -5,6 +5,8 @@ import inspect
 from pathlib import Path
 from typing import AsyncIterator
 
+import pytest
+
 from osc_agent.runtime.dependencies import QueryDependencies
 from osc_agent.runtime.gateway import (
     ModelCompleted,
@@ -490,3 +492,51 @@ def test_cancelled_tool_gets_a_persisted_result_pair(tmp_path: Path) -> None:
         for message in snapshot.messages
         for block in message.content
     )
+
+
+def test_cancelled_model_request_marks_session_without_partial_message(
+    tmp_path: Path,
+) -> None:
+    store = FileSessionStore(tmp_path / "sessions")
+
+    class BlockingGateway:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+
+        async def stream(self, request: ModelRequest):
+            self.started.set()
+            await asyncio.Event().wait()
+            if False:
+                yield ModelTextDelta(text="")
+
+    gateway = BlockingGateway()
+    agent = runtime(gateway, session_store=store)
+
+    async def exercise() -> None:
+        task = asyncio.create_task(
+            collect(
+                agent,
+                StartQueryParams(
+                    session_id="model-cancelled",
+                    model="test",
+                    repository_root=str(tmp_path),
+                    messages=[
+                        RuntimeMessage(
+                            role="user",
+                            content=[TextBlock(text="hello")],
+                        )
+                    ],
+                ),
+            )
+        )
+        await gateway.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+    snapshot = store.load("model-cancelled")
+
+    assert snapshot is not None
+    assert snapshot.runtime_state.last_status == "cancelled"
+    assert len(snapshot.messages) == 1

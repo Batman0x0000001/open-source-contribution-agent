@@ -19,6 +19,7 @@ def build_core_tool_registry(
     worktree_manager: WorktreeManager,
     tool_result_store: ToolResultStore,
     instruction_resolver: RepositoryInstructionResolver | None = None,
+    subprocess_env_allowlist: frozenset[str] = frozenset(),
 ) -> ToolRegistry:
     """新 Runtime 的唯一内置 Tool 注册入口。"""
 
@@ -30,7 +31,7 @@ def build_core_tool_registry(
             EditFileTool(instructions),
             GlobTool(),
             GrepTool(instructions),
-            ShellTool(),
+            ShellTool(environment_allowlist=subprocess_env_allowlist),
             GitStatusTool(),
             GitDiffTool(tool_result_store),
             GitLogTool(),

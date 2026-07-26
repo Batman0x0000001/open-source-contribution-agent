@@ -21,6 +21,7 @@ from osc_agent.runtime.models import (
 )
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.tools.path_policy import normalize_repo_relative_path, safe_repo_path
+from osc_agent.tools.process import build_subprocess_environment
 
 
 class GrepInput(ContractModel):
@@ -114,6 +115,7 @@ class GrepTool(BaseTool[GrepInput, GrepOutput]):
                 errors="replace",
                 timeout=30,
                 shell=False,
+                env=build_subprocess_environment(),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return ToolError(code="GREP_FAILED", message=str(exc), retryable=True)

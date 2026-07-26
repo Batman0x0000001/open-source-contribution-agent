@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Annotated, ContextManager, Iterator, Literal, Protocol, TypeAlias
 
 import portalocker
@@ -14,6 +15,7 @@ from osc_agent.runtime.models import (
     ContractModel,
     RuntimeMessage,
     SessionMetadata,
+    SessionOverview,
     SessionRuntimeState,
     SessionSnapshot,
 )
@@ -41,6 +43,10 @@ class SessionStore(Protocol):
     def save_state(self, session_id: str, state: SessionRuntimeState) -> None: ...
 
     def load(self, session_id: str) -> SessionSnapshot | None: ...
+
+    def list_overviews(self, *, limit: int | None = None) -> list[SessionOverview]: ...
+
+    def latest_session_id(self) -> str | None: ...
 
 
 class _MetadataRecord(ContractModel):
@@ -151,6 +157,61 @@ class FileSessionStore:
         if metadata is None:
             raise ValueError("session metadata is missing")
         return SessionSnapshot(metadata=metadata, messages=messages, runtime_state=state)
+
+    def list_overviews(self, *, limit: int | None = None) -> list[SessionOverview]:
+        if limit is not None and limit < 1:
+            raise ValueError("session list limit must be at least 1")
+        if not self.root.is_dir():
+            return []
+        paths = sorted(
+            self.root.glob("*.jsonl"),
+            key=lambda item: item.stat().st_mtime_ns,
+            reverse=True,
+        )
+        overviews: list[SessionOverview] = []
+        for path in paths:
+            updated_at = datetime.fromtimestamp(
+                path.stat().st_mtime,
+                tz=timezone.utc,
+            ).isoformat()
+            try:
+                snapshot = self.load(path.stem)
+                if snapshot is None:
+                    continue
+                state = snapshot.runtime_state
+                overviews.append(
+                    SessionOverview(
+                        session_id=path.stem,
+                        model=snapshot.metadata.model,
+                        repository_root=snapshot.metadata.repository_root,
+                        updated_at=updated_at,
+                        status=state.last_status or "unknown",
+                        working_directory=(
+                            state.worktree.path
+                            if state.worktree is not None
+                            else snapshot.metadata.initial_working_directory
+                        ),
+                        worktree=state.worktree,
+                    )
+                )
+            except (OSError, ValueError) as exc:
+                overviews.append(
+                    SessionOverview(
+                        session_id=path.stem,
+                        updated_at=updated_at,
+                        status="invalid",
+                        error=str(exc),
+                    )
+                )
+            if limit is not None and len(overviews) >= limit:
+                break
+        return overviews
+
+    def latest_session_id(self) -> str | None:
+        for overview in self.list_overviews():
+            if overview.status != "invalid":
+                return overview.session_id
+        return None
 
     @staticmethod
     def _recover_partial_tail(path: Path) -> None:

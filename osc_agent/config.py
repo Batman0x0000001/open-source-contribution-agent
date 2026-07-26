@@ -19,6 +19,28 @@ class Settings(BaseSettings):
     max_total_tokens: int = Field(default=200_000, gt=0, validation_alias="OSC_AGENT_MAX_TOKENS")
     agent_deadline_seconds: int = Field(default=1_800, ge=0, validation_alias="OSC_AGENT_DEADLINE_SECONDS")
     no_progress_limit: int = Field(default=6, gt=0, validation_alias="OSC_AGENT_NO_PROGRESS_LIMIT")
+    model_max_attempts: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        validation_alias="OSC_AGENT_MODEL_MAX_ATTEMPTS",
+    )
+    model_retry_base_seconds: float = Field(
+        default=1,
+        ge=0,
+        le=60,
+        validation_alias="OSC_AGENT_MODEL_RETRY_BASE_SECONDS",
+    )
+    model_retry_max_seconds: float = Field(
+        default=8,
+        ge=0,
+        le=300,
+        validation_alias="OSC_AGENT_MODEL_RETRY_MAX_SECONDS",
+    )
+    subprocess_env_allowlist: frozenset[str] = Field(
+        default_factory=frozenset,
+        validation_alias="OSC_AGENT_SUBPROCESS_ENV_ALLOWLIST",
+    )
 
     def __init__(self, **values: Any) -> None:
         # 配置对象只接受具名字段，避免位置参数被误解释为 Pydantic 的内部选项。

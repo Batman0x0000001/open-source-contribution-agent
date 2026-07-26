@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
-from typing import Any
+from typing import Any, Literal
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -25,6 +25,7 @@ from osc_agent.runtime.models import (
     ValidationSuccess,
 )
 from osc_agent.runtime.tool import BaseTool
+from osc_agent.tools.process import build_subprocess_environment
 
 
 class GitHubIssue(ContractModel):
@@ -52,6 +53,8 @@ class GitHubListIssuesInput(ContractModel):
 
 
 class GitHubListIssuesOutput(ContractModel):
+    content_source: Literal["github"] = "github"
+    trust: Literal["untrusted_external"] = "untrusted_external"
     issues: list[GitHubIssue]
 
 
@@ -79,7 +82,13 @@ class GitHubListIssuesTool(BaseTool[GitHubListIssuesInput, GitHubListIssuesOutpu
         )
         if not result.get("ok"):
             return _github_tool_error(result)
-        return ToolResult(data={"issues": [_normalize_issue(issue) for issue in result["issues"]]})
+        return ToolResult(
+            data={
+                "content_source": "github",
+                "trust": "untrusted_external",
+                "issues": [_normalize_issue(issue) for issue in result["issues"]],
+            }
+        )
 
 
 class GitHubGetIssueInput(ContractModel):
@@ -89,6 +98,8 @@ class GitHubGetIssueInput(ContractModel):
 
 
 class GitHubGetIssueOutput(ContractModel):
+    content_source: Literal["github"] = "github"
+    trust: Literal["untrusted_external"] = "untrusted_external"
     issue: GitHubIssue
 
 
@@ -117,7 +128,13 @@ class GitHubGetIssueTool(BaseTool[GitHubGetIssueInput, GitHubGetIssueOutput]):
         )
         if not result.get("ok"):
             return _github_tool_error(result)
-        return ToolResult(data={"issue": _normalize_issue(result["issue"])})
+        return ToolResult(
+            data={
+                "content_source": "github",
+                "trust": "untrusted_external",
+                "issue": _normalize_issue(result["issue"]),
+            }
+        )
 
 
 def _validate_remote(repo_url: str, context: ToolUseContext) -> ValidationResult:
@@ -277,24 +294,39 @@ def _issue_labels(issue: dict[str, Any]) -> set[str]:
 def _local_origin(repo_root: Path) -> tuple[str, str] | None:
     try:
         top = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            [
+                "git",
+                "-c",
+                f"safe.directory={repo_root.resolve()}",
+                "rev-parse",
+                "--show-toplevel",
+            ],
             cwd=repo_root,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=10,
+            env=build_subprocess_environment(),
         )
         if top.returncode != 0 or Path(top.stdout.strip()).resolve() != repo_root.resolve():
             return None
         completed = subprocess.run(
-            ["git", "config", "--get", "remote.origin.url"],
+            [
+                "git",
+                "-c",
+                f"safe.directory={repo_root.resolve()}",
+                "config",
+                "--get",
+                "remote.origin.url",
+            ],
             cwd=repo_root,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=10,
+            env=build_subprocess_environment(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

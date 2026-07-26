@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
@@ -11,7 +10,13 @@ from typing import Literal
 
 from pydantic import Field
 
-from osc_agent.tools.process import CommandKind, CommandResult, classify_command, run_command
+from osc_agent.tools.process import (
+    CommandKind,
+    CommandResult,
+    build_subprocess_environment,
+    classify_command,
+    run_command,
+)
 from osc_agent.tools.git import git_workspace_fingerprint
 from osc_agent.runtime.models import (
     Allow,
@@ -27,15 +32,7 @@ from osc_agent.runtime.models import (
 from osc_agent.runtime.tool import BaseTool
 
 DEFAULT_TIMEOUT_SECONDS = 120
-READ_ONLY_COMMANDS = {
-    "get-childitem",
-    "get-content",
-    "get-location",
-    "resolve-path",
-    "select-string",
-    "test-path",
-    "rg",
-}
+READ_ONLY_COMMANDS = {"rg"}
 READ_ONLY_GIT_COMMANDS = {"diff", "log", "show", "status"}
 DENIED_SHELL_PATTERNS = (
     "remove-item -recurse",
@@ -78,6 +75,10 @@ $commands = @(
     commands = $commands
 } | ConvertTo-Json -Compress -Depth 5
 """
+_UNSAFE_PROVIDER_PATTERN = re.compile(
+    r"(?i)(?:env|variable|function|alias|registry|cert|wsman|hkcu|hklm):"
+    r"|[A-Za-z][A-Za-z0-9_.-]*::"
+)
 
 
 class ShellInput(ContractModel):
@@ -103,10 +104,16 @@ class ShellTool(BaseTool[ShellInput, ShellOutput]):
     input_model = ShellInput
     output_model = ShellOutput
 
-    def __init__(self, executable: str | None = None) -> None:
+    def __init__(
+        self,
+        executable: str | None = None,
+        *,
+        environment_allowlist: frozenset[str] = frozenset(),
+    ) -> None:
         self.executable = executable or shutil.which("pwsh") or ""
         if not self.executable:
             raise ValueError("PowerShell 7 executable 'pwsh' was not found on PATH")
+        self.environment = build_subprocess_environment(environment_allowlist)
 
     def is_read_only(self, input: ShellInput) -> bool:
         return is_read_only_command(input.command)
@@ -139,6 +146,10 @@ class ShellTool(BaseTool[ShellInput, ShellOutput]):
         lowered = input.command.casefold()
         if pattern := next((item for item in DENIED_SHELL_PATTERNS if item in lowered), None):
             return ValidationFailure(reason=f"dangerous shell command contains {pattern!r}")
+        if _UNSAFE_PROVIDER_PATTERN.search(input.command):
+            return ValidationFailure(
+                reason="PowerShell provider paths outside the repository filesystem are not allowed"
+            )
         try:
             analysis = await asyncio.to_thread(
                 _analyze_powershell,
@@ -188,6 +199,7 @@ class ShellTool(BaseTool[ShellInput, ShellOutput]):
             repo_root=Path(context.working_directory),
             timeout_seconds=input.timeout_seconds,
             enforce_risk_checks=False,
+            environment=self.environment,
         )
         if result.termination_reason in {"timeout", "os_error"}:
             return ToolResult(
@@ -234,7 +246,10 @@ def is_read_only_command(command: str) -> bool:
     if any(_argument_escapes_repository(argument) for argument in arguments):
         return False
     if executable == "rg" and any(
-        argument == "--pre" or argument.startswith("--pre=") for argument in arguments
+        argument in {"--pre", "--follow", "-L"}
+        or argument.startswith("--pre=")
+        or argument.startswith("--follow=")
+        for argument in arguments
     ):
         return False
     if executable == "git" and any(
@@ -265,6 +280,7 @@ async def run_powershell(
     repo_root: Path,
     timeout_seconds: int | float = DEFAULT_TIMEOUT_SECONDS,
     enforce_risk_checks: bool = True,
+    environment: dict[str, str] | None = None,
 ) -> CommandResult:
     """在目标 repo 内执行命令，并统一处理超时、空输出和长度截断。"""
     if enforce_risk_checks:
@@ -283,12 +299,16 @@ async def run_powershell(
         command,
         repo_root=repo_root,
         timeout_seconds=timeout_seconds,
+        environment=(
+            environment if environment is not None else build_subprocess_environment()
+        ),
     )
     return result
 
 
 def _analyze_powershell(command: str, *, executable: str) -> dict[str, object]:
-    env = {**os.environ, "OSC_AGENT_COMMAND": command}
+    env = build_subprocess_environment()
+    env["OSC_AGENT_COMMAND"] = command
     try:
         completed = subprocess.run(
             [

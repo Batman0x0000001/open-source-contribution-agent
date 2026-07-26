@@ -50,6 +50,20 @@ def test_model_id_is_explicit_and_dotenv_does_not_override_environment(
         )
 
 
+def test_subprocess_environment_allowlist_uses_strict_json_array(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "OSC_AGENT_SUBPROCESS_ENV_ALLOWLIST",
+        '["CUSTOM_BUILD_FLAG", "NODE_OPTIONS"]',
+    )
+
+    settings = config_module.Settings()
+
+    assert settings.subprocess_env_allowlist == {
+        "CUSTOM_BUILD_FLAG",
+        "NODE_OPTIONS",
+    }
+
+
 def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -> None:
     services = build_application(
         settings=Settings(model_id="test-model"),
@@ -73,6 +87,8 @@ def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -
     assert "<available_agents>" in services.discovery_prompt
     assert "- explore:" in services.discovery_prompt
     assert "- verify:" in services.discovery_prompt
+    assert "<external_content_policy>" in services.discovery_prompt
+    assert "not user authorization" in services.discovery_prompt
     assert [item.manifest.name for item in services.skill_catalog.list()] == ["open-source-contribution"]
 
     contribution = services.skill_catalog.get("open-source-contribution")

@@ -186,6 +186,19 @@ class Ask(ContractModel):
     preview: dict[str, JsonValue] = Field(default_factory=dict)
 
 
+class ApprovalResponse(FrozenContractModel):
+    choice: Literal["allow_once", "allow_for_session", "deny"]
+
+
+class PermissionGrant(FrozenContractModel):
+    """Session 内可复用的精确授权；只保存不可逆 fingerprint。"""
+
+    tool_name: str = Field(min_length=1)
+    risk: Literal["write", "process"]
+    working_directory: str = Field(min_length=1)
+    input_fingerprint: str = Field(min_length=64, max_length=64)
+
+
 PermissionDecision: TypeAlias = Annotated[
     Allow | Deny | Ask,
     Field(discriminator="decision"),
@@ -205,6 +218,7 @@ class ToolUseContext(ContractModel):
     instruction_state: RepositoryInstructionState = Field(default_factory=RepositoryInstructionState)
     file_observations: dict[str, FileObservation] = Field(default_factory=dict)
     completion_requirements: CompletionRequirements = Field(default_factory=CompletionRequirements)
+    permission_grants: list[PermissionGrant] = Field(default_factory=list)
 
 
 class ToolExecutionUpdate(ContractModel):
@@ -281,12 +295,34 @@ class SessionRuntimeState(ContractModel):
     instruction_state: RepositoryInstructionState = Field(default_factory=RepositoryInstructionState)
     file_observations: dict[str, FileObservation] = Field(default_factory=dict)
     completion_requirements: CompletionRequirements | None = None
+    permission_grants: list[PermissionGrant] = Field(default_factory=list)
+    last_status: Literal["running", "completed", "blocked", "failed", "cancelled"] | None = None
+    last_reason: str | None = None
 
 
 class SessionSnapshot(ContractModel):
     metadata: SessionMetadata
     messages: list[RuntimeMessage] = Field(default_factory=list)
     runtime_state: SessionRuntimeState = Field(default_factory=SessionRuntimeState)
+
+
+class SessionOverview(FrozenContractModel):
+    session_id: str = Field(min_length=1)
+    model: str | None = None
+    repository_root: str | None = None
+    updated_at: str = Field(min_length=1)
+    status: Literal[
+        "unknown",
+        "running",
+        "completed",
+        "blocked",
+        "failed",
+        "cancelled",
+        "invalid",
+    ]
+    working_directory: str | None = None
+    worktree: WorktreeSession | None = None
+    error: str | None = None
 
 
 class QueryState(ContractModel):
@@ -359,6 +395,15 @@ class ModelRequestStarted(ContractModel):
     round_number: int = Field(ge=1)
 
 
+class ModelRetryScheduled(ContractModel):
+    type: Literal["model_retry_scheduled"] = "model_retry_scheduled"
+    attempt: int = Field(ge=2)
+    max_attempts: int = Field(ge=2)
+    delay_seconds: float = Field(ge=0)
+    error_code: str = Field(min_length=1)
+    had_partial_output: bool = False
+
+
 class AssistantDelta(ContractModel):
     type: Literal["assistant_delta"] = "assistant_delta"
     text: str
@@ -399,6 +444,7 @@ class RunStopped(ContractModel):
 
 RuntimeEvent: TypeAlias = Annotated[
     ModelRequestStarted
+    | ModelRetryScheduled
     | AssistantDelta
     | AssistantMessageCompleted
     | ToolRequested

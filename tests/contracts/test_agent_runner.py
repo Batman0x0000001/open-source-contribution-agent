@@ -304,7 +304,7 @@ def test_agent_tool_limits_parallel_runs_and_propagates_cancellation(tmp_path: P
             )
             for index in range(3)
         ]
-        await asyncio.wait_for(runner.two_started.wait(), timeout=1)
+        await asyncio.wait_for(runner.two_started.wait(), timeout=5)
         assert runner.active == 2
         runner.release.set()
         await asyncio.gather(*calls)

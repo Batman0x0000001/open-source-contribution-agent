@@ -30,6 +30,12 @@ class SkillExecutor:
             return SkillResult(name=invocation.name, status="failed", error="skill not found")
         if invocation.trigger == "user" and not descriptor.manifest.user_invocable:
             return SkillResult(name=invocation.name, status="failed", error="skill is not user invocable")
+        if invocation.trigger == "model" and descriptor.source != "builtin":
+            return SkillResult(
+                name=invocation.name,
+                status="failed",
+                error="model invocation is restricted to built-in skills",
+            )
         if invocation.trigger == "model" and descriptor.manifest.disable_model_invocation:
             return SkillResult(name=invocation.name, status="failed", error="model invocation is disabled")
         try:

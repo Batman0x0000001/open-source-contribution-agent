@@ -3,6 +3,7 @@
 from osc_agent.runtime.context import ContextProjection, SessionTranscript
 from osc_agent.runtime.models import (
     Allow,
+    ApprovalResponse,
     AssistantDelta,
     AssistantMessageCompleted,
     Ask,
@@ -21,6 +22,7 @@ from osc_agent.runtime.models import (
     FileObservation,
     FrozenContractModel,
     PermissionDecision,
+    PermissionGrant,
     InstructionDocument,
     RepositoryInstructionState,
     QueryConfig,
@@ -28,6 +30,7 @@ from osc_agent.runtime.models import (
     QueryState,
     RuntimeEvent,
     RuntimeMessage,
+    SessionOverview,
     ToolExecutionUpdate,
     ToolError,
     ToolResult,
@@ -37,6 +40,7 @@ from osc_agent.runtime.models import (
 
 __all__ = [
     "Allow",
+    "ApprovalResponse",
     "AssistantDelta",
     "AssistantMessageCompleted",
     "Ask",
@@ -56,6 +60,7 @@ __all__ = [
     "FileObservation",
     "FrozenContractModel",
     "PermissionDecision",
+    "PermissionGrant",
     "InstructionDocument",
     "RepositoryInstructionState",
     "QueryConfig",
@@ -63,6 +68,7 @@ __all__ = [
     "QueryState",
     "RuntimeEvent",
     "RuntimeMessage",
+    "SessionOverview",
     "SessionTranscript",
     "ToolExecutionUpdate",
     "ToolError",

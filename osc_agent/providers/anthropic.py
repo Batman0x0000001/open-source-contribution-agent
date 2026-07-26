@@ -1,9 +1,23 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import AsyncIterator
 
-from anthropic import AsyncAnthropic
+from anthropic import (
+    APIConnectionError,
+    APIResponseValidationError,
+    APITimeoutError,
+    AsyncAnthropic,
+    AuthenticationError,
+    BadRequestError,
+    NotFoundError,
+    OverloadedError,
+    PermissionDeniedError,
+    RateLimitError,
+    RequestTooLargeError,
+)
 
 from osc_agent.runtime.gateway import (
     ModelCompleted,
@@ -43,10 +57,12 @@ class AnthropicModelGateway:
                 marker in body_text.lower()
                 for marker in ("context_length", "prompt is too long", "request_too_large")
             )
+            code, retryable = _classify_error(exc, status_code, is_context_error)
             raise ModelGatewayError(
-                code="CONTEXT_LENGTH_EXCEEDED" if is_context_error else "MODEL_REQUEST_FAILED",
+                code=code,
                 message=str(exc) or type(exc).__name__,
-                retryable=is_context_error,
+                retryable=retryable,
+                retry_after_seconds=_retry_after_seconds(exc),
             ) from exc
 
         blocks = []
@@ -95,3 +111,52 @@ def _message_param(message: RuntimeMessage) -> dict[str, object]:
                 }
             )
     return {"role": message.role, "content": content}
+
+
+def _classify_error(
+    exc: Exception,
+    status_code: int | None,
+    is_context_error: bool,
+) -> tuple[str, bool]:
+    if is_context_error or isinstance(exc, RequestTooLargeError):
+        return "CONTEXT_LENGTH_EXCEEDED", False
+    if isinstance(exc, AuthenticationError):
+        return "MODEL_AUTHENTICATION_FAILED", False
+    if isinstance(exc, PermissionDeniedError):
+        return "MODEL_PERMISSION_DENIED", False
+    if isinstance(exc, NotFoundError):
+        return "MODEL_NOT_FOUND", False
+    if isinstance(exc, (BadRequestError, APIResponseValidationError)):
+        return "MODEL_REQUEST_INVALID", False
+    if isinstance(exc, RateLimitError) or status_code == 429:
+        return "MODEL_RATE_LIMITED", True
+    if isinstance(exc, OverloadedError) or status_code in {408, 409}:
+        return "MODEL_OVERLOADED", True
+    if isinstance(exc, APITimeoutError):
+        return "MODEL_TIMEOUT", True
+    if isinstance(exc, APIConnectionError):
+        return "MODEL_CONNECTION_FAILED", True
+    if status_code is not None and status_code >= 500:
+        return "MODEL_SERVER_ERROR", True
+    return "MODEL_REQUEST_FAILED", False
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    raw = headers.get("retry-after")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        try:
+            retry_at = parsedate_to_datetime(str(raw))
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            value = (retry_at - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return max(value, 0.0)

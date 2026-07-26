@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from osc_agent.runtime.models import Ask, ToolUseBlock, ToolUseContext
+from osc_agent.runtime.models import ApprovalResponse, Ask, ToolUseBlock, ToolUseContext
 from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
 from tests.contracts.registry_factory import build_test_tool_registry as build_core_tool_registry
 
@@ -37,8 +37,8 @@ def test_ask_user_question_returns_answers_to_agent_loop(tmp_path: Path) -> None
 
 
 def test_plan_mode_blocks_writes_but_allows_fixed_plan_file(tmp_path: Path) -> None:
-    async def approve(decision: Ask) -> bool:
-        return True
+    async def approve(decision: Ask) -> ApprovalResponse:
+        return ApprovalResponse(choice="allow_once")
 
     executor = ToolExecutor(build_core_tool_registry(), dependencies=ToolExecutionDependencies(approval_handler=approve))
     blocked = asyncio.run(executor.execute(ToolUseBlock(id="w", name="write_file", input={"path": "x.txt", "content": "x"}), context(tmp_path, mode="plan")))
