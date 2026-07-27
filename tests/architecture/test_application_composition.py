@@ -81,6 +81,9 @@ def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -
     assert services.tool_registry.get("agent").runner is services.agent_runner
     assert services.tool_registry.get("agent").registry is services.agent_registry
     assert [item.definition.name for item in services.agent_registry.list()] == ["explore", "verify"]
+    assert services.agent_registry.get("verify").definition.config.max_rounds == 16
+    assert services.agent_registry.get("explore").definition.config.max_rounds == 8
+    assert services.query_config.max_rounds == 30
     assert "agent" in services.general_capabilities.allowed_tools
     assert "<available_skills>" in services.discovery_prompt
     assert "open-source-contribution" in services.discovery_prompt

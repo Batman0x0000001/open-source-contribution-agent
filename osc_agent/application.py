@@ -14,7 +14,7 @@ from osc_agent.agents.tool import AgentTool
 from osc_agent.config import Settings
 from osc_agent.providers.anthropic import AnthropicModelGateway
 from osc_agent.runtime.dependencies import QueryDependencies
-from osc_agent.runtime.gateway import ModelGateway, RetryingModelGateway, RetryPolicy
+from osc_agent.runtime.gateway import ModelGateway, RetryingModelGateway
 from osc_agent.runtime.models import ApprovalResponse, Ask, CapabilityScope, QueryConfig
 from osc_agent.runtime.query import AgentRuntime
 from osc_agent.runtime.tool import ToolRegistry
@@ -89,11 +89,7 @@ def build_model_gateway(
     )
     return RetryingModelGateway(
         provider_gateway,
-        RetryPolicy(
-            max_attempts=settings.model_max_attempts,
-            base_seconds=settings.model_retry_base_seconds,
-            max_seconds=settings.model_retry_max_seconds,
-        ),
+        settings.runtime.model_retry.to_retry_policy(),
     )
 
 
@@ -118,12 +114,7 @@ def build_application(
     if not settings.model_id:
         raise ValueError("MODEL_ID is required for model execution")
     model_id = settings.model_id
-    query_config = QueryConfig(
-        max_rounds=settings.max_agent_rounds,
-        max_total_tokens=settings.max_total_tokens,
-        deadline_seconds=max(settings.agent_deadline_seconds, 1),
-        max_no_progress_rounds=settings.no_progress_limit,
-    )
+    query_config = settings.runtime.agents.main.to_query_config()
     state_paths = ApplicationStatePaths.for_repository(
         repo_root,
         state_root=state_root_override,
@@ -177,8 +168,14 @@ def build_application(
     )
     agent_registry = AgentRegistry(
         list(agent_registrations) if agent_registrations is not None else [
-            build_explore_registration(model=model_id),
-            build_verify_registration(model=model_id),
+            build_explore_registration(
+                model=model_id,
+                config=settings.runtime.agents.explore.to_query_config(),
+            ),
+            build_verify_registration(
+                model=model_id,
+                config=settings.runtime.agents.verify.to_query_config(),
+            ),
         ]
     )
     runner = AgentRunner(runtime, agent_registry, default_model=model_id)

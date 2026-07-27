@@ -33,7 +33,7 @@ osc-agent = "osc_agent.cli:app"
 include = ["osc_agent*"]
 
 [tool.setuptools.package-data]
-osc_agent = ["skills/**/*.md"]
+osc_agent = ["skills/**/*.md", "runtime.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

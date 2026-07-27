@@ -124,7 +124,7 @@ class ExploreReport(FrozenContractModel):
         return self
 
 
-def build_explore_registration(*, model: str) -> AgentRegistration:
+def build_explore_registration(*, model: str, config: QueryConfig) -> AgentRegistration:
     definition = AgentDefinition(
         name="explore",
         description="Read-only repository exploration with evidence-backed findings",
@@ -134,12 +134,7 @@ def build_explore_registration(*, model: str) -> AgentRegistration:
         ),
         model=model,
         capabilities=CapabilityScope(allowed_tools=EXPLORE_TOOLS),
-        config=QueryConfig(
-            max_rounds=8,
-            max_total_tokens=40_000,
-            deadline_seconds=300,
-            max_output_tokens=4_096,
-        ),
+        config=config,
         context_policy="minimal",
     )
     return AgentRegistration(

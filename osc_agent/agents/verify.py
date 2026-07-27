@@ -94,7 +94,7 @@ class VerificationReport(FrozenContractModel):
         return self
 
 
-def build_verify_registration(*, model: str) -> AgentRegistration:
+def build_verify_registration(*, model: str, config: QueryConfig) -> AgentRegistration:
     definition = AgentDefinition(
         name="verify",
         description="Independently run checks and adversarial probes without modifying the repository",
@@ -107,12 +107,7 @@ def build_verify_registration(*, model: str) -> AgentRegistration:
         ),
         model=model,
         capabilities=CapabilityScope(allowed_tools=VERIFY_TOOLS),
-        config=QueryConfig(
-            max_rounds=12,
-            max_total_tokens=60_000,
-            deadline_seconds=900,
-            max_output_tokens=8_192,
-        ),
+        config=config,
         context_policy="minimal",
     )
     return AgentRegistration(

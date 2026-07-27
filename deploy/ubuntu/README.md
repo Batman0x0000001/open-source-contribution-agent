@@ -26,6 +26,8 @@ sudo install -d -m 0750 -o root -g osa-shared /etc/osc-agent
 
 - `/etc/osc-agent/bot.env`：owner `osa-control:osa-shared`，mode `0600`，仅 Control。
 - `/etc/osc-agent/worker.env`：owner `osa-worker:osa-shared`，mode `0600`，仅 Worker。
+- 将 `runtime.example.yml` 复制为 `/etc/osc-agent/runtime.yml`：owner `root:osa-shared`，
+  mode `0640`，保存 Agent 预算和模型重试策略。
 - `/etc/osc-agent/repositories.yml`：owner `root:osa-shared`，mode `0640`。
 
 Control 与 Worker 的 primary group 都是 `osa-shared`，systemd `UMask=0007`，因此 Control

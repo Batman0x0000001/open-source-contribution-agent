@@ -124,8 +124,14 @@ async def run_doctor(
         try:
             registry = AgentRegistry(
                 [
-                    build_explore_registration(model=settings.model_id),
-                    build_verify_registration(model=settings.model_id),
+                    build_explore_registration(
+                        model=settings.model_id,
+                        config=settings.runtime.agents.explore.to_query_config(),
+                    ),
+                    build_verify_registration(
+                        model=settings.model_id,
+                        config=settings.runtime.agents.verify.to_query_config(),
+                    ),
                 ]
             )
             results.append(

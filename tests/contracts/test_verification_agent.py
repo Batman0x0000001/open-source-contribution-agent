@@ -16,6 +16,10 @@ from osc_agent.agents.verify import (
     build_verify_registration,
 )
 from osc_agent.runtime.models import CapabilityScope, ToolUseContext
+from osc_agent.runtime_config import default_runtime_config_path, load_runtime_config
+
+
+VERIFY_CONFIG = load_runtime_config(default_runtime_config_path()).agents.verify.to_query_config()
 
 
 def initialize_repository(root: Path) -> None:
@@ -47,12 +51,12 @@ def report(*, verdict: str, checks: list[dict], risks=None, unverified=None) -> 
 
 
 def test_verify_registration_is_minimal_read_only_and_bounded() -> None:
-    registration = build_verify_registration(model="test-model")
+    registration = build_verify_registration(model="test-model", config=VERIFY_CONFIG)
 
     assert registration.definition.name == "verify"
     assert registration.definition.context_policy == "minimal"
     assert registration.definition.capabilities.allowed_tools == VERIFY_TOOLS
-    assert registration.definition.config.max_rounds == 12
+    assert registration.definition.config.max_rounds == 16
     assert registration.definition.config.max_total_tokens == 60_000
     assert registration.definition.config.deadline_seconds == 900
     assert registration.read_only is True
@@ -159,7 +163,9 @@ def test_verify_agent_returns_typed_report_without_parent_transcript(tmp_path: P
             )
 
     runner = Runner()
-    registry = AgentRegistry([build_verify_registration(model="test-model")])
+    registry = AgentRegistry(
+        [build_verify_registration(model="test-model", config=VERIFY_CONFIG)]
+    )
     result = asyncio.run(
         AgentTool(runner, registry).call(
             AgentToolInput(
@@ -190,7 +196,9 @@ def test_read_only_agent_guard_fails_closed_and_preserves_changes(tmp_path: Path
             (Path(invocation.working_directory) / "unexpected.bin").write_bytes(b"\x00\x01")
             return AgentRunResult(session_id="child", status="completed", output="{}")
 
-    registry = AgentRegistry([build_verify_registration(model="test-model")])
+    registry = AgentRegistry(
+        [build_verify_registration(model="test-model", config=VERIFY_CONFIG)]
+    )
     result = asyncio.run(
         AgentTool(MutatingRunner(), registry).call(
             AgentToolInput(

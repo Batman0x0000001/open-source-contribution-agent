@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import Field, PrivateAttr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from osc_agent.runtime_config import (
+    RuntimeConfig,
+    default_runtime_config_path,
+    load_runtime_config,
+)
 
 
 class Settings(BaseSettings):
@@ -15,36 +22,24 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     anthropic_base_url: str | None = Field(default=None, validation_alias="ANTHROPIC_BASE_URL")
     model_id: str | None = Field(default=None, validation_alias="MODEL_ID")
-    max_agent_rounds: int = Field(default=30, gt=0, validation_alias="OSC_AGENT_MAX_ROUNDS")
-    max_total_tokens: int = Field(default=200_000, gt=0, validation_alias="OSC_AGENT_MAX_TOKENS")
-    agent_deadline_seconds: int = Field(default=1_800, ge=0, validation_alias="OSC_AGENT_DEADLINE_SECONDS")
-    no_progress_limit: int = Field(default=6, gt=0, validation_alias="OSC_AGENT_NO_PROGRESS_LIMIT")
-    model_max_attempts: int = Field(
-        default=3,
-        ge=1,
-        le=10,
-        validation_alias="OSC_AGENT_MODEL_MAX_ATTEMPTS",
-    )
-    model_retry_base_seconds: float = Field(
-        default=1,
-        ge=0,
-        le=60,
-        validation_alias="OSC_AGENT_MODEL_RETRY_BASE_SECONDS",
-    )
-    model_retry_max_seconds: float = Field(
-        default=8,
-        ge=0,
-        le=300,
-        validation_alias="OSC_AGENT_MODEL_RETRY_MAX_SECONDS",
+    runtime_config_path: Path = Field(
+        default_factory=default_runtime_config_path,
+        validation_alias="OSC_AGENT_RUNTIME_CONFIG",
     )
     subprocess_env_allowlist: frozenset[str] = Field(
         default_factory=frozenset,
         validation_alias="OSC_AGENT_SUBPROCESS_ENV_ALLOWLIST",
     )
+    _runtime_config: RuntimeConfig = PrivateAttr()
 
     def __init__(self, **values: Any) -> None:
         # 配置对象只接受具名字段，避免位置参数被误解释为 Pydantic 的内部选项。
         super().__init__(**values)
+        object.__setattr__(self, "_runtime_config", load_runtime_config(self.runtime_config_path))
+
+    @property
+    def runtime(self) -> RuntimeConfig:
+        return self._runtime_config
 
 
 def load_settings() -> Settings:

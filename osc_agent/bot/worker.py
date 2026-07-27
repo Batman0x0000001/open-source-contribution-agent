@@ -139,7 +139,12 @@ class BotWorker:
             permission_policy=BotPermissionPolicy(implementation_approved=False),
             extra_tools=(SubmitIssuePlanTool(self.store, job_id=job.job_id, base_sha=job.base_sha),),
             pre_tool_hooks=(BotRepositoryPolicyHook(config),),
-            agent_registrations=(build_explore_registration(model=self.settings.model_id or ""),),
+            agent_registrations=(
+                build_explore_registration(
+                    model=self.settings.model_id or "",
+                    config=self.settings.runtime.agents.explore.to_query_config(),
+                ),
+            ),
         )
         if job.plan_session_id is None:
             current = self.store.get_job(job.job_id)

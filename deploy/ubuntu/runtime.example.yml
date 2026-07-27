@@ -1,0 +1,23 @@
+agents:
+  main:
+    max_rounds: 30
+    max_total_tokens: 200000
+    deadline_seconds: 1800
+    max_output_tokens: 8192
+    max_no_progress_rounds: 6
+  explore:
+    max_rounds: 8
+    max_total_tokens: 40000
+    deadline_seconds: 300
+    max_output_tokens: 4096
+    max_no_progress_rounds: 3
+  verify:
+    max_rounds: 16
+    max_total_tokens: 60000
+    deadline_seconds: 900
+    max_output_tokens: 8192
+    max_no_progress_rounds: 3
+model_retry:
+  max_attempts: 3
+  base_seconds: 1
+  max_seconds: 8

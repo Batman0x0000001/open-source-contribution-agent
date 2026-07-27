@@ -28,9 +28,13 @@ from osc_agent.runtime.models import (
     ToolUseContext,
 )
 from osc_agent.runtime.query import AgentRuntime
+from osc_agent.runtime_config import default_runtime_config_path, load_runtime_config
 from osc_agent.runtime.session_store import FileSessionStore
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
+
+
+EXPLORE_CONFIG = load_runtime_config(default_runtime_config_path()).agents.explore.to_query_config()
 
 
 def initialize_repository(root: Path) -> None:
@@ -181,7 +185,9 @@ def test_agent_tool_validates_explore_input_and_typed_output(tmp_path: Path) -> 
                 ),
             )
 
-    registry = AgentRegistry([build_explore_registration(model="test-model")])
+    registry = AgentRegistry(
+        [build_explore_registration(model="test-model", config=EXPLORE_CONFIG)]
+    )
     recorder = RecordingRunner()
     tool = AgentTool(recorder, registry)  # type: ignore[arg-type]
 
@@ -214,7 +220,9 @@ def test_agent_tool_returns_specific_errors_for_unknown_input_and_output(tmp_pat
                 output='{"summary":"unsupported","findings":[],"relevant_files":[],"likely_change_locations":[],"recommended_tests":[],"unresolved_questions":[]}',
             )
 
-    registry = AgentRegistry([build_explore_registration(model="test-model")])
+    registry = AgentRegistry(
+        [build_explore_registration(model="test-model", config=EXPLORE_CONFIG)]
+    )
     tool = AgentTool(InvalidRunner(), registry)  # type: ignore[arg-type]
 
     unknown = asyncio.run(
