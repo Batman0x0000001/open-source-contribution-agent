@@ -32,7 +32,10 @@ def utc_now() -> str:
 
 class RepositoryBotConfig(FrozenContractModel):
     enabled: bool = True
-    image: str = Field(min_length=1, max_length=300)
+    image: str = Field(
+        pattern=r"^sha256:[0-9a-f]{64}$",
+        description="Worker 已预构建并固定的不可变 Docker image ID。",
+    )
     validation_commands: tuple[str, ...] = Field(min_length=1, max_length=20)
     denied_paths: tuple[str, ...] = (
         ".git/**",

@@ -24,8 +24,6 @@ class BotSettings(BaseSettings):
     repositories_config: Path = Field(validation_alias="OSC_AGENT_BOT_REPOSITORIES_CONFIG")
     bind_host: str = Field(default="127.0.0.1", validation_alias="OSC_AGENT_BOT_BIND_HOST")
     bind_port: int = Field(default=8080, ge=1, le=65_535, validation_alias="OSC_AGENT_BOT_BIND_PORT")
-    worker_id: str = Field(min_length=1, validation_alias="OSC_AGENT_BOT_WORKER_ID")
-    max_concurrent_jobs: int = Field(default=1, ge=1, le=4, validation_alias="OSC_AGENT_BOT_MAX_CONCURRENT_JOBS")
     github_commit_name: str = Field(min_length=1, validation_alias="OSC_AGENT_GITHUB_COMMIT_NAME")
     github_commit_email: str = Field(min_length=3, validation_alias="OSC_AGENT_GITHUB_COMMIT_EMAIL")
     plan_approval_days: int = Field(default=7, ge=1, le=30, validation_alias="OSC_AGENT_BOT_PLAN_APPROVAL_DAYS")

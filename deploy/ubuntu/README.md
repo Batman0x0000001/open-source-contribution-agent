@@ -17,7 +17,9 @@ sudo install -d -m 0750 -o root -g osa-shared /etc/osc-agent
 ```
 
 安装 Docker Engine、Git、PowerShell 7、ripgrep、Nginx 和项目 editable bot extra。预先构建
-仓库配置引用的镜像；镜像内必须有 `pwsh` 和项目验证依赖。不要把 Docker socket、数据库、
+仓库配置引用的镜像，并将 `docker image inspect --format '{{.Id}}' <tag>` 的完整结果写入
+`repositories.yml` 的 `image`；tag、短 digest 和大写 digest 都会被拒绝。镜像内必须有
+`pwsh` 和项目验证依赖。不要把 Docker socket、数据库、
 状态根目录或 Secret 挂入容器。
 
 复制示例配置：
@@ -33,8 +35,10 @@ Control 与 Worker 的 primary group 都是 `osa-shared`，systemd `UMask=0007`�
 
 Webhook URL 为 `https://<public-host>/webhooks/github`。只订阅
 `issue_comment`，最小仓库权限为 Metadata read、Issues write、Pull requests write、Contents
-write；不要授予 Workflows 权限。部署后通过使用相同 `EnvironmentFile` 的临时 systemd
-unit 或受控维护终端运行 `osc-agent bot doctor`。不要用命令替换把 env 文件展开到 argv
+write；不要授予 Workflows 权限。部署后分别通过使用对应 `EnvironmentFile` 的临时
+systemd unit 或受控维护终端运行 `osc-agent bot doctor --control` 和
+`osc-agent bot doctor --worker`。Control Doctor 不访问 Docker；Worker Doctor 校验
+`git`、`docker`、`pwsh`、`rg`、模型配置和本机镜像。不要用命令替换把 env 文件展开到 argv
 或 shell history；Doctor 本身不会输出凭据值。
 
 ## 服务与网络

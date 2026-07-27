@@ -12,6 +12,9 @@ from osc_agent.bot.models import IssuePlanArtifact, RepositoryBotCatalog, Reposi
 from osc_agent.bot.store import BotStore
 
 
+IMAGE_ID = "sha256:" + "b" * 64
+
+
 class FakeGitHub:
     permission = "write"
     head = "a" * 40
@@ -75,17 +78,17 @@ def test_control_creates_plan_and_bound_implementation_approval(tmp_path: Path) 
         catalog=RepositoryBotCatalog(
             repositories={
                 "owner/repo": RepositoryBotConfig(
-                    image="worker:latest", validation_commands=("python -m pytest",)
+                    image=IMAGE_ID, validation_commands=("python -m pytest",)
                 )
             }
         ),
         store=store,
         github=github,
-        image_resolver=lambda _image: _image_id(),
     )
     job_id = asyncio.run(control.handle_issue_comment(_payload("/osa plan")))
     job = store.get_job(job_id)
     assert job is not None and job.status == "queued_plan"
+    assert job.image_id == IMAGE_ID
     assert store.get_job_input(job_id)["trust"] == "untrusted_external"
     plan = IssuePlanArtifact(
         status="ready",
@@ -118,17 +121,12 @@ def test_control_rejects_non_writer(tmp_path: Path) -> None:
         catalog=RepositoryBotCatalog(
             repositories={
                 "owner/repo": RepositoryBotConfig(
-                    image="worker:latest", validation_commands=("python -m pytest",)
+                    image=IMAGE_ID, validation_commands=("python -m pytest",)
                 )
             }
         ),
         store=store,
         github=github,
-        image_resolver=lambda _image: _image_id(),
     )
     with pytest.raises(PermissionError):
         asyncio.run(control.handle_issue_comment(_payload("/osa plan")))
-
-
-async def _image_id() -> str:
-    return "sha256:" + "b" * 64

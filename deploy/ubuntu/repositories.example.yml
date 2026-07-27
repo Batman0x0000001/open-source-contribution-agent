@@ -1,7 +1,8 @@
 repositories:
   owner/repository:
     enabled: true
-    image: osa-agent-worker:python311
+    # 构建完成后用 docker image inspect 取得真实 ID 并替换下面的占位值。
+    image: sha256:0000000000000000000000000000000000000000000000000000000000000000
     validation_commands:
       - python -m pytest
       - python -m pip check

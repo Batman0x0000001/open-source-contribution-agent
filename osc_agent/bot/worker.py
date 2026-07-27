@@ -17,7 +17,7 @@ from osc_agent.bot.models import (
     validate_implementation_approval,
 )
 from osc_agent.bot.policy import BotPermissionPolicy, BotRepositoryPolicyHook, ConfiguredValidationStopHook
-from osc_agent.bot.sandbox import DockerProcessRunner
+from osc_agent.bot.sandbox import DockerProcessRunner, resolve_image_id
 from osc_agent.bot.store import BotStore, SqliteSessionStore
 from osc_agent.bot.tools import SubmitDeliveryDraftTool, SubmitIssuePlanTool
 from osc_agent.config import Settings
@@ -89,6 +89,9 @@ class BotWorker:
         if job is None:
             return False
         try:
+            resolved_image_id = await resolve_image_id(job.image_id)
+            if resolved_image_id != job.image_id:
+                raise ValueError("configured immutable Docker image does not match the local image")
             if job.status == "running_plan":
                 await self._run_plan(job)
             else:

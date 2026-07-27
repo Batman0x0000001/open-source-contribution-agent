@@ -116,7 +116,8 @@ CLI 默认把模型轮次、Tool、Agent、重试和 compact 状态以紧凑行�
 
 ```powershell
 python -m pip install -e ".[bot]"
-osc-agent bot doctor
+osc-agent bot doctor --control
+osc-agent bot doctor --worker
 osc-agent bot serve
 osc-agent bot worker
 ```
@@ -129,7 +130,8 @@ osc-agent bot worker
 /osa cancel <job-id>
 ```
 
-每个仓库必须显式配置不可变执行镜像来源和至少一条测试命令。Plan Session 永久只读；
+每个仓库必须显式配置完整的 `sha256:<64 hex>` 不可变执行镜像 ID 和至少一条测试命令。
+Control 不访问 Docker；Worker 在运行 Job 前验证本机镜像与该 ID 精确一致。Plan Session 永久只读；
 Implementation 使用全新的 Session 和 clone。模型与 API Key 留在 Worker 宿主进程，项目
 命令在 `--network none`、只读 root filesystem、只读 `.git` 的临时 Docker 容器中运行。
 只有 Control/Publisher 能读取 GitHub App 私钥、commit、push 和创建 Draft PR。

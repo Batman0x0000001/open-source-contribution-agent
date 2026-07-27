@@ -20,13 +20,26 @@ from osc_agent.bot.models import (
 
 SHA = "a" * 40
 FINGERPRINT = "b" * 64
+IMAGE_ID = "sha256:" + "c" * 64
+
+
+@pytest.mark.parametrize(
+    "image",
+    ["worker:latest", "sha256:abc", "sha256:" + "A" * 64],
+)
+def test_repository_config_requires_an_immutable_image_id(image: str) -> None:
+    with pytest.raises(ValidationError, match="string_pattern_mismatch"):
+        RepositoryBotConfig(
+            image=image,
+            validation_commands=("python -m pytest",),
+        )
 
 
 def test_repository_config_requires_a_recognized_test() -> None:
     with pytest.raises(ValidationError, match="recognized test"):
-        RepositoryBotConfig(image="worker:latest", validation_commands=("python -m pip check",))
+        RepositoryBotConfig(image=IMAGE_ID, validation_commands=("python -m pip check",))
     config = RepositoryBotConfig(
-        image="worker:latest",
+        image=IMAGE_ID,
         validation_commands=("python -m pytest", "python -m pip check"),
     )
     assert config.validation_commands[0] == "python -m pytest"
@@ -35,13 +48,13 @@ def test_repository_config_requires_a_recognized_test() -> None:
 def test_repository_catalog_is_strict_and_rejects_escape(tmp_path: Path) -> None:
     path = tmp_path / "repositories.yml"
     path.write_text(
-        "repositories:\n  owner/repo:\n    image: worker:latest\n    validation_commands: [python -m pytest]\n",
+        f"repositories:\n  owner/repo:\n    image: {IMAGE_ID}\n    validation_commands: [python -m pytest]\n",
         encoding="utf-8",
     )
     assert "owner/repo" in load_repository_catalog(path).repositories
     with pytest.raises(ValidationError, match="repository-relative"):
         RepositoryBotConfig(
-            image="worker:latest",
+            image=IMAGE_ID,
             validation_commands=("python -m pytest",),
             denied_paths=("../secret",),
         )

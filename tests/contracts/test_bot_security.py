@@ -18,6 +18,9 @@ from osc_agent.bot.store import BotStore
 from osc_agent.bot.webhook import create_webhook_app, verify_webhook_signature
 
 
+IMAGE_ID = "sha256:" + "a" * 64
+
+
 def test_webhook_signature_is_exact() -> None:
     body = b'{"action":"created"}'
     secret = "secret"
@@ -73,7 +76,7 @@ def test_docker_runner_builds_fail_closed_isolation_argv(tmp_path: Path, monkeyp
         workspace_root=tmp_path / "jobs",
         image_id="sha256:" + "a" * 64,
         repository_config=RepositoryBotConfig(
-            image="worker:latest", validation_commands=("python -m pytest",)
+            image=IMAGE_ID, validation_commands=("python -m pytest",)
         ),
         job_id="job-id",
         docker_executable="docker",
@@ -89,7 +92,7 @@ def test_docker_runner_builds_fail_closed_isolation_argv(tmp_path: Path, monkeyp
 def test_docker_runner_rejects_mutable_image_and_non_linux(tmp_path: Path, monkeypatch) -> None:
     import osc_agent.bot.sandbox as sandbox_module
 
-    config = RepositoryBotConfig(image="worker:latest", validation_commands=("python -m pytest",))
+    config = RepositoryBotConfig(image=IMAGE_ID, validation_commands=("python -m pytest",))
     monkeypatch.setattr(sandbox_module.sys, "platform", "linux")
     with pytest.raises(ValueError, match="immutable"):
         DockerProcessRunner(

@@ -7,7 +7,6 @@ from osc_agent.bot.control import BotControlService
 from osc_agent.bot.github_app import GitHubAppClient
 from osc_agent.bot.outbox import OutboxProcessor
 from osc_agent.bot.publisher import TrustedPublisher
-from osc_agent.bot.sandbox import resolve_image_id
 from osc_agent.bot.store import BotStore
 from osc_agent.bot.webhook import create_webhook_app
 from osc_agent.bot.worker import BotWorker
@@ -25,7 +24,6 @@ def build_control_app(settings: BotSettings):
         catalog=catalog,
         store=store,
         github=github,
-        image_resolver=resolve_image_id,
     )
     preparer = WorkspacePreparer(root=settings.workspace_root, store=store, github=github)
     publisher = TrustedPublisher(settings=settings, store=store, github=github)

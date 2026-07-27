@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 import re
-from typing import Awaitable, Callable
 from uuid import UUID, uuid4
 
 from osc_agent.bot.config import BotSettings
@@ -44,13 +43,11 @@ class BotControlService:
         catalog: RepositoryBotCatalog,
         store: BotStore,
         github: GitHubControlClient,
-        image_resolver: Callable[[str], Awaitable[str]],
     ) -> None:
         self.settings = settings
         self.catalog = catalog
         self.store = store
         self.github = github
-        self.image_resolver = image_resolver
 
     async def handle_issue_comment(self, payload: dict[str, object]) -> str:
         if payload.get("action") != "created":
@@ -92,7 +89,6 @@ class BotControlService:
         _branch, base_sha = await self.github.repository_head(
             int(parsed["installation_id"]), str(parsed["repository"])
         )
-        image_id = await self.image_resolver(image)
         job = BotJob(
             job_id=str(uuid4()),
             repository_id=int(parsed["repository_id"]),
@@ -101,7 +97,7 @@ class BotControlService:
             issue_number=int(parsed["issue_number"]),
             issue_url=str(parsed["issue_url"]),
             base_sha=base_sha,
-            image_id=image_id,
+            image_id=image,
             status="queued_plan",
         )
         issue_evidence = await self.github.issue(

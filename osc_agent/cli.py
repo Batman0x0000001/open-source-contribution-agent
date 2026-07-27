@@ -433,17 +433,37 @@ def bot_worker() -> None:
 
 
 @bot_app.command("doctor")
-def bot_doctor() -> None:
-    """Validate explicit GitHub App, SQLite, Docker and repository configuration."""
+def bot_doctor(
+    control: Annotated[
+        bool,
+        typer.Option("--control", help="Check the credentialed Control service without Docker access."),
+    ] = False,
+    worker: Annotated[
+        bool,
+        typer.Option("--worker", help="Check the Docker-enabled Worker service."),
+    ] = False,
+) -> None:
+    """Validate exactly one Bot process boundary."""
 
     from pydantic import ValidationError
-    from osc_agent.bot.config import BotSettings
-    from osc_agent.bot.doctor import run_bot_doctor
+    from osc_agent.bot.config import BotSettings, BotWorkerSettings
+    from osc_agent.bot.doctor import run_bot_control_doctor, run_bot_worker_doctor
 
+    if control == worker:
+        raise typer.BadParameter("select exactly one of --control or --worker")
     try:
-        results = asyncio.run(run_bot_doctor(BotSettings()))
-    except ValidationError as exc:
-        typer.echo(f"FAIL\tconfiguration\t{exc.error_count()} required or invalid settings", err=True)
+        results = (
+            asyncio.run(run_bot_control_doctor(BotSettings()))
+            if control
+            else asyncio.run(run_bot_worker_doctor(BotWorkerSettings(), load_settings()))
+        )
+    except (ValidationError, ValueError) as exc:
+        detail = (
+            f"{exc.error_count()} required or invalid settings"
+            if isinstance(exc, ValidationError)
+            else str(exc)[:500]
+        )
+        typer.echo(f"FAIL\tconfiguration\t{detail}", err=True)
         raise typer.Exit(1) from exc
     for item in results:
         typer.echo(f"{item.status}\t{item.name}\t{item.message}")
