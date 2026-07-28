@@ -59,6 +59,9 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
+升级维护标记固定为 `/run/osc-agent-webhook-maintenance`。不要把它放到权限为 `0750`
+的 `/etc/osc-agent`；非特权 Nginx Worker 无法检查该目录中的文件，维护开关会失效。
+
 阿里云安全组只公开 HTTPS 443；SSH 22 仅允许管理来源 IP。8080 仅监听
 `127.0.0.1`。SQLite、Docker API 和任何内部端口不得公开。Control 需要访问 GitHub API，
 Worker 宿主进程需要访问模型 API；Docker 仓库命令始终完全断网。
@@ -85,3 +88,5 @@ Worker，持有升级锁并归档 SQLite/WAL/SHM/workspace；随后原子切换 
 epoch 2 数据库，按 Control→Worker 顺序启动，通过 smoke 后才恢复 Webhook。旧状态仅用于
 归档审计：`waiting_implementation → waiting_approval`、`blocked → blocked_plan`、
 `failed → dead_letter`，不会作为可恢复 Job 导入新库。
+新建 SQLite 使用共享组可写的 `0660`，workspace 根目录使用 `2770`，因此 Control 与 Worker
+无需共享 OS 用户也能安全协作。

@@ -19,8 +19,8 @@ fi
 exec 9>/run/lock/osc-agent-upgrade.lock
 flock -n 9 || { echo "another upgrade is active" >&2; exit 1; }
 
-# The maintenance include is expected to make the webhook location return 503.
-touch /etc/osc-agent/webhook-maintenance
+# /run is traversable by the unprivileged Nginx worker; /etc/osc-agent is intentionally not.
+touch /run/osc-agent-webhook-maintenance
 systemctl reload nginx
 systemctl stop osc-agent-bot-worker osc-agent-bot-control
 
@@ -32,5 +32,5 @@ mv -Tf /opt/osc-agent/next /opt/osc-agent/current
 systemctl start osc-agent-bot-control
 systemctl start osc-agent-bot-worker
 /opt/osc-agent/current/venv/bin/osc-agent deploy smoke-test
-rm -f /etc/osc-agent/webhook-maintenance
+rm -f /run/osc-agent-webhook-maintenance
 systemctl reload nginx

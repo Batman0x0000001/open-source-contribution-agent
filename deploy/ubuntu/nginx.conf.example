@@ -7,7 +7,7 @@ server {
     client_max_body_size 1m;
 
     location = /webhooks/github {
-        if (-f /etc/osc-agent/webhook-maintenance) { return 503; }
+        if (-f /run/osc-agent-webhook-maintenance) { return 503; }
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;

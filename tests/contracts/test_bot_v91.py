@@ -198,3 +198,42 @@ def test_python_worker_image_template_is_offline_ready() -> None:
     assert "ripgrep" in dockerfile
     assert "ENTRYPOINT []" in dockerfile
     assert 'CMD ["/bin/bash"' in dockerfile
+
+
+def test_ubuntu_deployment_uses_accessible_maintenance_flag_and_valid_unit_sections() -> None:
+    root = Path(__file__).parents[2]
+    nginx = (root / "deploy" / "ubuntu" / "nginx.conf.example").read_text(encoding="utf-8")
+    upgrade = (root / "deploy" / "ubuntu" / "upgrade.sh").read_text(encoding="utf-8")
+    control_unit = (
+        root / "deploy" / "ubuntu" / "osc-agent-bot-control.service"
+    ).read_text(encoding="utf-8")
+    unit_section, service_section = control_unit.split("[Service]", maxsplit=1)
+
+    assert "/run/osc-agent-webhook-maintenance" in nginx
+    assert "/run/osc-agent-webhook-maintenance" in upgrade
+    assert "/etc/osc-agent/webhook-maintenance" not in nginx + upgrade
+    assert "StartLimitIntervalSec=120" in unit_section
+    assert "StartLimitBurst=5" in unit_section
+    assert "StartLimitIntervalSec" not in service_section
+    assert "StartLimitBurst" not in service_section
+
+
+def test_reset_state_sets_shared_runtime_permissions(monkeypatch, tmp_path: Path) -> None:
+    database = tmp_path / "bot.sqlite3"
+    workspace = tmp_path / "workspaces"
+    chmod_calls: list[tuple[Path, int]] = []
+    real_chmod = Path.chmod
+
+    def record_chmod(target: Path, mode: int, *, follow_symlinks: bool = True) -> None:
+        chmod_calls.append((target, mode))
+        real_chmod(target, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "chmod", record_chmod)
+    monkeypatch.setenv("OSC_AGENT_BOT_DATABASE_PATH", str(database))
+    monkeypatch.setenv("OSC_AGENT_BOT_WORKSPACE_ROOT", str(workspace))
+
+    result = CliRunner().invoke(app, ["deploy", "reset-state", "--confirm"])
+
+    assert result.exit_code == 0, result.output
+    assert (database.resolve(), 0o660) in chmod_calls
+    assert (workspace.resolve(), 0o2770) in chmod_calls

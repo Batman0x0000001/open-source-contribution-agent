@@ -31,6 +31,22 @@ def _job() -> BotJob:
     )
 
 
+def test_initialize_makes_a_new_database_group_writable(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "bot.sqlite3"
+    chmod_calls: list[tuple[Path, int]] = []
+    real_chmod = Path.chmod
+
+    def record_chmod(target: Path, mode: int, *, follow_symlinks: bool = True) -> None:
+        chmod_calls.append((target, mode))
+        real_chmod(target, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "chmod", record_chmod)
+
+    BotStore(path).initialize()
+
+    assert (path.resolve(), 0o660) in chmod_calls
+
+
 def test_sqlite_job_delivery_version_and_claim(tmp_path: Path) -> None:
     store = BotStore(tmp_path / "bot.sqlite3")
     store.initialize()

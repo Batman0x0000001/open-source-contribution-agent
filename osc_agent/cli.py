@@ -512,6 +512,7 @@ def deploy_reset_state(
     if workspace.exists():
         shutil.rmtree(workspace)
     workspace.mkdir(parents=True, exist_ok=True)
+    workspace.chmod(0o2770)
     from osc_agent.bot.store import BotStore
     BotStore(database).initialize()
     typer.echo("PASS\treset\tepoch 2 state initialized")

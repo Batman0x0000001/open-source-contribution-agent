@@ -6,7 +6,7 @@ import json
 from pathlib import PurePosixPath
 from typing import Literal, TypeAlias
 
-from pydantic import Field, HttpUrl, field_validator, model_validator
+from pydantic import Field, HttpUrl, field_serializer, field_validator, model_validator
 
 from osc_agent.runtime.models import ContractModel, FrozenContractModel
 
@@ -248,6 +248,11 @@ class ExecutionContract(FrozenContractModel):
     container_pids: int
     container_network: Literal["none"] = "none"
     pull_request_mode: Literal["draft", "ready"] = "draft"
+
+    @field_serializer("plan_allowed_tools", "implementation_allowed_tools", when_used="json")
+    def serialize_allowed_tools(self, value: frozenset[str]) -> list[str]:
+        # 契约跨 Control/Worker 进程持久化，集合必须排序后再参与哈希。
+        return sorted(value)
 
     @property
     def contract_hash(self) -> str:

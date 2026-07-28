@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
+import subprocess
+import sys
 from uuid import uuid4
 
 import pytest
@@ -83,6 +86,53 @@ def test_execution_contract_hash_is_canonical_and_secret_free() -> None:
     second = ExecutionContract.model_validate(dict(reversed(list(values.items()))))
     assert first.contract_hash == second.contract_hash
     assert "secret" not in first.model_dump_json().lower()
+
+
+def test_execution_contract_hash_is_stable_across_process_hash_seeds() -> None:
+    script = """
+from osc_agent.bot.models import ExecutionContract
+
+contract = ExecutionContract(
+    repository_id=1,
+    repository_full_name="owner/repo",
+    installation_id=2,
+    base_branch="main",
+    base_sha="a" * 40,
+    issue_number=3,
+    issue_input_hash="d" * 64,
+    model_id="model",
+    plan_allowed_tools=frozenset({
+        "read_file", "glob", "grep", "git_status", "git_diff", "git_log",
+        "read_tool_result", "agent", "submit_issue_plan",
+    }),
+    implementation_allowed_tools=frozenset({
+        "read_file", "glob", "grep", "bash", "git_status", "git_diff",
+        "git_log", "read_skill_resource", "write_file", "edit_file",
+        "read_tool_result", "agent", "submit_delivery_draft",
+    }),
+    validation_commands=("python -m pytest",),
+    denied_paths=(".git/**",),
+    max_changed_files=10,
+    max_patch_bytes=1000,
+    image_id="sha256:" + "c" * 64,
+    command_timeout_seconds=60,
+    container_cpus=1.0,
+    container_memory="1g",
+    container_pids=64,
+)
+print(contract.contract_hash)
+"""
+    hashes = {
+        subprocess.check_output(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).parents[2],
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            text=True,
+        ).strip()
+        for seed in ("1", "2", "3", "4")
+    }
+
+    assert len(hashes) == 1
 
 
 def test_plan_status_and_delivery_contracts_are_hard_validated() -> None:

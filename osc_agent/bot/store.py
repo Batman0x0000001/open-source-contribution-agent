@@ -143,6 +143,7 @@ class BotStore:
         self.path = path.resolve()
 
     def initialize(self) -> None:
+        database_exists = self.path.exists()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             legacy_jobs = connection.execute(
@@ -162,9 +163,17 @@ class BotStore:
             )
             connection.execute(
                 """INSERT OR IGNORE INTO schema_meta(singleton, schema_epoch, state_model_revision,
-                   application_version, created_at) VALUES(1, 2, 'bot-job-v2', '0.2.0', ?)""",
+                   application_version, created_at) VALUES(1, 2, 'bot-job-v2', '0.2.1', ?)""",
                 (utc_now(),),
             )
+        if not database_exists:
+            for candidate in (
+                self.path,
+                Path(str(self.path) + "-wal"),
+                Path(str(self.path) + "-shm"),
+            ):
+                if candidate.exists():
+                    candidate.chmod(0o660)
         self.check_schema()
 
     def check_schema(self) -> None:
