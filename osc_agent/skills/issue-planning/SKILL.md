@@ -1,6 +1,6 @@
 ---
 name: issue-planning
-version: 1
+version: 2
 description: Produce a bounded, evidence-backed implementation plan for an authenticated GitHub Issue.
 when_to_use: Use for the read-only planning phase of a Bot job.
 allowed_tools:
@@ -22,7 +22,21 @@ completion:
 input_schema:
   type: object
   properties:
-    issue_evidence: {type: object}
+    issue_evidence:
+      type: object
+      properties:
+        content_source: {type: string}
+        trust: {type: string}
+        issue:
+          type: object
+          additionalProperties: true
+        comments:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+      required: [content_source, trust, issue, comments]
+      additionalProperties: false
     base_sha: {type: string}
     execution_contract_hash: {type: string}
   required: [issue_evidence, base_sha, execution_contract_hash]

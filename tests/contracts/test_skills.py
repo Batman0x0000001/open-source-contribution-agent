@@ -126,6 +126,40 @@ def test_skill_input_is_strictly_validated_by_generated_pydantic_model(tmp_path:
     assert "string_type" in result.error
 
 
+def test_issue_planning_accepts_the_authenticated_github_evidence_envelope() -> None:
+    builtin = Path(__file__).parents[2] / "osc_agent" / "skills"
+    executor = SkillExecutor(SkillCatalog([SkillLoader(builtin, source="builtin")]))
+    invocation = SkillInvocation(
+        name="issue-planning",
+        arguments={
+            "issue_evidence": {
+                "content_source": "github",
+                "trust": "untrusted_external",
+                "issue": {"number": 7, "title": "Fix parser", "user": {"login": "maintainer"}},
+                "comments": [
+                    {
+                        "body": "Please preserve escaped values.",
+                        "author_association": "OWNER",
+                    }
+                ],
+            },
+            "base_sha": "a" * 40,
+            "execution_contract_hash": "b" * 64,
+        },
+        session_id="plan-1",
+        working_directory="C:/repo",
+        caller_capabilities=CapabilityScope(
+            allowed_tools=frozenset({"read_file", "submit_issue_plan"})
+        ),
+    )
+
+    result = asyncio.run(executor.execute(invocation))
+
+    assert result.status == "inline", result.error
+    assert '"content_source": "github"' in result.rendered_prompt
+    assert '"author_association": "OWNER"' in result.rendered_prompt
+
+
 def test_fork_skill_uses_agent_runner_and_validates_structured_output(tmp_path: Path) -> None:
     write_skill(tmp_path, context="fork")
 

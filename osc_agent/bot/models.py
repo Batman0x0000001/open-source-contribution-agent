@@ -232,7 +232,7 @@ class ExecutionContract(FrozenContractModel):
     plan_profile_revision: str = "bot-plan-v1"
     implementation_profile_revision: str = "bot-implementation-v1"
     planning_skill_name: Literal["issue-planning"] = "issue-planning"
-    planning_skill_version: int = 1
+    planning_skill_version: int = 2
     implementation_skill_name: Literal["open-source-contribution"] = "open-source-contribution"
     implementation_skill_version: int = 1
     plan_allowed_tools: frozenset[str]
