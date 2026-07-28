@@ -130,6 +130,9 @@ def _build_verify_prompt(arguments: AgentContract) -> str:
         f"Focus areas:\n{focus}\n\n"
         "Inspect the actual Git diff and repository instructions. Execute checks yourself; do not trust "
         "the parent summary as evidence. Every check must include its exact command and observed output. "
-        "Return JSON matching this schema:\n"
+        "Return only one JSON object matching this schema. Do not wrap the JSON in Markdown or add prose. "
+        "Every pass or fail check requires an integer exit_code; blocked checks require exit_code null. "
+        "PASS requires an empty unverified list and at least one executed adversarial check. If anything "
+        "remains unverified, return PARTIAL with explicit risks and at least one blocked check.\n"
         + json.dumps(VerificationReport.model_json_schema(mode="validation"), ensure_ascii=False)
     )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+import re
 from typing import Literal
 
 from pydantic import Field, JsonValue, ValidationError
@@ -156,7 +157,7 @@ class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
         if len(run.output) > MAX_AGENT_OUTPUT_CHARS:
             return _error("AGENT_OUTPUT_INVALID", "agent output exceeds the 30000 character limit")
         try:
-            raw_output = json.loads(run.output)
+            raw_output = _parse_agent_output(run.output)
             output = registration.output_model.model_validate(
                 raw_output,
                 context={"repository_root": context.working_directory},
@@ -177,6 +178,20 @@ class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
 
 def _error(code: str, message: str) -> ToolResult:
     return ToolResult(error=ToolError(code=code, message=message))
+
+
+def _parse_agent_output(output: str) -> JsonValue:
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError as direct_error:
+        fenced = re.findall(
+            r"```(?:json)?\s*(.*?)\s*```",
+            output,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if len(fenced) != 1:
+            raise direct_error
+        return json.loads(fenced[0])
 
 
 async def _fingerprint(context: ToolUseContext) -> str | ToolResult:

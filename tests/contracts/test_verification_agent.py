@@ -145,20 +145,24 @@ def test_verify_agent_returns_typed_report_without_parent_transcript(tmp_path: P
             return AgentRunResult(
                 session_id="verify-child",
                 status="completed",
-                output=__import__("json").dumps(
-                    report(
-                        verdict="PASS",
-                        checks=[
-                            {
-                                "name": "boundary",
-                                "command": "python -m pytest",
-                                "exit_code": 0,
-                                "output_excerpt": "passed",
-                                "result": "pass",
-                                "adversarial": True,
-                            }
-                        ],
+                output=(
+                    "Verification complete.\n```json\n"
+                    + __import__("json").dumps(
+                        report(
+                            verdict="PASS",
+                            checks=[
+                                {
+                                    "name": "boundary",
+                                    "command": "python -m pytest",
+                                    "exit_code": 0,
+                                    "output_excerpt": "passed",
+                                    "result": "pass",
+                                    "adversarial": True,
+                                }
+                            ],
+                        )
                     )
+                    + "\n```"
                 ),
             )
 
@@ -186,6 +190,22 @@ def test_verify_agent_returns_typed_report_without_parent_transcript(tmp_path: P
     assert runner.invocation is not None
     assert runner.invocation.parent_messages == []
     assert runner.invocation.working_directory == str(tmp_path)
+
+
+def test_verify_prompt_states_semantic_output_constraints() -> None:
+    registration = build_verify_registration(model="test-model", config=VERIFY_CONFIG)
+    prompt = registration.prompt_builder(
+        registration.input_model.model_validate(
+            {
+                "original_goal": "goal",
+                "implementation_summary": "summary",
+            }
+        )
+    )
+
+    assert "Do not wrap the JSON in Markdown" in prompt
+    assert "PASS requires an empty unverified list" in prompt
+    assert "blocked checks require exit_code null" in prompt
 
 
 def test_read_only_agent_guard_fails_closed_and_preserves_changes(tmp_path: Path) -> None:
