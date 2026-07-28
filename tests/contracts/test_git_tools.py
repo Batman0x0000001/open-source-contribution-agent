@@ -1,3 +1,5 @@
+"""验证Git 工具的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +13,7 @@ from osc_agent.runtime.models import ToolUseBlock, ToolUseContext, WorktreeSessi
 from osc_agent.runtime.tool_execution import ToolExecutor
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.context import MemoryToolResultStore
-from tests.contracts.registry_factory import build_test_tool_registry as build_core_tool_registry
+from tests.contracts.registry_factory import build_test_tool_registry
 from osc_agent.tools.git import (
     GitDiffInput,
     GitDiffTool,
@@ -35,7 +37,7 @@ def context(root: Path) -> ToolUseContext:
 
 
 def test_git_tools_have_strict_contracts_and_read_only_concurrency() -> None:
-    registry = build_core_tool_registry()
+    registry = build_test_tool_registry()
     status = registry.get("git_status")
     diff = registry.get("git_diff")
     log = registry.get("git_log")
@@ -51,7 +53,7 @@ def test_git_tools_have_strict_contracts_and_read_only_concurrency() -> None:
 def test_git_tools_return_structured_status_diff_and_log(tmp_path: Path) -> None:
     initialize_repository(tmp_path)
     (tmp_path / "tracked.txt").write_text("after\n", encoding="utf-8")
-    executor = ToolExecutor(build_core_tool_registry())
+    executor = ToolExecutor(build_test_tool_registry())
 
     async def execute(name: str, input: dict):
         return await executor.execute(
@@ -79,7 +81,7 @@ async def _gather(*calls):
 
 
 def test_git_log_rejects_implicit_and_out_of_range_limits(tmp_path: Path) -> None:
-    executor = ToolExecutor(build_core_tool_registry())
+    executor = ToolExecutor(build_test_tool_registry())
 
     implicit = asyncio.run(
         executor.execute(
@@ -103,7 +105,7 @@ def test_git_command_failure_is_structured(tmp_path: Path) -> None:
     isolated.mkdir()
     (isolated / ".git").write_text("gitdir: missing-git-directory\n", encoding="utf-8")
     result = asyncio.run(
-        ToolExecutor(build_core_tool_registry()).execute(
+        ToolExecutor(build_test_tool_registry()).execute(
             ToolUseBlock(id="status-1", name="git_status", input={}),
             context(isolated),
         )
@@ -144,7 +146,7 @@ def test_git_snapshot_includes_commits_staged_rename_and_untracked(
     )
 
     result = asyncio.run(
-        ToolExecutor(build_core_tool_registry()).execute(
+        ToolExecutor(build_test_tool_registry()).execute(
             ToolUseBlock(id="snapshot", name="git_diff", input={}),
             tool_context,
         )

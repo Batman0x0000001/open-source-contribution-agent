@@ -1,3 +1,5 @@
+"""提供基于 ripgrep 的仓库文本搜索工具。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -21,7 +23,7 @@ from osc_agent.runtime.models import (
 )
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.tools.path_policy import normalize_repo_relative_path, safe_repo_path
-from osc_agent.tools.process import build_subprocess_environment
+from osc_agent.tools.process_runner import build_subprocess_environment
 
 
 class GrepInput(ContractModel):

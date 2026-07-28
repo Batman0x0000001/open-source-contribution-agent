@@ -1,3 +1,5 @@
+"""校验 Skill 调用并委派给对应子 Agent 执行。"""
+
 from __future__ import annotations
 
 import json

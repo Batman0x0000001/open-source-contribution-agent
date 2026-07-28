@@ -1,3 +1,5 @@
+"""组装共享 Runtime、工具、Skill、子 Agent 和持久化依赖。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -33,8 +35,8 @@ from osc_agent.skills.loader import SkillLoader
 from osc_agent.skills.tool import SkillTool
 from osc_agent.skills.resource_tool import ReadSkillResourceTool
 from osc_agent.skills.runner import SkillCommandRunner
-from osc_agent.tools.core import build_core_tool_registry
-from osc_agent.tools.process import ProcessRunner
+from osc_agent.tools.registry import build_tool_registry
+from osc_agent.tools.process_runner import ProcessRunner
 from osc_agent.runtime.permissions import PermissionPolicy
 from osc_agent.runtime.tool import Tool
 from osc_agent.runtime.hooks import PreToolHook, StopHook
@@ -124,7 +126,7 @@ def build_application(
     worktree_manager = WorktreeManager(state_paths.worktrees)
     instruction_resolver = RepositoryInstructionResolver()
     catalog = build_skill_catalog(repo_root)
-    registry = build_core_tool_registry(
+    registry = build_tool_registry(
         worktree_manager=worktree_manager,
         tool_result_store=tool_result_store,
         instruction_resolver=instruction_resolver,

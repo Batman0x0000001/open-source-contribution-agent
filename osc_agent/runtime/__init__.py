@@ -1,4 +1,4 @@
-"""Claude Code 风格的最小通用 Agent Runtime。"""
+"""导出 Agent Runtime 的主要数据模型和公共接口。"""
 
 from osc_agent.runtime.context import ContextProjection, SessionTranscript
 from osc_agent.runtime.models import (

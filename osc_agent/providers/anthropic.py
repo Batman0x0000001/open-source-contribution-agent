@@ -1,3 +1,5 @@
+"""将 Anthropic 兼容 API 适配为统一 ModelGateway。"""
+
 from __future__ import annotations
 
 import json

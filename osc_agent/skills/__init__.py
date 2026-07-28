@@ -1,4 +1,4 @@
-"""Claude Code 风格的延迟加载 Skill 系统。"""
+"""导出 Skill 目录、执行器和命令运行器。"""
 
 from osc_agent.skills.catalog import SkillCatalog
 from osc_agent.skills.executor import SkillExecutor

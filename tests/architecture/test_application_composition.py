@@ -1,3 +1,5 @@
+"""验证应用依赖组装的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import ast
@@ -8,7 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 import osc_agent.config as config_module
-from osc_agent.application import build_application
+from osc_agent.composition import build_application
 from osc_agent.cli import app
 from osc_agent.config import Settings
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest

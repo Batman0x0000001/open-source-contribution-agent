@@ -1,3 +1,5 @@
+"""验证Agent Query 主循环的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import asyncio

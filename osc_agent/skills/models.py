@@ -1,3 +1,5 @@
+"""定义 Skill 清单、调用参数和资源模型。"""
+
 from __future__ import annotations
 
 from typing import Literal

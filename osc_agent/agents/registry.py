@@ -1,3 +1,5 @@
+"""注册并按名称解析可用的子 Agent。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

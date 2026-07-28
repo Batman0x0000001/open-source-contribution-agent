@@ -1,3 +1,5 @@
+"""定义 Bot 作业生命周期及其合法状态转换。"""
+
 from __future__ import annotations
 
 from statemachine import State, StateMachine

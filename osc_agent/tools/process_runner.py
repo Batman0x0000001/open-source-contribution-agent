@@ -1,3 +1,5 @@
+"""定义受控子进程请求、环境过滤和命令执行器。"""
+
 from __future__ import annotations
 
 import asyncio

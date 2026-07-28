@@ -1,3 +1,5 @@
+"""将已验证改动提交、推送并发布为 GitHub Pull Request。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -15,12 +17,12 @@ from osc_agent.bot.models import (
 from osc_agent.bot.policy import _matches
 from osc_agent.bot.store import BotStore
 from osc_agent.tools.git import git_snapshot, git_workspace_fingerprint
-from osc_agent.tools.process import build_subprocess_environment
+from osc_agent.tools.process_runner import build_subprocess_environment
 from osc_agent.bot.policy import ConfiguredValidationStopHook
 from osc_agent.bot.store import SqliteSessionStore
 from osc_agent.runtime.completion import CompletionEvidenceStopHook
 from osc_agent.runtime.hooks import StopHookPayload
-from osc_agent.runtime.models import CapabilityScope, CompletionRequirements, ToolUseContext
+from osc_agent.runtime.models import CompletionRequirements, ToolUseContext
 
 
 class TrustedPublisher:

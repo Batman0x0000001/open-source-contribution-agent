@@ -1,3 +1,5 @@
+"""验证Bash 工具的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +9,7 @@ from osc_agent.runtime.models import ToolUseBlock, ToolUseContext
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
 from osc_agent.tools.bash import BashTool, is_read_only_command
-from osc_agent.tools.process import CommandResult
+from osc_agent.tools.process_runner import CommandResult
 
 
 def context(root: Path) -> ToolUseContext:

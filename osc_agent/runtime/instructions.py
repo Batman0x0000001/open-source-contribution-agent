@@ -1,3 +1,5 @@
+"""发现并合并仓库范围内的 Agent 指令文件。"""
+
 from __future__ import annotations
 
 from hashlib import sha256

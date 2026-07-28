@@ -1,3 +1,5 @@
+"""验证工具源码结构的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import ast
@@ -7,13 +9,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_new_file_tools_do_not_import_legacy_schema_registry() -> None:
-    path = PROJECT_ROOT / "osc_agent" / "tools" / "file_tools.py"
+def test_filesystem_tools_only_import_low_level_operations() -> None:
+    path = PROJECT_ROOT / "osc_agent" / "tools" / "filesystem_tools.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     imported_names = {
         alias.name
         for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module == "osc_agent.tools.files"
+        if isinstance(node, ast.ImportFrom) and node.module == "osc_agent.tools.filesystem_operations"
         for alias in node.names
     }
 
@@ -21,8 +23,10 @@ def test_new_file_tools_do_not_import_legacy_schema_registry() -> None:
     assert "FILE_TOOLS" not in imported_names
 
 
-def test_core_registry_registers_each_tool_once() -> None:
-    source = (PROJECT_ROOT / "osc_agent" / "tools" / "core.py").read_text(encoding="utf-8")
+def test_tool_registry_registers_each_tool_once() -> None:
+    source = (PROJECT_ROOT / "osc_agent" / "tools" / "registry.py").read_text(
+        encoding="utf-8"
+    )
 
     assert source.count("ReadFileTool(instructions)") == 1
     assert source.count("WriteFileTool(instructions)") == 1

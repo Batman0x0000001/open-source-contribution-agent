@@ -1,4 +1,6 @@
-# Claude Code 架构符合性矩阵
+# 项目架构不变量矩阵
+
+本文记录 Open Source Contribution Agent `0.2.4` 由自动化测试保护的核心设计约束。
 
 | 编号 | 最小机制 | Python 对应 | 硬验证 |
 |---|---|---|---|

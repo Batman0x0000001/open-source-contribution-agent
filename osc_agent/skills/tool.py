@@ -1,3 +1,5 @@
+"""将 Skill 调用封装为主 Runtime 可使用的 skill 工具。"""
+
 from __future__ import annotations
 
 from typing import Literal

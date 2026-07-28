@@ -1,7 +1,9 @@
+"""构建并注册 Runtime 的全部内置核心工具。"""
+
 from __future__ import annotations
 
 from osc_agent.runtime.tool import ToolRegistry
-from osc_agent.tools.file_tools import EditFileTool, GlobTool, ReadFileTool, WriteFileTool
+from osc_agent.tools.filesystem_tools import EditFileTool, GlobTool, ReadFileTool, WriteFileTool
 from osc_agent.tools.git import GitDiffTool, GitLogTool, GitStatusTool
 from osc_agent.tools.github import GitHubGetIssueTool, GitHubListIssuesTool
 from osc_agent.tools.bash import BashTool
@@ -12,10 +14,10 @@ from osc_agent.tools.search import GrepTool
 from osc_agent.isolation.worktree import WorktreeManager
 from osc_agent.runtime.instructions import RepositoryInstructionResolver
 from osc_agent.runtime.session_store import ToolResultStore
-from osc_agent.tools.process import ProcessRunner
+from osc_agent.tools.process_runner import ProcessRunner
 
 
-def build_core_tool_registry(
+def build_tool_registry(
     *,
     worktree_manager: WorktreeManager,
     tool_result_store: ToolResultStore,

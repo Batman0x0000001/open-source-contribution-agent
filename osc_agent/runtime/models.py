@@ -1,3 +1,5 @@
+"""定义 Runtime 消息、工具调用、权限和会话状态模型。"""
+
 from __future__ import annotations
 
 from typing import Annotated, Literal, TypeAlias

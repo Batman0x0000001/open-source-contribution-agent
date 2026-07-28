@@ -1,3 +1,5 @@
+"""启动并监管 Bot 控制面、Outbox 与 Worker 长驻服务。"""
+
 from __future__ import annotations
 
 import asyncio

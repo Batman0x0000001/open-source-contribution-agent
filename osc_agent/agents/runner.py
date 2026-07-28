@@ -1,3 +1,5 @@
+"""通过共享 Agent Runtime 执行已注册的子 Agent。"""
+
 from __future__ import annotations
 
 import asyncio

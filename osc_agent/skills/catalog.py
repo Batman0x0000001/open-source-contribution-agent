@@ -1,3 +1,5 @@
+"""合并并查询内置、用户与项目级 Skill。"""
+
 from __future__ import annotations
 
 from osc_agent.skills.loader import SkillLoader

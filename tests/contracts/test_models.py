@@ -1,3 +1,5 @@
+"""验证Runtime 数据模型的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import pytest

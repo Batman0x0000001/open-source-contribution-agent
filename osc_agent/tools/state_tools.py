@@ -1,3 +1,5 @@
+"""提供延迟读取大型工具结果的状态工具。"""
+
 from __future__ import annotations
 
 from pydantic import Field

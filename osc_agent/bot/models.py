@@ -1,3 +1,5 @@
+"""定义 Bot 作业、执行合同、仓库策略和发布产物模型。"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -64,7 +66,7 @@ class RepositoryBotConfig(FrozenContractModel):
     def validate_commands_and_paths(self) -> "RepositoryBotConfig":
         if any(not command.strip() for command in self.validation_commands):
             raise ValueError("validation commands must be non-empty")
-        from osc_agent.tools.process import CommandKind, classify_command
+        from osc_agent.tools.process_runner import CommandKind, classify_command
 
         if not any(classify_command(command) == CommandKind.TEST for command in self.validation_commands):
             raise ValueError("validation commands must include at least one recognized test command")

@@ -1,3 +1,5 @@
+"""提供 Bot 指标、审计事件和运行状态观测能力。"""
+
 from __future__ import annotations
 
 import json

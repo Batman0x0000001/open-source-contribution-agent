@@ -1,3 +1,5 @@
+"""验证GitHub 工具的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +9,7 @@ import subprocess
 import osc_agent.tools.github as github_module
 from osc_agent.runtime.models import RuntimeMessage, ToolResultBlock, ToolUseBlock, ToolUseContext
 from osc_agent.runtime.tool_execution import ToolExecutor
-from tests.contracts.registry_factory import build_test_tool_registry as build_core_tool_registry
+from tests.contracts.registry_factory import build_test_tool_registry
 from osc_agent.tools.github import GitHubGetIssueInput, GitHubListIssuesInput
 
 
@@ -27,7 +29,7 @@ def context(tmp_path: Path) -> ToolUseContext:
 
 
 def test_github_tools_are_read_only_and_concurrency_safe() -> None:
-    registry = build_core_tool_registry()
+    registry = build_test_tool_registry()
     list_tool = registry.get("github_list_issues")
     get_tool = registry.get("github_get_issue")
 
@@ -50,7 +52,7 @@ def test_github_external_json_is_normalized_before_runtime(monkeypatch, tmp_path
         "fetch_issue",
         lambda repo_url, issue_number, max_comments: {"ok": True, "issue": ISSUE},
     )
-    executor = ToolExecutor(build_core_tool_registry())
+    executor = ToolExecutor(build_test_tool_registry())
 
     async def run():
         listed = await executor.execute(
@@ -101,7 +103,7 @@ def test_github_tool_rejects_non_github_url_before_network(monkeypatch, tmp_path
 
     monkeypatch.setattr(github_module, "fetch_issues", unexpected)
     result = asyncio.run(
-        ToolExecutor(build_core_tool_registry()).execute(
+        ToolExecutor(build_test_tool_registry()).execute(
             ToolUseBlock(
                 id="list-1",
                 name="github_list_issues",
@@ -122,7 +124,7 @@ def test_github_read_failure_is_structured(monkeypatch, tmp_path: Path) -> None:
         lambda repo_url, issue_number, max_comments: {"ok": False, "error": "rate limited", "issue": {}},
     )
     result = asyncio.run(
-        ToolExecutor(build_core_tool_registry()).execute(
+        ToolExecutor(build_test_tool_registry()).execute(
             ToolUseBlock(
                 id="get-1",
                 name="github_get_issue",
@@ -182,7 +184,7 @@ def test_remote_mismatch_requires_structured_user_confirmation(
         "fetch_issue",
         lambda repo_url, issue_number, max_comments: {"ok": True, "issue": ISSUE},
     )
-    executor = ToolExecutor(build_core_tool_registry())
+    executor = ToolExecutor(build_test_tool_registry())
     call = ToolUseBlock(
         id="get",
         name="github_get_issue",

@@ -1,4 +1,4 @@
-"""复用统一 Query Runtime 的 Agent 执行层。"""
+"""导出子 Agent 定义、注册表与运行器的公共接口。"""
 
 from osc_agent.agents.definitions import AgentDefinition, AgentInvocation, AgentRunResult
 from osc_agent.agents.registry import AgentRegistration, AgentRegistry

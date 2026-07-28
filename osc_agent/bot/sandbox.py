@@ -1,3 +1,5 @@
+"""在受限 Docker 容器中执行仓库命令。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +13,7 @@ from typing import Callable
 
 from osc_agent.bot.models import RepositoryBotConfig
 from osc_agent.runtime.models import ToolUseContext
-from osc_agent.tools.process import (
+from osc_agent.tools.process_runner import (
     CommandResult,
     ProcessRequest,
     ProcessRunner,

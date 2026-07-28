@@ -1,3 +1,5 @@
+"""将文件系统操作封装为带校验、权限和上下文更新的 Runtime 工具。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -24,7 +26,7 @@ from osc_agent.runtime.models import (
     ValidationSuccess,
 )
 from osc_agent.runtime.tool import BaseTool
-from osc_agent.tools.files import edit_file, glob_files, write_file
+from osc_agent.tools.filesystem_operations import edit_file, glob_files, write_file
 
 
 class ReadFileInput(ContractModel):

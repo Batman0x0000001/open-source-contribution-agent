@@ -1,3 +1,5 @@
+"""验证Bot Worker的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -85,7 +87,7 @@ def test_worker_uses_independent_phase_slots_and_graceful_shutdown(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    import osc_agent.bot.server as server_module
+    import osc_agent.bot.service_runner as server_module
 
     started = asyncio.Event()
     slot_names: set[str] = set()

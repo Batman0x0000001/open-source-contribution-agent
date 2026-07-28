@@ -1,8 +1,9 @@
+"""验证工具核心协议与执行的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import asyncio
 
-import pytest
 from pydantic import Field
 
 from osc_agent.runtime.hooks import HookBlock, HookContinue, HookRegistry

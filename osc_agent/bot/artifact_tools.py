@@ -1,3 +1,5 @@
+"""提供提交规划产物和交付草稿的 Bot 专用工具。"""
+
 from __future__ import annotations
 
 import asyncio

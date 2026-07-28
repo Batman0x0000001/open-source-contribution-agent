@@ -1,3 +1,5 @@
+"""执行工具输入校验、权限检查、Hook 和输出校验流水线。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

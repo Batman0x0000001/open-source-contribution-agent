@@ -1,3 +1,5 @@
+"""构建用于只读代码探索的 Explore Agent 注册信息。"""
+
 from __future__ import annotations
 
 import json

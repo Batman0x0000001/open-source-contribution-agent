@@ -1,3 +1,5 @@
+"""构建模型上下文并管理会话记录和大型工具结果。"""
+
 from __future__ import annotations
 
 import json

@@ -1,3 +1,5 @@
+"""提供进入和退出隔离 Git worktree 的工具。"""
+
 from __future__ import annotations
 
 import asyncio

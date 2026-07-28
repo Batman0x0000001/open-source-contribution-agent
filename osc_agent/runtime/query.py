@@ -1,3 +1,5 @@
+"""实现模型请求、工具执行、结果回填和停止判定的主循环。"""
+
 from __future__ import annotations
 
 import asyncio

@@ -1,1 +1,1 @@
-"""Project test package."""
+"""定义项目测试包。"""

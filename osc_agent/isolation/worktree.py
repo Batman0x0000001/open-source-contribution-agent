@@ -1,3 +1,5 @@
+"""使用 Git worktree 创建和销毁隔离执行目录。"""
+
 from __future__ import annotations
 
 import re
@@ -5,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 from osc_agent.runtime.models import WorktreeSession
-from osc_agent.tools.process import build_subprocess_environment
+from osc_agent.tools.process_runner import build_subprocess_environment
 
 
 class WorktreeManager:

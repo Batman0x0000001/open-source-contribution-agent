@@ -1,8 +1,9 @@
+"""实现 GitHub App 身份认证、安装令牌和 API 请求。"""
+
 from __future__ import annotations
 
 import base64
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 import re
 from typing import Any, Protocol
 

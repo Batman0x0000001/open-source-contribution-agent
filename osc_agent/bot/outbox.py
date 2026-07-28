@@ -1,3 +1,5 @@
+"""可靠投递 Bot Outbox 事件并处理重试与死信。"""
+
 from __future__ import annotations
 
 import asyncio

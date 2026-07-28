@@ -1,13 +1,15 @@
 # Open Source Contribution Agent
 
-一个采用 Claude Code 最小通用设计的 Python Agent：入口 Skill、子 Agent 和 Tool 全部复用同一个 `AgentRuntime`，完整 Session transcript 是唯一恢复依据。
+一个采用统一 Runtime 设计的 Python Agent：入口 Skill、子 Agent 和 Tool 全部复用同一个 `AgentRuntime`，完整 Session transcript 是唯一恢复依据。
+
+> 当前项目与文档基线：`0.2.4`。
 
 > 当前版本定位为 Ubuntu Bot 优先、本地 CLI 仅用于调试。Bash 在 Linux Host 上执行，
 > 环境变量经过白名单过滤，但本地 CLI 没有 OS Sandbox；不要用它执行
 > 恶意或不可信仓库中的命令。
 
-V9 另提供可选的 GitHub App 服务端扩展。它把 Webhook/发布凭据、Agent Worker 和无网络
-Docker 仓库命令分成独立边界；该扩展不会改变本地 CLI，也不会自动合并 PR。
+`0.2.4` 提供可选的 GitHub App 服务端能力。它把 Webhook/发布凭据、Agent Worker 和无网络
+Docker 仓库命令分成独立边界；该能力不会改变本地 CLI，也不会自动合并 PR。
 
 ## 架构
 
@@ -136,13 +138,13 @@ Bot 是生产主入口；CLI 保留为本地调试入口。机器人只接受具
 
 每个 Issue 同时只允许一个活动 Job。Plan 是无 Docker 的只读 Session；Implementation 使用
 全新的 Session。每个仓库必须显式配置完整的 `sha256:<64 hex>` 不可变执行镜像 ID、至少
-一条测试命令和 `pull_request_mode: draft|ready`。首版不支持 auto-merge。
+一条测试命令和 `pull_request_mode: draft|ready`。当前版本不支持 auto-merge。
 Control 不访问 Docker；Worker 在运行 Job 前验证本机镜像与该 ID 精确一致。Plan Session 永久只读；
 Implementation 使用全新的 Session 和 clone。模型与 API Key 留在 Worker 宿主进程，项目
 命令在 `--network none`、只读 root filesystem、只读 `.git` 的临时 Docker 容器中运行。
 只有 Control/Publisher 能读取 GitHub App 私钥、commit、push 和创建 Draft PR。
 
-Ubuntu 双用户、systemd、Nginx、权限与阿里云安全组配置见
+Ubuntu 双用户、systemd、Nginx、权限与云服务器安全组配置见
 `deploy/ubuntu/README.md`。这部分需要独立部署授权；源码不会注册 GitHub App 或修改服务器。
 
 ## 验证

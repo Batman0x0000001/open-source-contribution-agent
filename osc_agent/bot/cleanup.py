@@ -1,7 +1,8 @@
+"""清理过期 Bot 作业、工作区和相关运行状态。"""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 import shutil
 
 from osc_agent.bot.config import BotSettings

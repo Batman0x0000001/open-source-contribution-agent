@@ -1,3 +1,5 @@
+"""领取并执行规划或实现阶段的 Bot 作业。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +9,7 @@ from typing import Literal
 from uuid import uuid4
 
 from osc_agent.agents.explore import build_explore_registration
-from osc_agent.agent_application import AgentRunProfile, AgentRunSpec, RunEnvironment, build_agent_application
+from osc_agent.agent_service import AgentRunProfile, AgentRunSpec, RunEnvironment, build_agent_application
 from osc_agent.bot.config import BotWorkerSettings
 from osc_agent.bot.models import (
     OutboxEvent,
@@ -17,14 +19,14 @@ from osc_agent.bot.models import (
 from osc_agent.bot.policy import BotPermissionPolicy, BotRepositoryPolicyHook, ConfiguredValidationStopHook
 from osc_agent.bot.sandbox import DockerProcessRunner, resolve_image_id
 from osc_agent.bot.store import BotStore, SqliteSessionStore
-from osc_agent.bot.tools import SubmitDeliveryDraftTool, SubmitIssuePlanTool
+from osc_agent.bot.artifact_tools import SubmitDeliveryDraftTool, SubmitIssuePlanTool
 from osc_agent.config import Settings
 from osc_agent.runtime.gateway import ModelGateway
 from osc_agent.runtime.models import (
     RunCompleted,
     RunStopped,
 )
-from osc_agent.tools.process import DisabledProcessRunner
+from osc_agent.tools.process_runner import DisabledProcessRunner
 
 
 class BotWorker:

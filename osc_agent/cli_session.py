@@ -1,3 +1,5 @@
+"""管理本地 CLI 会话的启动、恢复和事件输出。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,8 +9,8 @@ from pathlib import Path
 
 import typer
 
-from osc_agent.application import ApplicationServices
-from osc_agent.agent_application import AgentApplicationService, AgentRunSpec, InboundMessage
+from osc_agent.composition import ApplicationServices
+from osc_agent.agent_service import AgentApplicationService, AgentRunSpec, InboundMessage
 from osc_agent.runtime.models import (
     AssistantDelta,
     ContextCompacted,
@@ -184,7 +186,7 @@ def render_session_summary(summary: SessionSummary, repository_root: Path) -> No
         + (", ".join(summary.touched_files) if summary.touched_files else "not collected")
     )
     typer.echo(
-        f"Test: "
+        "Test: "
         + (
             ("PASS" if summary.last_test_success else "FAIL")
             if summary.last_test_success is not None

@@ -1,3 +1,5 @@
+"""提供只读 GitHub Issue 查询工具。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -25,7 +27,7 @@ from osc_agent.runtime.models import (
     ValidationSuccess,
 )
 from osc_agent.runtime.tool import BaseTool
-from osc_agent.tools.process import build_subprocess_environment
+from osc_agent.tools.process_runner import build_subprocess_environment
 
 
 class GitHubIssue(ContractModel):

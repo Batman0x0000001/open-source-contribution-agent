@@ -1,3 +1,5 @@
+"""持久化会话记录和可延迟读取的工具结果。"""
+
 from __future__ import annotations
 
 import json

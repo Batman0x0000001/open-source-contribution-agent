@@ -1,3 +1,5 @@
+"""从环境变量加载应用基础配置。"""
+
 from __future__ import annotations
 
 from pathlib import Path

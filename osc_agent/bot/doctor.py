@@ -1,3 +1,5 @@
+"""检查 Bot 控制面和 Worker 的部署依赖与配置。"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable

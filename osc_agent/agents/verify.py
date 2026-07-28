@@ -1,3 +1,5 @@
+"""构建用于独立验证改动的 Verify Agent 注册信息。"""
+
 from __future__ import annotations
 
 import json

@@ -1,3 +1,5 @@
+"""定义并调度工具调用前后及会话停止 Hook。"""
+
 from __future__ import annotations
 
 from typing import Awaitable, Callable, Literal

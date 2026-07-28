@@ -1,3 +1,5 @@
+"""验证贡献任务端到端流程的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -8,7 +10,7 @@ import subprocess
 
 import pytest
 
-from osc_agent.application import build_application
+from osc_agent.composition import build_application
 from osc_agent.config import Settings
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
 from osc_agent.runtime.models import (

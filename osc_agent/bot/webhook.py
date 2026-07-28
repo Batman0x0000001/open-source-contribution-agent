@@ -1,3 +1,5 @@
+"""验证并解析 GitHub Webhook 请求。"""
+
 from __future__ import annotations
 
 import hashlib

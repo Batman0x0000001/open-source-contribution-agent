@@ -1,3 +1,5 @@
+"""从 YAML 加载 Runtime 轮次、令牌和重试限制。"""
+
 from __future__ import annotations
 
 from pathlib import Path

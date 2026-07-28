@@ -1,3 +1,5 @@
+"""定义 osc-agent 命令行入口及其子命令。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -14,19 +16,18 @@ from uuid import uuid4
 import typer
 from pydantic import JsonValue
 
-from osc_agent.application import (
+from osc_agent.composition import (
     build_session_store,
     build_skill_catalog,
 )
-from osc_agent.agent_application import AgentRunProfile, AgentRunSpec, InboundMessage, build_agent_application
-from osc_agent.agent_application import RunEnvironment
+from osc_agent.agent_service import AgentRunProfile, AgentRunSpec, InboundMessage, build_agent_application
+from osc_agent.agent_service import RunEnvironment
 from osc_agent.cli_session import render_session_summary, run_conversation
 from osc_agent.config import load_settings
 from osc_agent.doctor import run_doctor
 from osc_agent.runtime.models import (
     ApprovalResponse,
     Ask,
-    CapabilityScope,
     RuntimeMessage,
     TextBlock,
     ToolResultBlock,
@@ -35,7 +36,7 @@ from osc_agent.runtime.models import (
 from osc_agent.runtime.session_summary import build_session_summary
 
 
-app = typer.Typer(help="Claude Code style extensible coding agent.")
+app = typer.Typer(help="Extensible coding agent for open-source contribution workflows.")
 skill_app = typer.Typer(help="List and run validated Skills.")
 session_app = typer.Typer(help="Inspect repository-scoped Sessions.")
 bot_app = typer.Typer(help="Run the optional GitHub App control and worker services.")
@@ -391,7 +392,7 @@ def bot_serve() -> None:
 
     try:
         from osc_agent.bot.config import BotSettings
-        from osc_agent.bot.server import run_control_forever
+        from osc_agent.bot.service_runner import run_control_forever
 
         settings = BotSettings()
     except (ImportError, ValueError) as exc:
@@ -404,7 +405,7 @@ def bot_worker() -> None:
     """Run the trusted Agent worker without loading GitHub App credentials."""
 
     from osc_agent.bot.config import BotWorkerSettings
-    from osc_agent.bot.server import run_worker_forever
+    from osc_agent.bot.service_runner import run_worker_forever
 
     try:
         asyncio.run(run_worker_forever(BotWorkerSettings()))

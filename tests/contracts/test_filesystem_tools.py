@@ -1,3 +1,5 @@
+"""验证文件系统工具的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -5,8 +7,8 @@ from pathlib import Path
 
 from osc_agent.runtime.models import ApprovalResponse, Ask, ToolUseBlock, ToolUseContext
 from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
-from tests.contracts.registry_factory import build_test_tool_registry as build_core_tool_registry
-from osc_agent.tools.file_tools import (
+from tests.contracts.registry_factory import build_test_tool_registry
+from osc_agent.tools.filesystem_tools import (
     EditFileInput,
     GlobInput,
     ReadFileInput,
@@ -20,7 +22,7 @@ def context(root: Path) -> ToolUseContext:
 
 
 def test_core_registry_has_one_authoritative_definition_per_migrated_tool() -> None:
-    registry = build_core_tool_registry()
+    registry = build_test_tool_registry()
 
     assert registry.get("read_file").input_model is ReadFileInput
     assert registry.get("write_file").input_model is WriteFileInput
@@ -54,7 +56,7 @@ def test_core_registry_has_one_authoritative_definition_per_migrated_tool() -> N
 def test_read_file_is_input_sensitive_behavior_object(tmp_path: Path) -> None:
     (tmp_path / "example.txt").write_text("abcdef", encoding="utf-8")
     tool = ReadFileTool()
-    executor = ToolExecutor(build_core_tool_registry())
+    executor = ToolExecutor(build_test_tool_registry())
 
     result = asyncio.run(
         executor.execute(
@@ -78,8 +80,8 @@ def test_read_file_is_input_sensitive_behavior_object(tmp_path: Path) -> None:
     }
 
 
-def test_write_file_requires_permission_and_uses_atomic_legacy_algorithm(tmp_path: Path) -> None:
-    registry = build_core_tool_registry()
+def test_write_file_requires_permission_and_uses_atomic_write(tmp_path: Path) -> None:
+    registry = build_test_tool_registry()
     denied = ToolExecutor(registry)
     call = ToolUseBlock(
         id="write-1",
@@ -106,7 +108,7 @@ def test_write_file_requires_permission_and_uses_atomic_legacy_algorithm(tmp_pat
 
 
 def test_file_tools_reject_noncanonical_and_escaping_paths_before_call(tmp_path: Path) -> None:
-    executor = ToolExecutor(build_core_tool_registry())
+    executor = ToolExecutor(build_test_tool_registry())
 
     result = asyncio.run(
         executor.execute(
@@ -120,7 +122,7 @@ def test_file_tools_reject_noncanonical_and_escaping_paths_before_call(tmp_path:
 
 
 def test_file_tool_pydantic_contract_rejects_implicit_types(tmp_path: Path) -> None:
-    executor = ToolExecutor(build_core_tool_registry())
+    executor = ToolExecutor(build_test_tool_registry())
 
     result = asyncio.run(
         executor.execute(
@@ -143,7 +145,7 @@ def test_edit_file_requires_approval_and_replaces_once(tmp_path: Path) -> None:
     async def approve(decision: Ask) -> ApprovalResponse:
         return ApprovalResponse(choice="allow_once")
 
-    registry = build_core_tool_registry()
+    registry = build_test_tool_registry()
     executor = ToolExecutor(
         registry,
         dependencies=ToolExecutionDependencies(approval_handler=approve),
@@ -180,7 +182,7 @@ def test_glob_returns_structured_paths_and_is_concurrency_safe(tmp_path: Path) -
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "b.py").write_text("", encoding="utf-8")
     (tmp_path / "src" / "a.py").write_text("", encoding="utf-8")
-    registry = build_core_tool_registry()
+    registry = build_test_tool_registry()
     tool = registry.get("glob")
 
     result = asyncio.run(
@@ -203,7 +205,7 @@ def test_partial_read_cannot_authorize_an_existing_file_edit(tmp_path: Path) -> 
         return ApprovalResponse(choice="allow_once")
 
     executor = ToolExecutor(
-        build_core_tool_registry(),
+        build_test_tool_registry(),
         dependencies=ToolExecutionDependencies(approval_handler=approve),
     )
     read = asyncio.run(
@@ -242,7 +244,7 @@ def test_external_change_after_read_is_rejected(tmp_path: Path) -> None:
         return ApprovalResponse(choice="allow_once")
 
     executor = ToolExecutor(
-        build_core_tool_registry(),
+        build_test_tool_registry(),
         dependencies=ToolExecutionDependencies(approval_handler=approve),
     )
     read = asyncio.run(
@@ -281,7 +283,7 @@ def test_new_nested_instruction_blocks_first_write_and_activates_context(
         return ApprovalResponse(choice="allow_once")
 
     executor = ToolExecutor(
-        build_core_tool_registry(),
+        build_test_tool_registry(),
         dependencies=ToolExecutionDependencies(approval_handler=approve),
     )
     result = asyncio.run(

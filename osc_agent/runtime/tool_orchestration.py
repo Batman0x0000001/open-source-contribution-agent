@@ -1,10 +1,10 @@
+"""对模型请求的多个工具调用进行分组和安全调度。"""
+
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
 from typing import AsyncIterator
-
-from pydantic import ValidationError
 
 from osc_agent.runtime.models import (
     ContextUpdate,

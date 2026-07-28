@@ -1,3 +1,5 @@
+"""加载并校验 GitHub Bot、Worker 与仓库策略配置。"""
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,3 +1,5 @@
+"""统一计算仓库级运行状态与会话目录。"""
+
 from __future__ import annotations
 
 import hashlib

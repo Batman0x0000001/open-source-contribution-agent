@@ -1,3 +1,5 @@
+"""验证Bot 端到端流程的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import asyncio

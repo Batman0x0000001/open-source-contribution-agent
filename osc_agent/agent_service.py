@@ -1,3 +1,5 @@
+"""封装面向 CLI 与 GitHub Bot 的 Agent 运行请求和流式执行服务。"""
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
@@ -8,7 +10,7 @@ from typing import Literal
 from pydantic import Field, JsonValue
 
 from osc_agent.agents.registry import AgentRegistration
-from osc_agent.application import (
+from osc_agent.composition import (
     ApplicationServices,
     ApprovalHandler,
     QuestionHandler,
@@ -31,7 +33,7 @@ from osc_agent.runtime.hooks import PreToolHook, StopHook
 from osc_agent.runtime.permissions import PermissionPolicy
 from osc_agent.runtime.session_store import SessionStore
 from osc_agent.runtime.tool import Tool
-from osc_agent.tools.process import ProcessRunner
+from osc_agent.tools.process_runner import ProcessRunner
 
 
 class InboundMessage(FrozenContractModel):

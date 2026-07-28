@@ -1,3 +1,5 @@
+"""校验仓库相对路径并阻止越界文件访问。"""
+
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath, PureWindowsPath

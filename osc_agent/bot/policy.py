@@ -1,3 +1,5 @@
+"""实施 Bot 工具权限、仓库约束和完成验证策略。"""
+
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath, PureWindowsPath

@@ -1,3 +1,5 @@
+"""生成会话压缩摘要并保留关键运行证据。"""
+
 from __future__ import annotations
 
 from pydantic import Field

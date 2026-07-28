@@ -1,3 +1,5 @@
+"""验证Bot Outbox 投递的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import asyncio

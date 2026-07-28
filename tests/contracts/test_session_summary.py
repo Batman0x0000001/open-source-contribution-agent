@@ -1,3 +1,5 @@
+"""验证会话摘要的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 from osc_agent.runtime.models import (

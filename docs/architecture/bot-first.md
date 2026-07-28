@@ -1,5 +1,7 @@
 # Bot-first architecture
 
+本文描述 Open Source Contribution Agent `0.2.4` 的生产架构。
+
 The GitHub App is the production product. The local CLI is a debugging adapter. Both enter the
 same `AgentApplicationService`, which wraps the existing `build_application` composition factory
 and is the only production caller of `AgentRuntime.query`.
@@ -36,5 +38,5 @@ Docker, Process, write, approval, or implementation capabilities.
 
 ## Publication
 
-Repositories explicitly select `draft` or `ready`. The first Bot release does not accept an
+Repositories explicitly select `draft` or `ready`. The current release does not accept an
 `auto_merge` setting and never calls merge APIs.

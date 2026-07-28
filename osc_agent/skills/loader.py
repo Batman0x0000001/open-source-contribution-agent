@@ -1,3 +1,5 @@
+"""从 SKILL.md 加载 Skill 清单和正文。"""
+
 from __future__ import annotations
 
 from pathlib import Path

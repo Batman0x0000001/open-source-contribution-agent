@@ -1,3 +1,5 @@
+"""创建、定位和清理 Bot 作业的 Git worktree 工作区。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -9,7 +11,7 @@ from uuid import uuid4
 from osc_agent.bot.github_app import GitHubControlClient, basic_git_auth_header
 from osc_agent.bot.models import BotJob
 from osc_agent.bot.store import BotStore
-from osc_agent.tools.process import build_subprocess_environment
+from osc_agent.tools.process_runner import build_subprocess_environment
 
 
 class WorkspacePreparer:

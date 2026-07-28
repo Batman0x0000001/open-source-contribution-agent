@@ -1,3 +1,5 @@
+"""提供 Git 状态、差异、历史和工作区指纹工具。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +15,7 @@ from pydantic import Field
 from osc_agent.runtime.models import ContractModel, ToolError, ToolResult, ToolUseContext
 from osc_agent.runtime.session_store import ToolResultStore
 from osc_agent.runtime.tool import BaseTool
-from osc_agent.tools.process import build_subprocess_environment
+from osc_agent.tools.process_runner import build_subprocess_environment
 
 
 MAX_GIT_OUTPUT_CHARS = 50_000

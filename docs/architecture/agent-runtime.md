@@ -1,8 +1,8 @@
-# Claude Code 最小核心架构
+# Agent Runtime 核心架构
 
 ## 目的
 
-本文档定义本项目从 Claude Code 2.1.88 还原源码中提炼的最小通用 Agent 架构。还原源码并不代表 Anthropic 的原始内部仓库结构，因此本项目只把可观察的运行机制和职责边界作为参考，不机械复制文件布局或产品功能。
+本文档定义 Open Source Contribution Agent `0.2.4` 的通用 Agent 核心，以及 Runtime、Tool、Context、Skill、Agent 和 Session 之间的稳定职责边界。
 
 ## 核心数据流
 

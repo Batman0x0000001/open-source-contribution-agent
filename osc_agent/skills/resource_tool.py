@@ -1,3 +1,5 @@
+"""向 Agent 提供受控的 Skill 资源读取工具。"""
+
 from __future__ import annotations
 
 from pathlib import Path

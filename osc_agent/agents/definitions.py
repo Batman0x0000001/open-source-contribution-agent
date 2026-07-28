@@ -1,3 +1,5 @@
+"""定义子 Agent 的调用参数、运行结果和静态配置。"""
+
 from __future__ import annotations
 
 from typing import Literal

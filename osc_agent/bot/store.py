@@ -1,3 +1,5 @@
+"""使用 SQLite 持久化 Bot 作业、会话、事件和 Outbox 数据。"""
+
 from __future__ import annotations
 
 from contextlib import contextmanager

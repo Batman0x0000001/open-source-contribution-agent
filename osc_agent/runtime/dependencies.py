@@ -1,3 +1,5 @@
+"""集中声明一次 Query 执行所需的运行时依赖。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

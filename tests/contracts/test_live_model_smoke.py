@@ -1,3 +1,5 @@
+"""验证真实模型冒烟流程的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 
-from osc_agent.application import build_application
+from osc_agent.composition import build_application
 from osc_agent.config import load_settings
 from osc_agent.runtime.models import (
     RunCompleted,

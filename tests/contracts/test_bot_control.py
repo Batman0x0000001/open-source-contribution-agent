@@ -1,3 +1,5 @@
+"""验证Bot 控制面的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -101,7 +103,7 @@ def test_control_creates_plan_and_bound_implementation_approval(tmp_path: Path) 
     running = store.transition(
         job_id=job_id, expected_version=job.version, status="running_plan"
     )
-    waiting = store.transition(
+    store.transition(
         job_id=job_id,
         expected_version=running.version,
         status="waiting_approval",

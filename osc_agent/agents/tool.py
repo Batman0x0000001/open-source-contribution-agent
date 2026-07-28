@@ -1,3 +1,5 @@
+"""将子 Agent 调用封装为主 Runtime 可使用的 agent 工具。"""
+
 from __future__ import annotations
 
 import asyncio

@@ -1,3 +1,5 @@
+"""处理 GitHub 命令、作业编排和控制面状态转换。"""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone

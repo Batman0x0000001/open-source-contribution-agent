@@ -1,3 +1,5 @@
+"""定义工具调用的权限决策接口和默认策略。"""
+
 from __future__ import annotations
 
 from typing import Protocol

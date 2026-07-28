@@ -1,10 +1,12 @@
 # Ubuntu 单机部署
 
-推荐从源码发布目录运行 `sudo ./deploy/ubuntu/install.sh --config /etc/osc-agent/config.yml`，
-再分别执行 Control/Worker doctor。升级采用停机归档和 epoch 2 原子重建，不支持新旧版本
-混跑。Prometheus 告警模板见 `prometheus-alerts.yml`。
+本文适用于 Open Source Contribution Agent `0.2.4`。
 
-V9 面向一台 Ubuntu 主机和 SQLite WAL。Control 与 Worker 必须使用不同 OS 用户：Control
+推荐从源码发布目录运行 `sudo ./deploy/ubuntu/install.sh --config /etc/osc-agent/config.yml`，
+再分别执行 Control/Worker doctor。升级采用停机归档和当前状态模型的原子重建，不支持不同
+状态模型混跑。Prometheus 告警模板见 `prometheus-alerts.yml`。
+
+当前部署面向一台 Ubuntu 主机和 SQLite WAL。Control 与 Worker 必须使用不同 OS 用户：Control
 持有 GitHub App 私钥但没有 Docker 权限；Worker 可调用 Docker，但其环境文件不包含任何
 GitHub App 私钥、Webhook Secret 或 Publisher 身份。
 
@@ -62,7 +64,7 @@ sudo systemctl reload nginx
 升级维护标记固定为 `/run/osc-agent-webhook-maintenance`。不要把它放到权限为 `0750`
 的 `/etc/osc-agent`；非特权 Nginx Worker 无法检查该目录中的文件，维护开关会失效。
 
-阿里云安全组只公开 HTTPS 443；SSH 22 仅允许管理来源 IP。8080 仅监听
+云服务器安全组只公开 HTTPS 443；SSH 22 仅允许管理来源 IP。8080 仅监听
 `127.0.0.1`。SQLite、Docker API 和任何内部端口不得公开。Control 需要访问 GitHub API，
 Worker 宿主进程需要访问模型 API；Docker 仓库命令始终完全断网。
 
@@ -83,9 +85,9 @@ osc-agent deploy archive-state
 osc-agent deploy reset-state --confirm
 ```
 
-Epoch 2 升级不迁移运行中的 Job。`upgrade.sh` 先让 Webhook 返回 503，同时停止 Control 与
+当前状态模型的升级不迁移运行中的 Job。`upgrade.sh` 先让 Webhook 返回 503，同时停止 Control 与
 Worker，持有升级锁并归档 SQLite/WAL/SHM/workspace；随后原子切换 release symlink、重建
-epoch 2 数据库，按 Control→Worker 顺序启动，通过 smoke 后才恢复 Webhook。旧状态仅用于
+当前数据库，按 Control→Worker 顺序启动，通过 smoke 后才恢复 Webhook。归档状态仅用于
 归档审计：`waiting_implementation → waiting_approval`、`blocked → blocked_plan`、
 `failed → dead_letter`，不会作为可恢复 Job 导入新库。
 新建 SQLite 使用共享组可写的 `0660`，workspace 根目录使用 `2770`，因此 Control 与 Worker

@@ -1,3 +1,5 @@
+"""提供受权限和资源策略约束的 Bash 命令工具。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -22,7 +24,7 @@ from osc_agent.runtime.models import (
 )
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.tools.git import git_workspace_fingerprint
-from osc_agent.tools.process import (
+from osc_agent.tools.process_runner import (
     HostProcessRunner,
     ProcessRunner,
     ProcessRequest,

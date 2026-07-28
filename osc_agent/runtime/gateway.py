@@ -1,3 +1,5 @@
+"""定义模型流式调用协议、事件和重试网关。"""
+
 from __future__ import annotations
 
 import asyncio

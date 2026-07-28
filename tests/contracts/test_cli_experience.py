@@ -1,3 +1,5 @@
+"""验证命令行交互体验的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
@@ -145,7 +147,7 @@ def test_resume_latest_resolves_repository_scoped_session(
 ) -> None:
     state = tmp_path / "state"
     monkeypatch.setenv("OSC_AGENT_STATE_DIR", str(state))
-    from osc_agent.application import build_session_store
+    from osc_agent.composition import build_session_store
 
     store = build_session_store(tmp_path)
     store.create(

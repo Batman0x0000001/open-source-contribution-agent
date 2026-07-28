@@ -1,3 +1,5 @@
+"""定义工具协议、基础实现和工具注册表。"""
+
 from __future__ import annotations
 
 from abc import abstractmethod
@@ -63,7 +65,7 @@ class Tool(Protocol[InputT, OutputT]):
 
 
 class BaseTool(Generic[InputT, OutputT]):
-    """提供 Claude Code buildTool 风格的保守默认值。"""
+    """为带输入输出契约的 Runtime 工具提供保守默认行为。"""
 
     name: str
     description: str = "Execute this Tool using its validated input and output contracts."

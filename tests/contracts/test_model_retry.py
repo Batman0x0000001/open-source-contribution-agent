@@ -1,3 +1,5 @@
+"""验证模型请求重试的契约、边界条件与回归行为。"""
+
 from __future__ import annotations
 
 import asyncio

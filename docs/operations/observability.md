@@ -1,5 +1,7 @@
 # Bot observability runbook
 
+本文适用于 Open Source Contribution Agent `0.2.4`。
+
 Control and Worker emit structured JSON. The stable envelope is `timestamp`, `level`, `service`,
 `event`, `job_id`, `session_id`, `repository`, `issue_number`, state transition, phase, attempt,
 duration, error code, GitHub delivery ID and execution-contract hash. Logs must not contain secrets,
