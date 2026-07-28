@@ -96,6 +96,8 @@ class ConfiguredValidationStopHook:
         self.commands = commands
 
     async def __call__(self, payload: StopHookPayload, context: ToolUseContext) -> StopHookResult:
+        if "successful_test" not in context.completion_requirements.required_evidence:
+            return StopHookResult()
         current = await asyncio.to_thread(
             git_workspace_fingerprint, repo_root=Path(context.working_directory)
         )

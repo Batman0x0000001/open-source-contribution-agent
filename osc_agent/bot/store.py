@@ -163,7 +163,7 @@ class BotStore:
             )
             connection.execute(
                 """INSERT OR IGNORE INTO schema_meta(singleton, schema_epoch, state_model_revision,
-                   application_version, created_at) VALUES(1, 2, 'bot-job-v2', '0.2.2', ?)""",
+                   application_version, created_at) VALUES(1, 2, 'bot-job-v2', '0.2.3', ?)""",
                 (utc_now(),),
             )
         if not database_exists:
