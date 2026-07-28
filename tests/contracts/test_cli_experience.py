@@ -109,13 +109,11 @@ def test_conversation_driver_reuses_session_for_follow_up(
     )
     resumed = []
 
-    class Runtime:
-        def query(self, params):
-            resumed.append(params)
-
+    class AgentApplication:
+        def run(self, spec):
+            resumed.append(spec)
             async def events() -> AsyncIterator[RuntimeEvent]:
                 yield RunCompleted(transition=Complete(reason="end_turn"))
-
             return events()
 
     async def initial() -> AsyncIterator[RuntimeEvent]:
@@ -123,7 +121,6 @@ def test_conversation_driver_reuses_session_for_follow_up(
 
     services = SimpleNamespace(
         session_store=store,
-        runtime=Runtime(),
         query_config=QueryConfig(),
     )
 
@@ -134,11 +131,12 @@ def test_conversation_driver_reuses_session_for_follow_up(
         initial_events=initial(),
         once=False,
         quiet=True,
+        agent_application=AgentApplication(),  # type: ignore[arg-type]
     )
 
     assert len(resumed) == 1
     assert resumed[0].session_id == "session-1"
-    assert resumed[0].messages[0].content[0].text == "follow up"
+    assert resumed[0].inbound_message.text == "follow up"
 
 
 def test_resume_latest_resolves_repository_scoped_session(
@@ -161,18 +159,19 @@ def test_resume_latest_resolves_repository_scoped_session(
     )
     captured = {}
 
-    class Runtime:
-        def query(self, params):
-            captured["params"] = params
+    class AgentApplication:
+        services = SimpleNamespace(query_config=QueryConfig())
 
+        def run(self, spec):
+            captured["spec"] = spec
             async def events():
                 if False:
                     yield None
-
             return events()
 
-    services = SimpleNamespace(runtime=Runtime(), query_config=QueryConfig())
-    monkeypatch.setattr("osc_agent.cli._application", lambda _repo: services)
+    monkeypatch.setattr(
+        "osc_agent.cli.build_agent_application", lambda **_kwargs: AgentApplication()
+    )
     monkeypatch.setattr(
         "osc_agent.cli.run_conversation",
         lambda **kwargs: captured.update(kwargs),

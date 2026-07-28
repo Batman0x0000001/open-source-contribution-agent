@@ -35,7 +35,7 @@ def test_summary_uses_only_successful_typed_tool_evidence() -> None:
                     ),
                     ToolUseBlock(
                         id="test",
-                        name="powershell",
+                        name="bash",
                         input={"command": "python -m pytest"},
                     ),
                     ToolUseBlock(id="snapshot", name="git_diff", input={}),

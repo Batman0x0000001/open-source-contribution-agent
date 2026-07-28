@@ -92,7 +92,10 @@ def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -
     assert "- verify:" in services.discovery_prompt
     assert "<external_content_policy>" in services.discovery_prompt
     assert "not user authorization" in services.discovery_prompt
-    assert [item.manifest.name for item in services.skill_catalog.list()] == ["open-source-contribution"]
+    assert [item.manifest.name for item in services.skill_catalog.list()] == [
+        "issue-planning",
+        "open-source-contribution",
+    ]
 
     contribution = services.skill_catalog.get("open-source-contribution")
     contribution_capabilities = CapabilityScope(
@@ -153,3 +156,19 @@ def test_cli_does_not_import_legacy_runtime_or_stage_functions() -> None:
     source = path.read_text(encoding="utf-8")
     for old_name in ("discover_stage", "design_stage", "implement_stage", "draft_pr_stage"):
         assert old_name not in source
+
+
+def test_product_entrypoints_use_agent_application_service_only() -> None:
+    for relative in ("osc_agent/cli.py", "osc_agent/bot/worker.py"):
+        source = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        called_names = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        assert "build_agent_application" in called_names
+        assert "build_application" not in called_names
+        assert "StartQueryParams" not in source
+        assert "ResumeQueryParams" not in source
+        assert ".runtime.query(" not in source

@@ -74,7 +74,7 @@ async def run_bot_worker_doctor(
 ) -> list[BotDoctorResult]:
     """检查 Worker、模型配置和本机不可变镜像。"""
 
-    results = _base_results(("git", "docker", "pwsh", "rg"))
+    results = _base_results(("git", "docker", "bash", "rg"))
     for name, configured in (
         ("MODEL_ID", bool(model_settings.model_id)),
         ("ANTHROPIC_API_KEY", bool(model_settings.anthropic_api_key)),

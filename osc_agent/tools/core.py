@@ -4,7 +4,7 @@ from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.tools.file_tools import EditFileTool, GlobTool, ReadFileTool, WriteFileTool
 from osc_agent.tools.git import GitDiffTool, GitLogTool, GitStatusTool
 from osc_agent.tools.github import GitHubGetIssueTool, GitHubListIssuesTool
-from osc_agent.tools.shell import ShellTool
+from osc_agent.tools.bash import BashTool
 from osc_agent.tools.interaction import AskUserQuestionTool, EnterPlanModeTool, ExitPlanModeTool, ReadPlanTool, WritePlanTool
 from osc_agent.tools.worktree_tools import EnterWorktreeTool, ExitWorktreeTool
 from osc_agent.tools.state_tools import ReadToolResultTool
@@ -33,7 +33,7 @@ def build_core_tool_registry(
             EditFileTool(instructions),
             GlobTool(),
             GrepTool(instructions),
-            ShellTool(
+            BashTool(
                 environment_allowlist=subprocess_env_allowlist,
                 process_runner=process_runner,
             ),

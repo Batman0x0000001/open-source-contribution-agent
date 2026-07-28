@@ -8,16 +8,14 @@ from pathlib import Path
 import typer
 
 from osc_agent.application import ApplicationServices
+from osc_agent.agent_application import AgentApplicationService, AgentRunSpec, InboundMessage
 from osc_agent.runtime.models import (
     AssistantDelta,
     ContextCompacted,
     ModelRequestStarted,
     ModelRetryScheduled,
-    ResumeQueryParams,
     RunStopped,
     RuntimeEvent,
-    RuntimeMessage,
-    TextBlock,
     ToolCompleted,
     ToolRequested,
 )
@@ -32,6 +30,7 @@ def run_conversation(
     initial_events: AsyncIterator[RuntimeEvent],
     once: bool,
     quiet: bool,
+    agent_application: AgentApplicationService,
 ) -> None:
     interactive = not once and sys.stdin.isatty()
     events = initial_events
@@ -56,17 +55,11 @@ def run_conversation(
             return
         if not prompt:
             continue
-        events = services.runtime.query(
-            ResumeQueryParams(
-                session_id=session_id,
+        events = agent_application.run(
+            AgentRunSpec(
+                profile="local_debug", session_id=session_id,
                 repository_root=str(repository_root),
-                messages=[
-                    RuntimeMessage(
-                        role="user",
-                        content=[TextBlock(text=prompt)],
-                    )
-                ],
-                config=services.query_config,
+                inbound_message=InboundMessage(source="cli", source_id=f"cli:{session_id}:{len(prompt)}", text=prompt),
             )
         )
 

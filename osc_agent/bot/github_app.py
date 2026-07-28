@@ -42,6 +42,7 @@ class GitHubControlClient(Protocol):
         body: str,
         head: str,
         base: str,
+        draft: bool = True,
     ) -> tuple[int, str]: ...
 
     async def find_pull_request(
@@ -146,6 +147,7 @@ class GitHubAppClient:
         body: str,
         head: str,
         base: str,
+        draft: bool = True,
     ) -> tuple[int, str]:
         data = await self._request(
             installation_id,
@@ -156,7 +158,7 @@ class GitHubAppClient:
                 "body": sanitize_github_markdown(body),
                 "head": head,
                 "base": base,
-                "draft": True,
+                "draft": draft,
             },
             contents="write",
         )

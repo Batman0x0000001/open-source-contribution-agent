@@ -34,7 +34,7 @@ def test_core_registry_has_one_authoritative_definition_per_migrated_tool() -> N
         "edit_file",
         "glob",
         "grep",
-        "powershell",
+        "bash",
         "git_status",
         "git_diff",
         "git_log",

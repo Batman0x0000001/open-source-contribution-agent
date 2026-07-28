@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 import shutil
 from typing import Literal
+from uuid import uuid4
 
 from osc_agent.bot.github_app import GitHubControlClient, basic_git_auth_header
 from osc_agent.bot.models import BotJob
@@ -25,9 +26,13 @@ class WorkspacePreparer:
         if not target.is_relative_to(self.root):
             raise ValueError("bot workspace escapes the configured root")
         if target.exists():
-            await self._validate_existing(target, job)
-        else:
+            try:
+                await self._validate_existing(target, job)
+            except ValueError:
+                shutil.rmtree(target)
+        if not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
+            staging = target.parent / f".{phase}.preparing-{uuid4().hex}"
             token = await self.github.installation_token(job.installation_id, contents="read")
             env = build_subprocess_environment()
             env.update(
@@ -40,23 +45,29 @@ class WorkspacePreparer:
             )
             try:
                 await self._git(
-                    ["clone", "--no-checkout", f"https://github.com/{job.repository_full_name}.git", str(target)],
+                    ["clone", "--no-checkout", f"https://github.com/{job.repository_full_name}.git", str(staging)],
                     cwd=self.root,
                     env=env,
                 )
-                await self._git(["checkout", "--detach", job.base_sha], cwd=target)
-                await self._git(["remote", "set-url", "origin", f"https://github.com/{job.repository_full_name}.git"], cwd=target)
+                await self._git(["checkout", "--detach", job.base_sha], cwd=staging)
+                await self._git(["remote", "set-url", "origin", f"https://github.com/{job.repository_full_name}.git"], cwd=staging)
+                staging.replace(target)
             except Exception:
-                if target.is_relative_to(self.root) and target.exists():
-                    shutil.rmtree(target)
+                if staging.is_relative_to(self.root) and staging.exists():
+                    shutil.rmtree(staging)
                 raise
         current = self.store.get_job(job.job_id)
         if current is None:
             raise ValueError("bot job disappeared during workspace preparation")
-        return self.store.update_job(
+        phase_changes = (
+            {"plan_workspace_path": str(target), "plan_workspace_ready": True}
+            if phase == "plan"
+            else {"implementation_workspace_path": str(target), "implementation_workspace_ready": True}
+        )
+        return self.store.update_job_fields(
             job.job_id,
             expected_version=current.version,
-            workspace_path=str(target),
+            **phase_changes,
         )
 
     async def _validate_existing(self, target: Path, job: BotJob) -> None:

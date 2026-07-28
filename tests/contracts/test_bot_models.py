@@ -11,6 +11,7 @@ from osc_agent.bot.config import load_repository_catalog
 from osc_agent.bot.models import (
     BotApproval,
     DeliveryDraft,
+    ExecutionContract,
     IssuePlanArtifact,
     RepositoryBotConfig,
     plan_evidence_hash,
@@ -58,6 +59,30 @@ def test_repository_catalog_is_strict_and_rejects_escape(tmp_path: Path) -> None
             validation_commands=("python -m pytest",),
             denied_paths=("../secret",),
         )
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        RepositoryBotConfig.model_validate({
+            "image": IMAGE_ID,
+            "validation_commands": ["python -m pytest"],
+            "auto_merge": True,
+        })
+
+
+def test_execution_contract_hash_is_canonical_and_secret_free() -> None:
+    values = {
+        "repository_id": 1, "repository_full_name": "owner/repo", "installation_id": 2,
+        "base_branch": "main", "base_sha": SHA, "issue_number": 3,
+        "issue_input_hash": "d" * 64, "model_id": "model",
+        "plan_allowed_tools": frozenset({"read_file"}),
+        "implementation_allowed_tools": frozenset({"read_file", "edit_file"}),
+        "validation_commands": ("python -m pytest",), "denied_paths": (".git/**",),
+        "max_changed_files": 10, "max_patch_bytes": 1000, "image_id": IMAGE_ID,
+        "command_timeout_seconds": 60, "container_cpus": 1.0,
+        "container_memory": "1g", "container_pids": 64,
+    }
+    first = ExecutionContract.model_validate(values)
+    second = ExecutionContract.model_validate(dict(reversed(list(values.items()))))
+    assert first.contract_hash == second.contract_hash
+    assert "secret" not in first.model_dump_json().lower()
 
 
 def test_plan_status_and_delivery_contracts_are_hard_validated() -> None:
@@ -102,6 +127,8 @@ def test_implementation_approval_is_bound_to_plan_and_expiry() -> None:
         actor_id=1,
         actor_login="maintainer",
         evidence_hash=plan_evidence_hash(plan),
+        execution_contract_hash=plan.execution_contract_hash,
+        base_sha=plan.base_sha,
         expires_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
     )
     validate_implementation_approval(approval, plan)

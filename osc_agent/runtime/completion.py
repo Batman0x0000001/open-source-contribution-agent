@@ -46,7 +46,7 @@ class CompletionEvidenceStopHook:
             (
                 (index, str(content["data"].get("workspace_fingerprint") or ""))
                 for index, call, content in completed
-                if call.name == "powershell"
+                if call.name == "bash"
                 and isinstance(content.get("data"), dict)
                 and content["data"].get("success") is True
                 and content["data"].get("command_kind") == "test"

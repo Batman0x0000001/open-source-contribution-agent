@@ -64,4 +64,9 @@ def load_runtime_config(path: Path) -> RuntimeConfig:
         raw: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
         raise ValueError(f"unable to read runtime config {path}: {exc}") from exc
+    if isinstance(raw, dict) and "runtime" in raw:
+        unknown = set(raw) - {"runtime", "repositories"}
+        if unknown:
+            raise ValueError(f"unknown production config sections: {', '.join(sorted(unknown))}")
+        raw = raw["runtime"]
     return RuntimeConfig.model_validate(raw)

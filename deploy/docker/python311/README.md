@@ -10,12 +10,12 @@ docker build -t osa-agent-worker:python311 deploy/docker/python311
 docker run --rm --network none --read-only --user 65532:65532 \
   --tmpfs /tmp --tmpfs /home/osa \
   osa-agent-worker:python311 \
-  pwsh -NoLogo -NoProfile -NonInteractive -Command \
+  /bin/bash --noprofile --norc -c \
   'python --version; pytest --version; python -m pip check'
 docker image inspect --format '{{.Id}}' osa-agent-worker:python311
 ```
 
-把最后一条命令返回的完整小写 `sha256:<64 hex>` 写入 `repositories.yml`。配置禁止使用
+把最后一条命令返回的完整小写 `sha256:<64 hex>` 写入 `config.yml` 的 `repositories` 区段。配置禁止使用
 tag；Worker 每次领取 Job 都会验证该 ID 在本机存在并精确匹配。
 
 基础镜像 tag 只影响构建过程。正式部署应在管理员验证后记录基础镜像 digest，并在组织维护

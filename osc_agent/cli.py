@@ -3,6 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import os
+import shutil
+import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
@@ -11,11 +15,11 @@ import typer
 from pydantic import JsonValue
 
 from osc_agent.application import (
-    ApplicationServices,
-    build_application,
     build_session_store,
     build_skill_catalog,
 )
+from osc_agent.agent_application import AgentRunProfile, AgentRunSpec, InboundMessage, build_agent_application
+from osc_agent.agent_application import RunEnvironment
 from osc_agent.cli_session import render_session_summary, run_conversation
 from osc_agent.config import load_settings
 from osc_agent.doctor import run_doctor
@@ -23,24 +27,25 @@ from osc_agent.runtime.models import (
     ApprovalResponse,
     Ask,
     CapabilityScope,
-    ResumeQueryParams,
     RuntimeMessage,
-    StartQueryParams,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
 )
 from osc_agent.runtime.session_summary import build_session_summary
-from osc_agent.skills.models import SkillInvocation
 
 
 app = typer.Typer(help="Claude Code style extensible coding agent.")
 skill_app = typer.Typer(help="List and run validated Skills.")
 session_app = typer.Typer(help="Inspect repository-scoped Sessions.")
 bot_app = typer.Typer(help="Run the optional GitHub App control and worker services.")
+deploy_app = typer.Typer(help="Install and operate the Bot deployment.")
+architecture_app = typer.Typer(help="Render architecture contracts.")
 app.add_typer(skill_app, name="skill")
 app.add_typer(session_app, name="session")
 app.add_typer(bot_app, name="bot")
+app.add_typer(deploy_app, name="deploy")
+app.add_typer(architecture_app, name="architecture")
 
 RepoOption = Annotated[Path, typer.Option("--repo", exists=True, file_okay=False, dir_okay=True, resolve_path=True)]
 
@@ -60,30 +65,26 @@ def run_agent(
             raise typer.BadParameter("task is required when stdin is not a TTY")
         task = typer.prompt("Task")
     session_id = str(uuid4())
-    services = _application(repo)
     settings = load_settings()
+    agent_application = build_agent_application(environment=RunEnvironment(
+        settings=settings, repository_root=repo,
+        approval_handler=_approve, question_handler=_ask_questions,
+    ), profile=AgentRunProfile(
+        name="local_debug", system_prompt="Use repository evidence and the smallest safe change that satisfies the task."
+    ))
+    services = agent_application.services
 
     typer.echo(f"Session: {session_id}")
     run_conversation(
         services=services,
         session_id=session_id,
         repository_root=repo,
-        initial_events=services.runtime.query(
-            StartQueryParams(
-                session_id=session_id,
-                model=settings.model_id or "",
-                system_prompt=(
-                    "Use repository evidence and the smallest safe change that satisfies the task.\n\n"
-                    + services.discovery_prompt
-                ),
-                messages=[RuntimeMessage(role="user", content=[TextBlock(text=task)])],
-                repository_root=str(repo),
-                capabilities=services.general_capabilities,
-                config=services.query_config,
-            )
-        ),
+        initial_events=agent_application.run(AgentRunSpec(
+            profile="local_debug", session_id=session_id, repository_root=str(repo), user_message=task,
+        )),
         once=once,
         quiet=quiet,
+        agent_application=agent_application,
     )
 
 
@@ -105,24 +106,26 @@ def resume_session(
         if session_id is None:
             raise typer.BadParameter("no valid Session exists for this repository")
     assert session_id is not None
-    services = _application(repo)
-    messages = [RuntimeMessage(role="user", content=[TextBlock(text=prompt)])] if prompt else []
-
+    settings = load_settings()
+    agent_application = build_agent_application(environment=RunEnvironment(
+        settings=settings, repository_root=repo,
+        approval_handler=_approve, question_handler=_ask_questions,
+    ), profile=AgentRunProfile(
+        name="local_debug", system_prompt="Continue the existing repository task from its authoritative transcript."
+    ))
+    services = agent_application.services
     typer.echo(f"Session: {session_id}")
     run_conversation(
         services=services,
         session_id=session_id,
         repository_root=repo,
-        initial_events=services.runtime.query(
-            ResumeQueryParams(
-                session_id=session_id,
-                messages=messages,
-                repository_root=str(repo),
-                config=services.query_config,
-            )
-        ),
+        initial_events=agent_application.run(AgentRunSpec(
+            profile="local_debug", session_id=session_id, repository_root=str(repo),
+            inbound_message=(InboundMessage(source="cli", source_id=f"cli-resume:{session_id}", text=prompt) if prompt else None),
+        )),
         once=once,
         quiet=quiet,
+        agent_application=agent_application,
     )
 
 
@@ -199,26 +202,11 @@ def run_skill(
     descriptor = build_skill_catalog(repo).get(name)
     if descriptor is None:
         raise typer.BadParameter(f"unknown skill: {name}")
-    if descriptor.manifest.context == "inline":
-        _run_inline_skill(name, repo, payload, once=once, quiet=quiet)
-        return
-
-    services = _application(repo)
-    result = asyncio.run(
-        services.skill_executor.execute(
-            SkillInvocation(
-                name=name,
-                arguments=payload,
-                session_id=str(uuid4()),
-                working_directory=str(repo),
-                caller_capabilities=CapabilityScope(),
-                trigger="user",
-            )
-        )
-    )
-    typer.echo(result.model_dump_json(indent=2))
-    if result.status == "failed":
-        raise typer.Exit(1)
+    if not descriptor.manifest.user_invocable:
+        raise typer.BadParameter("skill is not user invocable")
+    if descriptor.manifest.context != "inline":
+        raise typer.BadParameter("local debug CLI currently supports inline Skills only")
+    _run_inline_skill(name, repo, payload, once=once, quiet=quiet)
 
 
 def _run_inline_skill(
@@ -229,7 +217,18 @@ def _run_inline_skill(
     once: bool,
     quiet: bool,
 ) -> None:
-    services = _application(repo)
+    settings = load_settings()
+    agent_application = build_agent_application(
+        environment=RunEnvironment(
+            settings=settings, repository_root=repo,
+            approval_handler=_approve, question_handler=_ask_questions,
+        ),
+        profile=AgentRunProfile(
+            name="local_debug",
+            system_prompt="Use repository evidence and follow the explicitly invoked Skill.",
+        ),
+    )
+    services = agent_application.services
     session_id = str(uuid4())
     typer.echo(f"Session: {session_id}")
 
@@ -238,31 +237,16 @@ def _run_inline_skill(
             services=services,
             session_id=session_id,
             repository_root=repo,
-            initial_events=services.skill_command_runner.run(
-                name=name,
-                arguments=arguments,
-                session_id=session_id,
-                working_directory=str(repo),
-            ),
+            initial_events=agent_application.run(AgentRunSpec(
+                profile="local_debug", session_id=session_id, repository_root=str(repo),
+                skill_name=name, skill_arguments=arguments,
+            )),
             once=once,
             quiet=quiet,
+            agent_application=agent_application,
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
-
-
-def _application(repo: Path) -> ApplicationServices:
-    settings = load_settings()
-    if not settings.anthropic_api_key:
-        raise typer.BadParameter("ANTHROPIC_API_KEY is required for model execution")
-    if not settings.model_id:
-        raise typer.BadParameter("MODEL_ID is required for model execution")
-    return build_application(
-        settings=settings,
-        repo_root=repo,
-        approval_handler=_approve,
-        question_handler=_ask_questions,
-    )
 
 
 async def _approve(decision: Ask) -> ApprovalResponse:
@@ -271,9 +255,9 @@ async def _approve(decision: Ask) -> ApprovalResponse:
     typer.echo(f"Risk: {decision.risk}")
     typer.echo("Input preview:")
     typer.echo(json.dumps(decision.preview, ensure_ascii=False, indent=2))
-    if decision.tool_name == "powershell":
+    if decision.tool_name == "bash":
         typer.echo(
-            "WARNING: this command runs on the Host without an OS sandbox and may access files available to the current Windows user."
+            "WARNING: this Bash command runs on the Host without an OS sandbox and may access files available to the current user."
         )
     if decision.risk in {"write", "process"}:
         typer.echo("  1. Allow once")
@@ -406,15 +390,13 @@ def bot_serve() -> None:
     """Run the authenticated GitHub webhook control service."""
 
     try:
-        import uvicorn
         from osc_agent.bot.config import BotSettings
-        from osc_agent.bot.server import build_control_app
+        from osc_agent.bot.server import run_control_forever
 
         settings = BotSettings()
-        application = build_control_app(settings)
     except (ImportError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
-    uvicorn.run(application, host=settings.bind_host, port=settings.bind_port)
+    asyncio.run(run_control_forever(settings))
 
 
 @bot_app.command("worker")
@@ -485,6 +467,108 @@ def bot_cleanup() -> None:
         typer.echo(f"FAIL\tcleanup\t{str(exc)[:500]}", err=True)
         raise typer.Exit(1) from exc
     typer.echo(f"PASS\tcleanup\tremoved {workspaces} workspace(s), {records} job record(s)")
+
+
+@deploy_app.command("schema-check")
+def deploy_schema_check() -> None:
+    from osc_agent.bot.store import BotStore
+
+    value = os.environ.get("OSC_AGENT_BOT_DATABASE_PATH")
+    if not value:
+        raise typer.BadParameter("OSC_AGENT_BOT_DATABASE_PATH is required")
+    BotStore(Path(value)).check_schema()
+    typer.echo("PASS\tschema\tepoch 2 / bot-job-v2")
+
+
+@deploy_app.command("archive-state")
+def deploy_archive_state() -> None:
+    database = Path(os.environ["OSC_AGENT_BOT_DATABASE_PATH"]).resolve()
+    workspace = Path(os.environ["OSC_AGENT_BOT_WORKSPACE_ROOT"]).resolve()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    destination = database.parent / "archive" / stamp
+    destination.mkdir(parents=True, exist_ok=False)
+    for candidate in (database, Path(str(database) + "-wal"), Path(str(database) + "-shm")):
+        if candidate.exists():
+            shutil.copy2(candidate, destination / candidate.name)
+    if workspace.exists():
+        shutil.copytree(workspace, destination / "workspaces")
+    typer.echo(str(destination))
+
+
+@deploy_app.command("reset-state")
+def deploy_reset_state(
+    confirm: Annotated[bool, typer.Option("--confirm", help="Archive then replace Bot state.")] = False,
+) -> None:
+    """Archive Bot state, then create a fresh epoch-2 database and workspace root."""
+
+    if not confirm:
+        raise typer.BadParameter("--confirm is required")
+    deploy_archive_state()
+    database = Path(os.environ["OSC_AGENT_BOT_DATABASE_PATH"]).resolve()
+    workspace = Path(os.environ["OSC_AGENT_BOT_WORKSPACE_ROOT"]).resolve()
+    for candidate in (database, Path(str(database) + "-wal"), Path(str(database) + "-shm")):
+        if candidate.exists():
+            candidate.unlink()
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True, exist_ok=True)
+    from osc_agent.bot.store import BotStore
+    BotStore(database).initialize()
+    typer.echo("PASS\treset\tepoch 2 state initialized")
+
+
+@deploy_app.command("doctor")
+def deploy_doctor() -> None:
+    """Run the production Control and Worker preflight checks."""
+
+    from osc_agent.bot.config import BotSettings, BotWorkerSettings
+    from osc_agent.bot.doctor import run_bot_control_doctor, run_bot_worker_doctor
+    results = asyncio.run(run_bot_control_doctor(BotSettings()))
+    results += asyncio.run(run_bot_worker_doctor(BotWorkerSettings(), load_settings()))
+    for item in results:
+        typer.echo(f"{item.status}\t{item.name}\t{item.message}")
+    if any(item.status == "FAIL" for item in results):
+        raise typer.Exit(1)
+
+
+@deploy_app.command("smoke-test")
+def deploy_smoke_test() -> None:
+    """Check liveness, readiness, and Prometheus without external write side effects."""
+
+    from osc_agent.bot.config import BotSettings
+    settings = BotSettings()
+    base = f"http://127.0.0.1:{settings.bind_port}"
+    for endpoint in ("/health/live", "/health/ready", "/metrics"):
+        try:
+            with urllib.request.urlopen(base + endpoint, timeout=10) as response:
+                if response.status != 200:
+                    raise ValueError(f"HTTP {response.status}")
+        except Exception as exc:
+            typer.echo(f"FAIL\t{endpoint}\t{str(exc)[:300]}", err=True)
+            raise typer.Exit(1) from exc
+        typer.echo(f"PASS\t{endpoint}\tHTTP 200")
+
+
+@architecture_app.command("render-state-machine")
+def render_state_machine(
+    check: Annotated[bool, typer.Option("--check")] = False,
+) -> None:
+    from osc_agent.bot.state_machine import BotJobStateMachine
+
+    path = Path(__file__).resolve().parents[1] / "docs" / "architecture" / "bot-job-state-machine.md"
+    content = (
+        "# Bot Job State Machine\n\n"
+        "This file is generated by `osc-agent architecture render-state-machine`.\n\n"
+        "```mermaid\n" + BotJobStateMachine.mermaid() + "\n```\n\n"
+        + BotJobStateMachine.transition_table() + "\n"
+    )
+    if check:
+        if not path.exists() or path.read_text(encoding="utf-8") != content:
+            raise typer.Exit(1)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    typer.echo(str(path))
 
 
 if __name__ == "__main__":

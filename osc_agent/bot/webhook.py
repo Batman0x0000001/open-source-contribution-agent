@@ -25,7 +25,7 @@ def create_webhook_app(
     secret: str,
     store: BotStore,
     control: BotControlService,
-    outbox_processor: Any | None = None,
+    dispatcher_health: Any | None = None,
 ) -> Any:
     try:
         from fastapi import FastAPI, Header, HTTPException, Request
@@ -34,39 +34,28 @@ def create_webhook_app(
 
     globals()["Request"] = Request
     app = FastAPI(title="OSA Agent GitHub App", docs_url=None, redoc_url=None)
-    task: Any = None
-
-    if outbox_processor is not None:
-        import asyncio
-
-        async def poll_outbox() -> None:
-            while True:
-                worked = await outbox_processor.run_once()
-                if not worked:
-                    await asyncio.sleep(1)
-
-        @app.on_event("startup")
-        async def start_outbox() -> None:
-            nonlocal task
-            task = asyncio.create_task(poll_outbox())
-
-        @app.on_event("shutdown")
-        async def stop_outbox() -> None:
-            if task is not None:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-
     @app.get("/health/live")
     async def live() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/health/ready")
     async def ready() -> dict[str, str]:
-        store.initialize()
+        try:
+            store.readiness_check()
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail="database is not ready") from exc
+        if dispatcher_health is not None and not dispatcher_health.ready:
+            raise HTTPException(status_code=503, detail="outbox dispatcher is not ready")
         return {"status": "ready"}
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics() -> Any:
+        try:
+            from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+            from fastapi.responses import Response
+        except ImportError as exc:
+            raise HTTPException(status_code=503, detail="metrics dependency is unavailable") from exc
+        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     @app.post("/webhooks/github")
     async def webhook(

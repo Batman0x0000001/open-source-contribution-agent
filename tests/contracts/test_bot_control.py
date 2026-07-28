@@ -54,7 +54,7 @@ def _payload(body: str) -> dict[str, object]:
         "installation": {"id": 10},
         "repository": {"id": 20, "full_name": "owner/repo"},
         "issue": {"number": 7, "html_url": "https://github.com/owner/repo/issues/7"},
-        "comment": {"body": body},
+        "comment": {"id": 40, "body": body},
         "sender": {"id": 30, "login": "maintainer", "type": "User"},
     }
 
@@ -93,14 +93,18 @@ def test_control_creates_plan_and_bound_implementation_approval(tmp_path: Path) 
     plan = IssuePlanArtifact(
         status="ready",
         base_sha=job.base_sha,
+        execution_contract_hash=job.execution_contract_hash,
         summary="summary",
         plan_markdown="approved plan",
     )
     artifact_id = store.save_artifact(job_id, plan)
-    waiting = store.update_job(
-        job_id,
-        expected_version=job.version,
-        status="waiting_implementation",
+    running = store.transition(
+        job_id=job_id, expected_version=job.version, status="running_plan"
+    )
+    waiting = store.transition(
+        job_id=job_id,
+        expected_version=running.version,
+        status="waiting_approval",
         plan_artifact_id=artifact_id,
     )
     result = asyncio.run(control.handle_issue_comment(_payload(f"/osa implement {job_id}")))

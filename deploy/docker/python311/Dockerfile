@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/powershell:7.6-debian-12
+FROM python:3.11-slim-bookworm
 
 USER root
 
@@ -21,6 +21,6 @@ RUN python3 -m venv /opt/venv \
 
 ENV PATH="/opt/venv/bin:${PATH}"
 
-# DockerProcessRunner 总是显式传入 pwsh；清除基础镜像入口以避免重复解释命令。
+# DockerProcessRunner always invokes non-interactive Bash explicitly.
 ENTRYPOINT []
-CMD ["pwsh", "-NoLogo", "-NoProfile", "-NonInteractive"]
+CMD ["/bin/bash", "--noprofile", "--norc"]

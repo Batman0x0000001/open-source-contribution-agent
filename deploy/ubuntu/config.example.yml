@@ -1,0 +1,44 @@
+runtime:
+  agents:
+    main:
+      max_rounds: 30
+      max_total_tokens: 200000
+      deadline_seconds: 1800
+      max_output_tokens: 8192
+      max_no_progress_rounds: 6
+    explore:
+      max_rounds: 8
+      max_total_tokens: 40000
+      deadline_seconds: 300
+      max_output_tokens: 4096
+      max_no_progress_rounds: 3
+    verify:
+      max_rounds: 16
+      max_total_tokens: 60000
+      deadline_seconds: 900
+      max_output_tokens: 8192
+      max_no_progress_rounds: 3
+  model_retry:
+    max_attempts: 3
+    base_seconds: 1
+    max_seconds: 8
+
+repositories:
+  owner/repository:
+    enabled: true
+    image: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    validation_commands:
+      - python -m pytest
+      - python -m pip check
+    denied_paths:
+      - .git/**
+      - .github/workflows/**
+      - .gitmodules
+      - .osc_agent/**
+    max_changed_files: 100
+    max_patch_bytes: 2000000
+    command_timeout_seconds: 1800
+    container_cpus: 2.0
+    container_memory: 4g
+    container_pids: 256
+    pull_request_mode: draft

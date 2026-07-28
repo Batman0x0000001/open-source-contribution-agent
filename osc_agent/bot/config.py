@@ -29,6 +29,7 @@ class BotSettings(BaseSettings):
     plan_approval_days: int = Field(default=7, ge=1, le=30, validation_alias="OSC_AGENT_BOT_PLAN_APPROVAL_DAYS")
     completed_workspace_hours: int = Field(default=24, ge=1, le=168, validation_alias="OSC_AGENT_BOT_WORKSPACE_RETENTION_HOURS")
     audit_retention_days: int = Field(default=30, ge=1, le=365, validation_alias="OSC_AGENT_BOT_AUDIT_RETENTION_DAYS")
+    model_id: str = Field(default="configured-by-worker", min_length=1, validation_alias="MODEL_ID")
 
     @model_validator(mode="after")
     def protect_control_state_from_workspace_mounts(self) -> "BotSettings":
@@ -52,7 +53,9 @@ class BotWorkerSettings(BaseSettings):
     workspace_root: Path = Field(validation_alias="OSC_AGENT_BOT_WORKSPACE_ROOT")
     repositories_config: Path = Field(validation_alias="OSC_AGENT_BOT_REPOSITORIES_CONFIG")
     worker_id: str = Field(min_length=1, validation_alias="OSC_AGENT_BOT_WORKER_ID")
-    max_concurrent_jobs: int = Field(default=1, ge=1, le=4, validation_alias="OSC_AGENT_BOT_MAX_CONCURRENT_JOBS")
+    max_concurrent_plans: int = Field(default=2, ge=1, le=8, validation_alias="OSC_AGENT_BOT_MAX_CONCURRENT_PLANS")
+    max_concurrent_implementations: int = Field(default=1, ge=1, le=4, validation_alias="OSC_AGENT_BOT_MAX_CONCURRENT_IMPLEMENTATIONS")
+    shutdown_timeout_seconds: int = Field(default=30, ge=1, le=300, validation_alias="OSC_AGENT_BOT_SHUTDOWN_TIMEOUT_SECONDS")
 
     @model_validator(mode="after")
     def protect_worker_state_from_workspace_mounts(self) -> "BotWorkerSettings":
@@ -71,4 +74,9 @@ def load_repository_catalog(path: Path) -> RepositoryBotCatalog:
         raw: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
     except OSError as exc:
         raise ValueError(f"unable to read bot repositories config: {exc}") from exc
+    if isinstance(raw, dict) and "runtime" in raw:
+        unknown = set(raw) - {"runtime", "repositories"}
+        if unknown:
+            raise ValueError(f"unknown production config sections: {', '.join(sorted(unknown))}")
+        raw = {"repositories": raw.get("repositories")}
     return RepositoryBotCatalog.model_validate(raw)

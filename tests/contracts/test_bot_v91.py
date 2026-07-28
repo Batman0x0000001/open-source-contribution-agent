@@ -64,7 +64,7 @@ def test_control_doctor_never_checks_docker(monkeypatch, tmp_path: Path) -> None
     results = asyncio.run(run_bot_control_doctor(settings))
 
     assert checked == ["git"]
-    assert not {"docker", "pwsh", "rg"} & set(checked)
+    assert not {"docker", "bash", "rg"} & set(checked)
     assert next(item for item in results if item.name == "docker_separation").status == "PASS"
 
 
@@ -93,7 +93,7 @@ def test_worker_doctor_checks_rg_and_exact_image(monkeypatch, tmp_path: Path) ->
         )
     )
 
-    assert {"git", "docker", "pwsh", "rg"} <= set(checked)
+    assert {"git", "docker", "bash", "rg"} <= set(checked)
     assert inspected == [IMAGE_ID]
     assert next(item for item in results if item.name == "image:owner/repo").status == "PASS"
 
@@ -126,7 +126,7 @@ def test_worker_doctor_fails_when_rg_or_image_is_unavailable(monkeypatch, tmp_pa
     )
 
 
-def test_worker_rejects_image_mismatch_before_runtime(monkeypatch, tmp_path: Path) -> None:
+def test_plan_worker_never_resolves_docker_image(monkeypatch, tmp_path: Path) -> None:
     import osc_agent.bot.worker as worker_module
 
     job = BotJob(
@@ -139,7 +139,8 @@ def test_worker_rejects_image_mismatch_before_runtime(monkeypatch, tmp_path: Pat
         base_sha="a" * 40,
         image_id=IMAGE_ID,
         status="running_plan",
-        workspace_path=str(tmp_path / "workspaces" / "job"),
+        plan_workspace_path=str(tmp_path / "workspaces" / "job"),
+        plan_workspace_ready=True,
     )
 
     class Store:
@@ -154,14 +155,14 @@ def test_worker_rejects_image_mismatch_before_runtime(monkeypatch, tmp_path: Pat
         def transition_with_outbox(self, **changes):
             self.transitioned = changes
 
-    async def mismatch(_image: str) -> str:
-        return "sha256:" + "e" * 64
+    async def must_not_resolve(_image: str) -> str:
+        raise AssertionError("Plan must not inspect Docker")
 
-    async def must_not_run(*_args, **_kwargs):
-        raise AssertionError("runtime must not start for an untrusted image")
+    async def complete_plan(*_args, **_kwargs):
+        return None
 
-    monkeypatch.setattr(worker_module, "resolve_image_id", mismatch)
-    monkeypatch.setattr(BotWorker, "_run_plan", must_not_run)
+    monkeypatch.setattr(worker_module, "resolve_image_id", must_not_resolve)
+    monkeypatch.setattr(BotWorker, "_run_plan", complete_plan)
     store = Store()
     worker = BotWorker(
         settings=Settings(anthropic_api_key="secret", model_id="model"),
@@ -178,9 +179,7 @@ def test_worker_rejects_image_mismatch_before_runtime(monkeypatch, tmp_path: Pat
     )
 
     assert asyncio.run(worker.run_once()) is True
-    assert store.transitioned is not None
-    assert store.transitioned["status"] == "failed"
-    assert store.transitioned["error_code"] == "BOT_WORKER_FAILED"
+    assert store.transitioned is None
 
 
 def test_bot_doctor_requires_exactly_one_role() -> None:
@@ -198,4 +197,4 @@ def test_python_worker_image_template_is_offline_ready() -> None:
     assert "python3-venv" in dockerfile
     assert "ripgrep" in dockerfile
     assert "ENTRYPOINT []" in dockerfile
-    assert 'CMD ["pwsh"' in dockerfile
+    assert 'CMD ["/bin/bash"' in dockerfile

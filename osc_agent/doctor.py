@@ -72,7 +72,7 @@ async def run_doctor(
             message="configured" if settings.anthropic_api_key else "missing",
         )
     )
-    results.append(_executable_check("pwsh", ["-NoLogo", "-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], subprocess_environment))
+    results.append(_executable_check("bash", ["--version"], subprocess_environment))
     results.append(_executable_check("rg", ["--version"], subprocess_environment))
     results.append(_executable_check("git", ["--version"], subprocess_environment))
     results.append(_git_repository_check(repository_root, subprocess_environment))

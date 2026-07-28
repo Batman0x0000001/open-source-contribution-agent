@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 from uuid import uuid4
 
 import pytest
@@ -38,18 +39,38 @@ def test_sqlite_job_delivery_version_and_claim(tmp_path: Path) -> None:
     job = _job()
     store.create_job(job)
     with pytest.raises(ValueError, match="VERSION_CONFLICT"):
-        store.update_job(job.job_id, expected_version=99, status="failed")
+        store.update_job_fields(job.job_id, expected_version=99, error_code="failed")
     assert store.claim_job("worker") is None  # Workspace 尚未由可信 Control 准备。
-    prepared = store.update_job(
+    prepared = store.update_job_fields(
         job.job_id,
         expected_version=job.version,
-        workspace_path=str(tmp_path / "workspace"),
+        plan_workspace_path=str(tmp_path / "workspace"),
+        plan_workspace_ready=True,
     )
-    claimed = store.claim_job("worker")
+    assert store.claim_job("worker", phase="implementation") is None
+    claimed = store.claim_job("worker", phase="plan")
     assert claimed is not None
     assert claimed.status == "running_plan"
     assert claimed.lease_owner == "worker"
     assert claimed.version == prepared.version + 1
+
+    progressed = store.record_progress(job.job_id, "plan:model_request_started")
+    assert progressed.last_progress_event == "plan:model_request_started"
+    assert progressed.last_progress_at is not None
+
+
+def test_active_job_unique_index_uses_stable_repository_id(tmp_path: Path) -> None:
+    store = BotStore(tmp_path / "bot.sqlite3")
+    store.initialize()
+    first = _job()
+    store.create_job(first)
+    duplicate = _job().model_copy(update={
+        "repository_full_name": "renamed/repo",
+        "issue_number": first.issue_number,
+        "repository_id": first.repository_id,
+    })
+    with pytest.raises(sqlite3.IntegrityError):
+        store.create_job(duplicate)
 
 
 def test_sqlite_session_store_replays_strict_event_chain(tmp_path: Path) -> None:
@@ -104,3 +125,44 @@ def test_outbox_claim_is_leased_and_recoverable(tmp_path: Path) -> None:
     assert retried is not None and retried.attempts == 2
     store.complete_outbox(retried.event_id)
     assert store.next_outbox() is None
+
+
+def test_plan_reply_is_exactly_once_and_atomically_appended(tmp_path: Path) -> None:
+    store = BotStore(tmp_path / "bot.sqlite3")
+    store.initialize()
+    sessions = SqliteSessionStore(store)
+    session_id = str(uuid4())
+    sessions.create(SessionMetadata(
+        schema_version=4, session_id=session_id, repository_root=str(tmp_path),
+        initial_working_directory=str(tmp_path), model="model",
+        capabilities=CapabilityScope(allowed_tools=frozenset({"read_file"})),
+    ))
+    job = _job().model_copy(update={"plan_session_id": session_id, "plan_workspace_ready": True})
+    store.create_job(job)
+    running = store.transition(job_id=job.job_id, expected_version=job.version, status="running_plan")
+    blocked = store.transition_with_outbox(
+        job_id=job.job_id, expected_version=running.version, status="blocked_plan",
+        event=OutboxEvent(event_id="blocked-comment", job_id=job.job_id, kind="issue_comment",
+                          idempotency_key="blocked-comment", payload={"body": "question"}),
+    )
+    assert store.enqueue_plan_reply(
+        source_id="github:123", job=blocked, body="answer",
+        prepare_event=OutboxEvent(event_id="prepare-reply", job_id=job.job_id, kind="prepare",
+                                  idempotency_key="prepare-reply", payload={"phase": "plan"}),
+        acknowledgement_event=OutboxEvent(
+            event_id="ack-reply", job_id=job.job_id, kind="issue_comment",
+            idempotency_key="ack-reply", payload={"body": "received"},
+        ),
+    ) is True
+    queued = store.get_job(job.job_id)
+    assert queued is not None and queued.status == "queued_plan"
+    assert queued.plan_workspace_ready is False
+    assert store.append_external_message_once(
+        source_id="github:123", session_id=session_id, text="answer"
+    ) is True
+    assert store.append_external_message_once(
+        source_id="github:123", session_id=session_id, text="answer"
+    ) is False
+    snapshot = sessions.load(session_id)
+    assert snapshot is not None and len(snapshot.messages) == 1
+    assert snapshot.messages[0].content[0].text == "answer"

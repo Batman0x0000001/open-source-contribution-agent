@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from hashlib import sha256
+import json
 from pathlib import PurePosixPath
 from typing import Literal, TypeAlias
 
@@ -13,15 +14,16 @@ from osc_agent.runtime.models import ContractModel, FrozenContractModel
 JobStatus: TypeAlias = Literal[
     "queued_plan",
     "running_plan",
-    "waiting_implementation",
+    "blocked_plan",
+    "waiting_approval",
     "queued_implementation",
     "running_implementation",
     "ready_to_publish",
     "publishing",
     "completed",
-    "blocked",
+    "retry_wait",
     "stale",
-    "failed",
+    "dead_letter",
     "cancelled",
 ]
 
@@ -49,6 +51,7 @@ class RepositoryBotConfig(FrozenContractModel):
     container_cpus: float = Field(default=2.0, gt=0, le=32)
     container_memory: str = Field(default="4g", pattern=r"^[1-9][0-9]*(?:m|g)$")
     container_pids: int = Field(default=256, ge=16, le=4_096)
+    pull_request_mode: Literal["draft", "ready"] = "draft"
 
     @field_validator("validation_commands", "denied_paths", mode="before")
     @classmethod
@@ -91,14 +94,26 @@ class BotJob(ContractModel):
     installation_id: int = Field(gt=0)
     issue_number: int = Field(gt=0)
     issue_url: HttpUrl
+    base_branch: str = "main"
     base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    issue_input_hash: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
+    execution_contract_hash: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
     image_id: str = Field(min_length=1, max_length=300)
     status: JobStatus
     plan_session_id: str | None = None
     implementation_session_id: str | None = None
     plan_artifact_id: str | None = None
     approval_id: str | None = None
-    workspace_path: str | None = None
+    plan_workspace_path: str | None = None
+    plan_workspace_ready: bool = False
+    implementation_workspace_path: str | None = None
+    implementation_workspace_ready: bool = False
+    last_progress_event: str | None = Field(default=None, max_length=64)
+    last_progress_at: str | None = None
+    retry_phase: Literal["plan", "implementation", "publish"] | None = None
+    plan_attempts: int = Field(default=0, ge=0)
+    implementation_attempts: int = Field(default=0, ge=0)
+    publish_attempts: int = Field(default=0, ge=0)
     branch: str | None = None
     commit_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
     pull_request_number: int | None = Field(default=None, gt=0)
@@ -119,6 +134,8 @@ class BotApproval(ContractModel):
     actor_id: int = Field(gt=0)
     actor_login: str = Field(min_length=1)
     evidence_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    execution_contract_hash: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
+    base_sha: str = Field(default="0" * 40, pattern=r"^[0-9a-f]{40}$")
     status: Literal["approved", "cancelled", "expired"] = "approved"
     expires_at: str
     created_at: str = Field(default_factory=utc_now)
@@ -128,6 +145,7 @@ class IssuePlanArtifact(ContractModel):
     evidence_type: Literal["issue_plan"] = "issue_plan"
     status: Literal["ready", "blocked"]
     base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    execution_contract_hash: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
     summary: str = Field(min_length=1, max_length=4_000)
     plan_markdown: str = Field(min_length=1, max_length=50_000)
     assumptions: list[str] = Field(default_factory=list, max_length=30)
@@ -167,6 +185,7 @@ class DeliveryDraft(ContractModel):
     commit_message: str = Field(min_length=1, max_length=72)
     issue_number: int = Field(gt=0)
     base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    execution_contract_hash: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
     snapshot_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     test_summary: str = Field(min_length=1, max_length=4_000)
     verification_summary: str = Field(min_length=1, max_length=4_000)
@@ -186,21 +205,65 @@ class OutboxEvent(ContractModel):
     kind: Literal["prepare", "issue_comment", "publish"]
     idempotency_key: str = Field(min_length=1, max_length=200)
     payload: dict[str, object]
-    status: Literal["pending", "processing", "completed", "failed"] = "pending"
+    status: Literal["pending", "processing", "completed", "failed", "dead_letter"] = "pending"
     attempts: int = Field(default=0, ge=0)
     next_attempt_at: str = Field(default_factory=utc_now)
     last_error: str | None = None
 
 
 class WebhookCommand(FrozenContractModel):
-    action: Literal["plan", "implement", "cancel"]
+    action: Literal["plan", "implement", "reply", "status", "retry", "cancel"]
     job_id: str | None = None
+    message: str | None = None
+
+
+class ExecutionContract(FrozenContractModel):
+    contract_version: Literal[1] = 1
+    repository_id: int = Field(gt=0)
+    repository_full_name: str
+    installation_id: int = Field(gt=0)
+    base_branch: str
+    base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    issue_number: int = Field(gt=0)
+    issue_input_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provider: Literal["anthropic"] = "anthropic"
+    model_id: str
+    runtime_revision: str = "bot-job-v2"
+    plan_profile_revision: str = "bot-plan-v1"
+    implementation_profile_revision: str = "bot-implementation-v1"
+    planning_skill_name: Literal["issue-planning"] = "issue-planning"
+    planning_skill_version: int = 1
+    implementation_skill_name: Literal["open-source-contribution"] = "open-source-contribution"
+    implementation_skill_version: int = 1
+    plan_allowed_tools: frozenset[str]
+    implementation_allowed_tools: frozenset[str]
+    validation_commands: tuple[str, ...]
+    denied_paths: tuple[str, ...]
+    max_changed_files: int
+    max_patch_bytes: int
+    image_id: str
+    command_timeout_seconds: int
+    container_cpus: float
+    container_memory: str
+    container_pids: int
+    container_network: Literal["none"] = "none"
+    pull_request_mode: Literal["draft", "ready"] = "draft"
+
+    @property
+    def contract_hash(self) -> str:
+        payload = json.dumps(self.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return sha256(payload.encode("utf-8")).hexdigest()
 
 
 def plan_evidence_hash(plan: IssuePlanArtifact) -> str:
     """Return the stable digest bound to an implementation approval."""
 
-    return sha256(plan.model_dump_json().encode("utf-8")).hexdigest()
+    payload = {
+        "plan": plan.model_dump(mode="json"),
+        "execution_contract_hash": plan.execution_contract_hash,
+        "base_sha": plan.base_sha,
+    }
+    return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def validate_implementation_approval(
@@ -222,3 +285,5 @@ def validate_implementation_approval(
         raise ValueError("implementation approval has expired")
     if approval.evidence_hash != plan_evidence_hash(plan):
         raise ValueError("implementation approval does not match the approved plan")
+    if approval.execution_contract_hash != plan.execution_contract_hash or approval.base_sha != plan.base_sha:
+        raise ValueError("implementation approval does not match the execution contract")

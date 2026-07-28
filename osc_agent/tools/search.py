@@ -104,6 +104,9 @@ class GrepTool(BaseTool[GrepInput, GrepOutput]):
             arguments.extend(["--context", str(input.context_lines)])
         if input.glob is not None:
             arguments.extend(["--glob", input.glob])
+        local_ignore = root / ".gitignore"
+        if local_ignore.is_file():
+            arguments.extend(["--ignore-file", str(local_ignore)])
         arguments.extend(["--", input.pattern, input.path])
         try:
             completed = subprocess.run(

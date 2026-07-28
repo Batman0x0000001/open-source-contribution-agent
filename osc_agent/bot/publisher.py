@@ -37,15 +37,28 @@ class TrustedPublisher:
     async def publish(self, job: BotJob, config: RepositoryBotConfig) -> BotJob:
         if job.status not in {"ready_to_publish", "publishing"}:
             raise ValueError("job is not ready for trusted publication")
-        if not job.workspace_path or not job.approval_id:
+        workspace_value = job.implementation_workspace_path
+        if not workspace_value or not job.approval_id:
             raise ValueError("publish job is missing workspace or approval")
+        contract = self.store.get_execution_contract(job.execution_contract_hash)
+        if contract is None or contract.contract_hash != job.execution_contract_hash:
+            raise ValueError("publish job execution contract is missing or corrupted")
+        if (
+            contract.base_sha != job.base_sha
+            or contract.issue_input_hash != job.issue_input_hash
+            or contract.pull_request_mode != config.pull_request_mode
+            or contract.image_id != job.image_id
+        ):
+            raise ValueError("repository configuration or Job drifted from the execution contract")
         approval = self.store.get_approval(job.approval_id)
         plan = self.store.get_plan_artifact(job.plan_artifact_id or "")
         validate_implementation_approval(approval, plan)
-        workspace = Path(job.workspace_path).resolve()
+        workspace = Path(workspace_value).resolve()
         draft = self.store.get_delivery_draft(job.job_id)
         if draft is None:
             raise ValueError("publish job has no DeliveryDraft")
+        if draft.execution_contract_hash != job.execution_contract_hash or draft.base_sha != job.base_sha:
+            raise ValueError("DeliveryDraft does not match the execution contract")
         await self._verify_repository_metadata(job, workspace)
         branch_base, remote_sha = await self.github.repository_head(job.installation_id, job.repository_full_name)
         if remote_sha != job.base_sha:
@@ -87,7 +100,9 @@ class TrustedPublisher:
         current = job
         branch = job.branch or f"osa/issue-{job.issue_number}-{job.job_id[:8]}"
         if current.status != "publishing":
-            current = self.store.update_job(current.job_id, expected_version=current.version, status="publishing", branch=branch)
+            current = self.store.transition(
+                job_id=current.job_id, expected_version=current.version, status="publishing", branch=branch
+            )
         if current.commit_sha is None:
             current_head = (await self._git(["rev-parse", "HEAD"], workspace)).strip()
             if current_head == current.base_sha:
@@ -115,7 +130,9 @@ class TrustedPublisher:
             else:
                 await self._verify_persisted_commit(current, draft.commit_message, workspace)
                 commit_sha = current_head
-            current = self.store.update_job(current.job_id, expected_version=current.version, branch=branch, commit_sha=commit_sha)
+            current = self.store.update_job_fields(
+                current.job_id, expected_version=current.version, branch=branch, commit_sha=commit_sha
+            )
         await self._verify_persisted_commit(current, draft.commit_message, workspace)
         await self._verify_repository_metadata(current, workspace, allow_publisher_identity=True)
         latest_base, latest_sha = await self.github.repository_head(
@@ -148,6 +165,7 @@ class TrustedPublisher:
                 body=f"{draft.body}\n\nRefs #{current.issue_number}\n\n{marker}",
                 head=branch,
                 base=branch_base,
+                draft=config.pull_request_mode == "draft",
             )
         else:
             number, url = found
@@ -164,7 +182,10 @@ class TrustedPublisher:
                 job_id=current.job_id,
                 kind="issue_comment",
                 idempotency_key=f"comment:{current.job_id}:completed",
-                payload={"body": f"Draft PR created: {url}\n\n<!-- osa-job:{current.job_id}:completed -->"},
+                payload={
+                    "body": f"{'Draft ' if config.pull_request_mode == 'draft' else ''}PR created: {url}"
+                    f"\n\n<!-- osa-job:{current.job_id}:completed -->"
+                },
             ),
         )
         self.store.append_job_event(completed.job_id, "PullRequestCreated", {"number": number, "url": url})

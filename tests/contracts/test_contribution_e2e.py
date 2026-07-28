@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+import os
 from pathlib import Path
 import subprocess
+
+import pytest
 
 from osc_agent.application import build_application
 from osc_agent.config import Settings
@@ -23,9 +26,18 @@ class ScriptedGateway:
     def __init__(self, messages: list[RuntimeMessage]) -> None:
         self.messages = list(messages)
         self.requests: list[ModelRequest] = []
+        self.exhausted_feedback = ""
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[ModelEvent]:
         self.requests.append(request)
+        if not self.messages:
+            final = request.messages[-1].content[0]
+            self.exhausted_feedback = str(getattr(final, "text", final))
+            yield ModelCompleted(
+                message=RuntimeMessage(role="assistant", content=[TextBlock(text="No scripted action.")]),
+                stop_reason="end_turn",
+            )
+            return
         message = self.messages.pop(0)
         stop_reason = "tool_use" if any(isinstance(block, ToolUseBlock) for block in message.content) else "end_turn"
         yield ModelCompleted(message=message, stop_reason=stop_reason)
@@ -42,6 +54,7 @@ def git(cwd: Path, *arguments: str) -> None:
     subprocess.run(["git", *arguments], cwd=cwd, check=True, capture_output=True, text=True)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="production process execution requires Linux Bash")
 def test_contribution_skill_runs_through_plan_worktree_draft_and_resume(monkeypatch, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -50,7 +63,14 @@ def test_contribution_skill_runs_through_plan_worktree_draft_and_resume(monkeypa
     git(repo, "config", "user.name", "Tests")
     (repo / "README.md").write_text("# Fixture", encoding="utf-8")
     (repo / "AGENTS.md").write_text("Run focused tests before drafting.", encoding="utf-8")
-    git(repo, "add", "README.md", "AGENTS.md")
+    (repo / "test_fixture.py").write_text(
+        "import pathlib\nimport unittest\n\n"
+        "class FixtureTest(unittest.TestCase):\n"
+        "    def test_contribution(self):\n"
+        "        self.assertEqual(pathlib.Path('CONTRIBUTION.txt').read_text(), 'implemented\\n')\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", "README.md", "AGENTS.md", "test_fixture.py")
     git(repo, "commit", "-m", "base")
     state_root = tmp_path / "user-state"
     monkeypatch.setenv("OSC_AGENT_STATE_DIR", str(state_root))
@@ -123,7 +143,7 @@ def test_contribution_skill_runs_through_plan_worktree_draft_and_resume(monkeypa
             tool("enter-worktree", "enter_worktree", {"name": "contribution-e2e"}),
             tool("implement-resource", "read_skill_resource", {"skill": "open-source-contribution", "path": "implement.md"}),
             tool("implementation", "write_file", {"path": "CONTRIBUTION.txt", "content": "implemented\n"}),
-            tool("verification", "powershell", {"command": "python -m unittest"}),
+            tool("verification", "bash", {"command": "python -m unittest"}),
             tool(
                 "independent-verification",
                 "agent",
@@ -139,7 +159,7 @@ def test_contribution_skill_runs_through_plan_worktree_draft_and_resume(monkeypa
             ),
             tool(
                 "verify-probe",
-                "powershell",
+                "bash",
                 {"command": "python -c \"assert 0 == 0\""},
             ),
             RuntimeMessage(
@@ -199,7 +219,7 @@ def test_contribution_skill_runs_through_plan_worktree_draft_and_resume(monkeypa
         ]
 
     events = asyncio.run(run_contribution())
-    assert isinstance(events[-1], RunCompleted)
+    assert isinstance(events[-1], RunCompleted), gateway.exhausted_feedback
     assert "Run focused tests before drafting." in gateway.requests[0].system_prompt
     assert "- explore:" in gateway.requests[0].system_prompt
     assert "- verify:" in gateway.requests[0].system_prompt
@@ -235,7 +255,7 @@ def test_contribution_skill_runs_through_plan_worktree_draft_and_resume(monkeypa
         "git_status",
         "git_diff",
         "git_log",
-        "powershell",
+        "bash",
     }
     assert "Progress dynamically from evidence" not in verify_requests[0].messages[0].content[0].text
     paths = ApplicationStatePaths.for_repository(repo, state_root=state_root)

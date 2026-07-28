@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+import os
 from pathlib import Path
 import subprocess
 
@@ -41,7 +42,8 @@ def test_local_doctor_checks_required_dependencies_without_exposing_secrets(
         )
     )
 
-    assert not [item for item in results if item.status == "FAIL"]
+    failures = {item.name for item in results if item.status == "FAIL"}
+    assert failures == ({"bash"} if os.name == "nt" else set())
     assert next(item for item in results if item.name == "model_connectivity").status == "WARN"
     assert next(item for item in results if item.name == "execution_isolation").status == "WARN"
     subprocess_check = next(
@@ -97,6 +99,8 @@ def test_doctor_marks_missing_model_configuration_as_failure(
     repo.mkdir()
     _git_repo(repo)
     monkeypatch.setenv("OSC_AGENT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.delenv("MODEL_ID", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     results = asyncio.run(
         run_doctor(

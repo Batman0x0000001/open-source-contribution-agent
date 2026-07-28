@@ -1,5 +1,9 @@
 # Ubuntu 单机部署
 
+推荐从源码发布目录运行 `sudo ./deploy/ubuntu/install.sh --config /etc/osc-agent/config.yml`，
+再分别执行 Control/Worker doctor。升级采用停机归档和 epoch 2 原子重建，不支持新旧版本
+混跑。Prometheus 告警模板见 `prometheus-alerts.yml`。
+
 V9 面向一台 Ubuntu 主机和 SQLite WAL。Control 与 Worker 必须使用不同 OS 用户：Control
 持有 GitHub App 私钥但没有 Docker 权限；Worker 可调用 Docker，但其环境文件不包含任何
 GitHub App 私钥、Webhook Secret 或 Publisher 身份。
@@ -16,19 +20,20 @@ sudo install -d -m 2770 -o osa-control -g osa-shared /var/lib/osc-agent/workspac
 sudo install -d -m 0750 -o root -g osa-shared /etc/osc-agent
 ```
 
-安装 Docker Engine、Git、PowerShell 7、ripgrep、Nginx 和项目 editable bot extra。预先构建
+安装 Docker Engine、Git、Bash、ripgrep、Nginx 和项目固定版本 bot wheel。安装器将 wheel
+及完整依赖集冻结到 `/opt/osc-agent/releases/<version>/wheels`，并原子切换 `current`。预先构建
 仓库配置引用的镜像，并将 `docker image inspect --format '{{.Id}}' <tag>` 的完整结果写入
-`repositories.yml` 的 `image`；tag、短 digest 和大写 digest 都会被拒绝。镜像内必须有
-`pwsh` 和项目验证依赖。不要把 Docker socket、数据库、
+`config.yml` 的 `repositories` 区段；tag、短 digest 和大写 digest 都会被拒绝。镜像内必须有
+`bash` 和项目验证依赖。不要把 Docker socket、数据库、
 状态根目录或 Secret 挂入容器。
 
 复制示例配置：
 
 - `/etc/osc-agent/bot.env`：owner `osa-control:osa-shared`，mode `0600`，仅 Control。
 - `/etc/osc-agent/worker.env`：owner `osa-worker:osa-shared`，mode `0600`，仅 Worker。
-- 将 `runtime.example.yml` 复制为 `/etc/osc-agent/runtime.yml`：owner `root:osa-shared`，
-  mode `0640`，保存 Agent 预算和模型重试策略。
-- `/etc/osc-agent/repositories.yml`：owner `root:osa-shared`，mode `0640`。
+- 将 `config.example.yml` 复制为 `/etc/osc-agent/config.yml`：owner `root:osa-shared`，
+  mode `0640`。它是唯一非敏感生产配置，保存 Agent 预算、模型重试和仓库执行契约输入；
+  Secret 仍只存在于两个 mode `0600` 的 EnvironmentFile。
 
 Control 与 Worker 的 primary group 都是 `osa-shared`，systemd `UMask=0007`，因此 Control
 创建的新鲜 clone 可由 Worker 及其同 UID/GID 的非 root 容器写入。不要以 root 运行 Worker。
@@ -40,7 +45,7 @@ Webhook URL 为 `https://<public-host>/webhooks/github`。只订阅
 write；不要授予 Workflows 权限。部署后分别通过使用对应 `EnvironmentFile` 的临时
 systemd unit 或受控维护终端运行 `osc-agent bot doctor --control` 和
 `osc-agent bot doctor --worker`。Control Doctor 不访问 Docker；Worker Doctor 校验
-`git`、`docker`、`pwsh`、`rg`、模型配置和本机镜像。不要用命令替换把 env 文件展开到 argv
+`git`、`docker`、`bash`、`rg`、模型配置和本机镜像。不要用命令替换把 env 文件展开到 argv
 或 shell history；Doctor 本身不会输出凭据值。
 
 ## 服务与网络
@@ -58,6 +63,25 @@ sudo systemctl reload nginx
 `127.0.0.1`。SQLite、Docker API 和任何内部端口不得公开。Control 需要访问 GitHub API，
 Worker 宿主进程需要访问模型 API；Docker 仓库命令始终完全断网。
 
+Worker 分别使用 `OSC_AGENT_BOT_MAX_CONCURRENT_PLANS` 和
+`OSC_AGENT_BOT_MAX_CONCURRENT_IMPLEMENTATIONS` 控制两个阶段；收到 SIGTERM 后停止领取新
+Job，并在 `OSC_AGENT_BOT_SHUTDOWN_TIMEOUT_SECONDS` 内等待在途任务清理，超时后取消。
+
 日志交给 journald，并由系统策略轮转。完成 workspace 默认 24 小时后清理，Job/审计默认
 30 天后清理。备份 SQLite 时同时处理 `-wal`/`-shm`，或先停止两个服务并使用 SQLite
 在线备份机制。
+
+## 运维命令
+
+```bash
+osc-agent deploy doctor
+osc-agent deploy smoke-test
+osc-agent deploy archive-state
+osc-agent deploy reset-state --confirm
+```
+
+Epoch 2 升级不迁移运行中的 Job。`upgrade.sh` 先让 Webhook 返回 503，同时停止 Control 与
+Worker，持有升级锁并归档 SQLite/WAL/SHM/workspace；随后原子切换 release symlink、重建
+epoch 2 数据库，按 Control→Worker 顺序启动，通过 smoke 后才恢复 Webhook。旧状态仅用于
+归档审计：`waiting_implementation → waiting_approval`、`blocked → blocked_plan`、
+`failed → dead_letter`，不会作为可恢复 Job 导入新库。

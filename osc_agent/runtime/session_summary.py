@@ -56,7 +56,7 @@ def build_session_summary(snapshot: SessionSnapshot) -> SessionSummary:
                 path = call.input.get("path")
                 if isinstance(path, str) and path not in touched_files:
                     touched_files.append(path)
-            elif call.name == "powershell" and data.get("command_kind") == "test":
+            elif call.name == "bash" and data.get("command_kind") == "test":
                 command = data.get("command")
                 success = data.get("success")
                 if isinstance(command, str) and isinstance(success, bool):

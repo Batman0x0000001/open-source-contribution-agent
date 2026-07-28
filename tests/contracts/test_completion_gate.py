@@ -134,7 +134,7 @@ def test_completion_requires_test_and_snapshot_after_latest_edit(
         *completed("edit", "write_file", {}, {"path": "x.py"}),
         *completed(
             "test",
-            "powershell",
+            "bash",
             {},
             evidence(tmp_path, {"success": True, "command_kind": "test"}),
         ),
@@ -160,7 +160,7 @@ def test_empty_snapshot_never_satisfies_change_evidence(tmp_path: Path) -> None:
     messages = [
         *completed(
             "test",
-            "powershell",
+            "bash",
             {},
             evidence(tmp_path, {"success": True, "command_kind": "test"}),
         ),
@@ -266,7 +266,7 @@ def test_independent_verification_requires_primary_test_then_pass_then_snapshot(
     edit = completed("edit", "write_file", {}, {"path": "x.py"})
     test = completed(
         "test",
-        "powershell",
+        "bash",
         {},
         evidence(tmp_path, {"success": True, "command_kind": "test"}),
     )
@@ -301,7 +301,7 @@ def test_latest_fail_or_later_edit_invalidates_independent_pass(tmp_path: Path) 
         *completed("edit", "edit_file", {}, {"path": "x.py"}),
         *completed(
             "test",
-            "powershell",
+            "bash",
             {},
             evidence(tmp_path, {"success": True, "command_kind": "test"}),
         ),
@@ -332,7 +332,7 @@ def test_partial_waiver_must_bind_latest_child_and_precede_snapshot(
         *completed("edit", "write_file", {}, {"path": "x.py"}),
         *completed(
             "test",
-            "powershell",
+            "bash",
             {},
             evidence(tmp_path, {"success": True, "command_kind": "test"}),
         ),

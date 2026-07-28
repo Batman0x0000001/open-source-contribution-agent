@@ -1,0 +1,27 @@
+groups:
+  - name: osc-agent
+    rules:
+      - alert: OscAgentOutboxDispatcherDown
+        expr: osa_outbox_dispatcher_up == 0
+        for: 1m
+      - alert: OscAgentOutboxStalled
+        expr: osa_outbox_oldest_seconds > 600
+        for: 5m
+      - alert: OscAgentDeadLetters
+        expr: osa_dead_letters > 0
+        for: 1m
+      - alert: OscAgentWorkerHeartbeatStale
+        expr: osa_worker_heartbeat_age_seconds > 120
+        for: 2m
+      - alert: OscAgentQueuedJobStalled
+        expr: max by (phase) (time() - osa_job_queued_timestamp_seconds) > 900
+        for: 5m
+      - alert: OscAgentFailureRateHigh
+        expr: sum(rate(osa_jobs_total{outcome="failed"}[15m])) / clamp_min(sum(rate(osa_jobs_total[15m])), 0.001) > 0.30
+        for: 5m
+      - alert: OscAgentControlTargetDown
+        expr: up{job="osc-agent-control"} == 0
+        for: 1m
+      - alert: OscAgentWorkerTargetDown
+        expr: up{job="osc-agent-worker"} == 0
+        for: 2m

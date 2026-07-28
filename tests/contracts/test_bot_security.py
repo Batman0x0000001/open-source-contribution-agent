@@ -150,7 +150,8 @@ def test_publisher_accepts_only_one_clean_commit_on_approved_base(tmp_path: Path
         base_sha=base,
         image_id="sha256:" + "a" * 64,
         status="publishing",
-        workspace_path=str(repo),
+        implementation_workspace_path=str(repo),
+        implementation_workspace_ready=True,
     )
     asyncio.run(publisher._verify_persisted_commit(job, "fix: issue", repo))
     (repo / "untracked.txt").write_text("unexpected", encoding="utf-8")

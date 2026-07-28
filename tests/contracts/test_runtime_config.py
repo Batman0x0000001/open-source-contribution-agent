@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from osc_agent.config import Settings
+from osc_agent.bot.config import load_repository_catalog
 from osc_agent.runtime_config import default_runtime_config_path, load_runtime_config
 
 
@@ -44,6 +45,16 @@ def test_packaged_runtime_config_contains_all_execution_budgets() -> None:
     assert config.agents.explore.to_query_config().max_total_tokens == 40_000
     assert config.agents.verify.to_query_config().max_rounds == 16
     assert config.model_retry.to_retry_policy().max_attempts == 3
+
+
+def test_ubuntu_production_config_combines_runtime_and_repositories() -> None:
+    path = Path(__file__).parents[2] / "deploy" / "ubuntu" / "config.example.yml"
+
+    runtime = load_runtime_config(path)
+    catalog = load_repository_catalog(path)
+
+    assert runtime.agents.main.max_rounds == 30
+    assert "owner/repository" in catalog.repositories
 
 
 def test_settings_loads_runtime_config_selected_by_environment(

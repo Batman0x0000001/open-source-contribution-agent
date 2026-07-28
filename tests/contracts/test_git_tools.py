@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import shutil
 import subprocess
+
+import pytest
 
 from osc_agent.runtime.models import ToolUseBlock, ToolUseContext, WorktreeSession
 from osc_agent.runtime.tool_execution import ToolExecutor
@@ -223,6 +226,8 @@ def test_workspace_fingerprint_covers_git_visible_changes_and_ignores_cache(
 
 
 def test_workspace_fingerprint_detects_dirty_submodule(tmp_path: Path) -> None:
+    if shutil.which("basename") is None or shutil.which("sed") is None:
+        pytest.skip("Git submodule shell helpers are unavailable in this Windows test environment")
     child = tmp_path / "child"
     parent = tmp_path / "parent"
     child.mkdir()

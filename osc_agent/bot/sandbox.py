@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
+import logging
+from pathlib import Path, PurePosixPath
 import shutil
 import sys
 from time import monotonic
@@ -16,6 +17,9 @@ from osc_agent.tools.process import (
     ProcessRunner,
     build_subprocess_environment,
 )
+from osc_agent.tools.git import git_snapshot, git_workspace_fingerprint
+from osc_agent.bot.policy import _matches
+from osc_agent.bot.observability import log_event
 
 
 class DockerProcessRunner(ProcessRunner):
@@ -29,6 +33,7 @@ class DockerProcessRunner(ProcessRunner):
         repository_config: RepositoryBotConfig,
         job_id: str,
         cancel_check: Callable[[], bool] | None = None,
+        policy_violation_callback: Callable[[str], None] | None = None,
         docker_executable: str | None = None,
     ) -> None:
         if not image_id.startswith("sha256:"):
@@ -40,6 +45,7 @@ class DockerProcessRunner(ProcessRunner):
         self.config = repository_config
         self.job_id = job_id
         self.cancel_check = cancel_check
+        self.policy_violation_callback = policy_violation_callback
         uid = getattr(os, "getuid", lambda: 65_532)()
         gid = getattr(os, "getgid", lambda: 65_532)()
         if sys.platform == "linux" and uid == 0:
@@ -63,6 +69,9 @@ class DockerProcessRunner(ProcessRunner):
         if "," in str(repository):
             raise ValueError("Docker bind mount path cannot contain a comma")
         tool_id = context.tool_use_id if context is not None else "process"
+        fingerprint_before = await asyncio.to_thread(
+            git_workspace_fingerprint, repo_root=repository
+        )
         name = _container_name(self.job_id, tool_id or "process")
         started = monotonic()
         process = await asyncio.create_subprocess_exec(
@@ -111,7 +120,7 @@ class DockerProcessRunner(ProcessRunner):
                 except ProcessLookupError:
                     pass
                 await asyncio.gather(communicate, return_exceptions=True)
-        return CommandResult(
+        result = CommandResult(
             command=request.command,
             exit_code=process.returncode if process.returncode is not None else -1,
             stdout=stdout_bytes.decode("utf-8", errors="replace"),
@@ -119,6 +128,44 @@ class DockerProcessRunner(ProcessRunner):
             duration_ms=max(0, int((monotonic() - started) * 1000)),
             termination_reason=termination_reason,
         )
+        snapshot = await asyncio.to_thread(git_snapshot, repo_root=repository)
+        fingerprint_after = await asyncio.to_thread(
+            git_workspace_fingerprint, repo_root=repository
+        )
+        log_event(
+            logging.getLogger("osc_agent.bot.process"),
+            "process_git_fingerprint",
+            service="worker",
+            job_id=self.job_id,
+            tool_use_id=tool_id,
+            fingerprint_before=fingerprint_before,
+            fingerprint_after=fingerprint_after,
+            duration_ms=result.duration_ms,
+        )
+        files = [PurePosixPath(str(item["path"]).replace("\\", "/")) for item in snapshot["files"]]
+        violation = next(
+            (path.as_posix() for path in files if any(_matches(path, pattern) for pattern in self.config.denied_paths)),
+            None,
+        )
+        if violation is not None:
+            detail = f"repository process modified protected path: {violation}"
+            if self.policy_violation_callback is not None:
+                self.policy_violation_callback(detail)
+            return result.model_copy(update={
+                "exit_code": -5,
+                "stderr": result.stderr + f"\n{detail}",
+                "termination_reason": "repository_policy",
+            })
+        if len(files) > self.config.max_changed_files or len(str(snapshot["patch"]).encode()) > self.config.max_patch_bytes:
+            detail = "repository process exceeded the configured change limits"
+            if self.policy_violation_callback is not None:
+                self.policy_violation_callback(detail)
+            return result.model_copy(update={
+                "exit_code": -5,
+                "stderr": result.stderr + f"\n{detail}",
+                "termination_reason": "repository_policy",
+            })
+        return result
 
     async def _wait_for_cancel(self) -> bool:
         if self.cancel_check is None:
@@ -144,7 +191,7 @@ class DockerProcessRunner(ProcessRunner):
             "--workdir", "/workspace", "--user", self.container_user,
             "--env", "CI=true", "--env", "NO_COLOR=1", "--env", "HOME=/home/osa",
             self.image_id,
-            "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command,
+            "/bin/bash", "--noprofile", "--norc", "-c", command,
         ]
 
     async def _force_remove(self, name: str) -> None:

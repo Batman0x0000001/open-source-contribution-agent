@@ -116,6 +116,24 @@ class ProcessRunner(Protocol):
     ) -> "CommandResult": ...
 
 
+class DisabledProcessRunner:
+    """Fail closed for profiles that must never execute repository processes."""
+
+    async def run(
+        self,
+        request: ProcessRequest,
+        context: ToolUseContext | None,
+    ) -> "CommandResult":
+        del context
+        return CommandResult(
+            command=request.command,
+            exit_code=-4,
+            stderr="process execution is disabled for this Agent profile",
+            duration_ms=0,
+            termination_reason="disabled",
+        )
+
+
 class HostProcessRunner:
     async def run(
         self,
@@ -164,13 +182,15 @@ async def run_command(
     started = time.perf_counter()
     try:
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        shell_name = Path(executable).stem.casefold()
+        shell_arguments = (
+            ["--noprofile", "--norc", "-c", command]
+            if shell_name == "bash"
+            else ["-c", command]
+        )
         process = await asyncio.create_subprocess_exec(
             executable,
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            command,
+            *shell_arguments,
             cwd=repo_root,
             env=dict(environment),
             creationflags=creationflags,

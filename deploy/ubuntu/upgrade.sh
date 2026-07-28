@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${EUID}" -ne 0 || $# -ne 1 ]]; then
+  echo "usage: sudo ./deploy/ubuntu/upgrade.sh /opt/osc-agent/releases/<version>" >&2
+  exit 2
+fi
+
+RELEASE="$(realpath "$1")"
+case "${RELEASE}" in
+  /opt/osc-agent/releases/*) ;;
+  *) echo "release must be below /opt/osc-agent/releases" >&2; exit 2 ;;
+esac
+if [[ ! -x "${RELEASE}/venv/bin/osc-agent" ]]; then
+  echo "release does not contain an executable venv/bin/osc-agent" >&2
+  exit 2
+fi
+
+exec 9>/run/lock/osc-agent-upgrade.lock
+flock -n 9 || { echo "another upgrade is active" >&2; exit 1; }
+
+# The maintenance include is expected to make the webhook location return 503.
+touch /etc/osc-agent/webhook-maintenance
+systemctl reload nginx
+systemctl stop osc-agent-bot-worker osc-agent-bot-control
+
+ln -sfn "${RELEASE}" /opt/osc-agent/next
+mv -Tf /opt/osc-agent/next /opt/osc-agent/current
+
+/opt/osc-agent/current/venv/bin/osc-agent deploy reset-state --confirm
+/opt/osc-agent/current/venv/bin/osc-agent deploy schema-check
+systemctl start osc-agent-bot-control
+systemctl start osc-agent-bot-worker
+/opt/osc-agent/current/venv/bin/osc-agent deploy smoke-test
+rm -f /etc/osc-agent/webhook-maintenance
+systemctl reload nginx

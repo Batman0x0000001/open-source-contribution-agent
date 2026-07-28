@@ -1,0 +1,100 @@
+# Claude Code 最小核心架构
+
+## 目的
+
+本文档定义本项目从 Claude Code 2.1.88 还原源码中提炼的最小通用 Agent 架构。还原源码并不代表 Anthropic 的原始内部仓库结构，因此本项目只把可观察的运行机制和职责边界作为参考，不机械复制文件布局或产品功能。
+
+## 核心数据流
+
+```text
+QueryConfig + QueryDependencies + QueryState
+                    │
+                    ▼
+             AgentRuntime.query
+                    │
+         ┌──────────┴──────────┐
+         ▼                     ▼
+   ModelGateway          Context Projection
+         │
+         ▼
+     Tool requests
+         │
+         ▼
+   ToolOrchestration
+         │
+         ▼
+ Validation → Permission → Hooks → Tool.call
+         │
+         ▼
+ ToolResult + ContextUpdate + RuntimeEvent
+         │
+         └──────────────► 下一轮 QueryState
+```
+
+## Query
+
+Query 是异步生成器，而不是只返回最终文本的同步函数。它负责推进一次 Agent turn，并持续输出模型流、Tool 事件、上下文事件和终态。
+
+Query 内部必须分离：
+
+- 不可变的 `QueryConfig`。
+- 可注入的 `QueryDependencies`。
+- 跨轮变化的 `QueryState`。
+- 受控的 `ToolUseContext`。
+
+Query 是唯一允许推进 QueryState 的组件。CLI、Skill 和 Tool 都不能直接修改它。
+
+## Tool
+
+Tool 是完整行为对象，同时包含：
+
+- 输入和输出 Pydantic 模型。
+- 启用判断。
+- 按输入计算的只读与并发安全判断。
+- 输入验证和 Tool 专属权限检查。
+- 执行方法。
+- 最大结果大小。
+
+所有 Tool 都经过同一执行管线。并发安全的连续调用组成并发批次，其他调用串行执行。并发完成顺序可以变化，但 ContextUpdate 必须按原 Tool call 顺序应用。
+
+## Context
+
+完整 Transcript 是权威历史；Context Projection 是当前模型请求使用的视图。上下文压缩只能改变 Projection，不能破坏 Transcript 或 `tool_use/tool_result` 配对。
+
+最小管线包括：
+
+1. 超大 Tool Result 落盘并生成预览。
+2. 压缩旧 Tool Result。
+3. 接近窗口限制时 Auto Compact。
+4. API 拒绝上下文时执行有上限的 Reactive Compact。
+
+## Skill
+
+Skill 是延迟加载的 Prompt Command。Catalog 默认只读取发现元数据，正文在调用时加载。
+
+Skill 通过统一 `SkillExecutor` 执行，支持 inline 与 fork。模型侧的 `SkillTool` 和用户侧的 `SkillCommandRunner` 共用该执行器。Skill 只能收窄调用者 capability。Manifest 声明的资源由 `read_skill_resource` 在调用时读取，并受根目录边界保护。
+
+## Agent
+
+`AgentTool` 通过构造隔离的 `StartQueryParams` 和 QueryState，递归调用同一个 `AgentRuntime.query()`。main agent、inline/fork subagent 和 fork Skill 不允许拥有第二套模型循环。后台 Agent 在最小稳定版中不提供。
+
+## Session、Plan 与 Contribution
+
+完整 JSONL Session transcript 是恢复依据；Plan Mode 与 Worktree 是少量类型化会话状态。Contribution 是 inline Skill，不是 Workflow：Agent Loop 根据 transcript、批准的 plan、测试和 git diff 动态推进，人工检查点由 AskUserQuestion 与 PermissionPolicy 表达。
+
+## Pydantic 与 Protocol
+
+- 数据、状态、事件、输入输出和 Artifact 使用严格 Pydantic 模型。
+- Tool、ModelGateway、Store、Executor 等行为边界使用 `Protocol`。
+- 包含函数和服务对象的依赖容器使用冻结 `dataclass`。
+- 未验证的 SDK 数据只能存在于 Provider adapter 内部。
+
+## 扩展边界
+
+后续扩展只依赖三个稳定入口：
+
+- 注册 Tool 增加原子能力。
+- 注册 Skill 增加知识和任务方法。
+- 通过 Session、Skill 与 Tool 组合新的用户任务入口。
+
+在出现真实分发需求前，不引入额外 Plugin 框架。

@@ -18,7 +18,7 @@ VERIFY_TOOLS = frozenset(
         "git_status",
         "git_diff",
         "git_log",
-        "powershell",
+        "bash",
     }
 )
 

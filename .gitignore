@@ -11,3 +11,5 @@ build/
 !osc_agent/skills/open-source-contribution/*.md
 !deploy/
 !deploy/**
+!docs/
+!docs/**
