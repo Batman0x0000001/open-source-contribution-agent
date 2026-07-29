@@ -8,7 +8,6 @@ from time import monotonic
 from typing import Literal
 from uuid import uuid4
 
-from osc_agent.agents.explore import build_explore_registration
 from osc_agent.application import (
     AgentApplicationConfig,
     AgentProfile,
@@ -31,6 +30,7 @@ from osc_agent.runtime.models import (
     RunCompleted,
     RunStopped,
 )
+from osc_agent.subagents.builtins import build_explore_subagent
 from osc_agent.tools.process_runner import DisabledProcessRunner
 
 
@@ -133,8 +133,8 @@ class BotWorker:
                     ),
                 ),
                 pre_tool_hooks=(BotRepositoryPolicyHook(config),),
-                agent_registrations=(
-                    build_explore_registration(
+                subagent_registrations=(
+                    build_explore_subagent(
                         model=self.settings.model_id or "",
                         config=self.settings.runtime.agents.explore.to_query_config(),
                     ),

@@ -13,15 +13,14 @@ from uuid import uuid4
 
 from pydantic import Field
 
-from osc_agent.agents.explore import build_explore_registration
-from osc_agent.agents.registry import AgentRegistry
-from osc_agent.agents.verify import build_verify_registration
 from osc_agent.application import build_model_gateway, build_skill_catalog
 from osc_agent.config import Settings
 from osc_agent.runtime.gateway import ModelCompleted, ModelRequest
 from osc_agent.runtime.models import FrozenContractModel, RuntimeMessage, TextBlock
 from osc_agent.runtime.session_store import FileSessionStore
 from osc_agent.runtime.state_paths import ApplicationStatePaths
+from osc_agent.subagents.builtins import build_explore_subagent, build_verify_subagent
+from osc_agent.subagents.registry import SubagentRegistry
 from osc_agent.tools.process_runner import (
     build_subprocess_environment,
     is_protected_environment_name,
@@ -124,13 +123,13 @@ async def run_doctor(
 
     if settings.model_id:
         try:
-            registry = AgentRegistry(
+            registry = SubagentRegistry(
                 [
-                    build_explore_registration(
+                    build_explore_subagent(
                         model=settings.model_id,
                         config=settings.runtime.agents.explore.to_query_config(),
                     ),
-                    build_verify_registration(
+                    build_verify_subagent(
                         model=settings.model_id,
                         config=settings.runtime.agents.verify.to_query_config(),
                     ),

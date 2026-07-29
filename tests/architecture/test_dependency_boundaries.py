@@ -36,14 +36,25 @@ def test_runtime_does_not_depend_on_workflows_or_provider_implementation() -> No
     assert not violations, "Runtime dependency violations:\n" + "\n".join(violations)
 
 
+def test_runtime_does_not_depend_on_subagents() -> None:
+    violations = [
+        f"{path.relative_to(PROJECT_ROOT)} -> {module}"
+        for path in sorted(RUNTIME_ROOT.rglob("*.py"))
+        for module in _imports(path)
+        if module.startswith("osc_agent.subagents")
+    ]
+
+    assert not violations, "Runtime must not depend on subagents:\n" + "\n".join(violations)
+
+
 def test_agent_runtime_query_is_the_async_generator_entrypoint() -> None:
     from osc_agent.runtime.query import AgentRuntime
 
     assert inspect.isasyncgenfunction(AgentRuntime.query)
 
 
-def test_agent_runner_delegates_to_agent_runtime_query() -> None:
-    source = (PROJECT_ROOT / "osc_agent" / "agents" / "runner.py").read_text(encoding="utf-8")
+def test_subagent_runner_delegates_to_agent_runtime_query() -> None:
+    source = (PROJECT_ROOT / "osc_agent" / "subagents" / "runner.py").read_text(encoding="utf-8")
 
     assert "self.runtime.query(" in source
     assert "model_gateway.stream(" not in source

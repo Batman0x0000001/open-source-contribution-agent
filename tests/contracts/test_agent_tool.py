@@ -1,4 +1,4 @@
-"""验证子 Agent 运行器的契约、边界条件与回归行为。"""
+"""验证 agent Tool 的协议、限流、取消和工作区保护。"""
 
 from __future__ import annotations
 
@@ -8,13 +8,8 @@ from pathlib import Path
 import subprocess
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
-from osc_agent.agents.definitions import AgentDefinition, AgentInvocation, AgentRunResult
-from osc_agent.agents.explore import build_explore_registration
-from osc_agent.agents.registry import AgentRegistration, AgentRegistry
-from osc_agent.agents.runner import AgentRunner
-from osc_agent.agents.tool import AgentTool, AgentToolInput
 from osc_agent.runtime.dependencies import QueryDependencies
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
 from osc_agent.runtime.models import (
@@ -34,6 +29,11 @@ from osc_agent.runtime_config import default_runtime_config_path, load_runtime_c
 from osc_agent.runtime.session_store import FileSessionStore
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
+from osc_agent.subagents.builtins.explore import build_explore_subagent
+from osc_agent.subagents.models import SubagentDefinition, SubagentRequest, SubagentRunResult
+from osc_agent.subagents.registry import SubagentRegistration, SubagentRegistry
+from osc_agent.subagents.runner import SubagentRunner
+from osc_agent.subagents.tool import AgentTool, AgentToolInput
 
 
 EXPLORE_CONFIG = load_runtime_config(default_runtime_config_path()).agents.explore.to_query_config()
@@ -46,18 +46,6 @@ def initialize_repository(root: Path) -> None:
     subprocess.run(["git", "commit", "--quiet", "--allow-empty", "-m", "initial"], cwd=root, check=True)
 
 
-class CompletingGateway:
-    def __init__(self) -> None:
-        self.requests: list[ModelRequest] = []
-
-    async def stream(self, request: ModelRequest) -> AsyncIterator[ModelEvent]:
-        self.requests.append(request)
-        yield ModelCompleted(
-            message=RuntimeMessage(role="assistant", content=[TextBlock(text="agent result")]),
-            stop_reason="end_turn",
-        )
-
-
 class EmptyArguments(ContractModel):
     pass
 
@@ -66,9 +54,9 @@ class TextResult(FrozenContractModel):
     value: str
 
 
-def registration(*, max_parallel: int = 2) -> AgentRegistration:
-    return AgentRegistration(
-        definition=AgentDefinition(
+def registration(*, max_parallel: int = 2) -> SubagentRegistration:
+    return SubagentRegistration(
+        definition=SubagentDefinition(
             name="explore",
             description="Explore the repository",
             system_prompt="Read and report.",
@@ -80,32 +68,6 @@ def registration(*, max_parallel: int = 2) -> AgentRegistration:
         read_only=True,
         concurrency_safe=True,
         max_parallel=max_parallel,
-    )
-
-
-def make_runner(gateway, *, ids: list[str] | None = None) -> AgentRunner:
-    registry = AgentRegistry([registration()])
-    generated_ids = iter(ids or [f"id-{index}" for index in range(20)])
-    runtime = AgentRuntime(
-        QueryDependencies(
-            model_gateway=gateway,
-            tool_registry=ToolRegistry(),
-            tool_executor=ToolExecutor(ToolRegistry()),
-            new_id=lambda: next(generated_ids),
-        )
-    )
-    return AgentRunner(runtime, registry, default_model="test-model")
-
-
-def invocation(*, mode: str = "inline", parent_messages=None) -> AgentInvocation:
-    return AgentInvocation(
-        agent_name="explore",
-        prompt="inspect this",
-        mode=mode,
-        parent_session_id="parent-1",
-        working_directory="C:/repo",
-        caller_capabilities=CapabilityScope(allowed_tools=frozenset({"read", "write"})),
-        parent_messages=parent_messages or [],
     )
 
 
@@ -122,49 +84,6 @@ def context(repo: Path) -> ToolUseContext:
     )
 
 
-def test_agent_registry_is_code_registered_sorted_and_rejects_duplicates() -> None:
-    registry = AgentRegistry([registration()])
-
-    assert [item.definition.name for item in registry.list()] == ["explore"]
-    assert registry.get("missing") is None
-    with pytest.raises(ValueError, match="duplicate agent"):
-        registry.register(registration())
-    with pytest.raises(TypeError, match="strict contract"):
-        AgentRegistration(
-            definition=registration().definition,
-            input_model=BaseModel,  # type: ignore[arg-type]
-            output_model=TextResult,
-            prompt_builder=lambda _arguments: "",
-            read_only=True,
-            concurrency_safe=True,
-            max_parallel=1,
-        )
-
-
-def test_agent_runner_reuses_runtime_with_isolated_session() -> None:
-    gateway = CompletingGateway()
-    runner = make_runner(gateway, ids=["child-session"])
-
-    result = asyncio.run(runner.run(invocation()))
-
-    assert result.status == "completed"
-    assert result.session_id == "child-session"
-    assert result.output == "agent result"
-    assert gateway.requests[0].model == "test-model"
-
-
-def test_fork_remains_internal_and_inherits_a_copy_of_parent_messages() -> None:
-    gateway = CompletingGateway()
-    runner = make_runner(gateway)
-    parent = [RuntimeMessage(role="user", content=[TextBlock(text="parent context")])]
-
-    asyncio.run(runner.run(invocation(mode="fork", parent_messages=parent)))
-
-    assert gateway.requests[0].messages[0].content[0].text == "parent context"
-    assert gateway.requests[0].messages[-1].content[0].text == "inspect this"
-    assert len(parent) == 1
-
-
 def test_agent_tool_validates_explore_input_and_typed_output(tmp_path: Path) -> None:
     initialize_repository(tmp_path)
     source = tmp_path / "src.py"
@@ -172,11 +91,13 @@ def test_agent_tool_validates_explore_input_and_typed_output(tmp_path: Path) -> 
 
     class RecordingRunner:
         def __init__(self) -> None:
-            self.invocation: AgentInvocation | None = None
+            self.name: str | None = None
+            self.request: SubagentRequest | None = None
 
-        async def run(self, invocation: AgentInvocation) -> AgentRunResult:
-            self.invocation = invocation
-            return AgentRunResult(
+        async def run(self, name: str, request: SubagentRequest) -> SubagentRunResult:
+            self.name = name
+            self.request = request
+            return SubagentRunResult(
                 session_id="child-1",
                 status="completed",
                 output=(
@@ -187,8 +108,8 @@ def test_agent_tool_validates_explore_input_and_typed_output(tmp_path: Path) -> 
                 ),
             )
 
-    registry = AgentRegistry(
-        [build_explore_registration(model="test-model", config=EXPLORE_CONFIG)]
+    registry = SubagentRegistry(
+        [build_explore_subagent(model="test-model", config=EXPLORE_CONFIG)]
     )
     recorder = RecordingRunner()
     tool = AgentTool(recorder, registry)  # type: ignore[arg-type]
@@ -206,24 +127,23 @@ def test_agent_tool_validates_explore_input_and_typed_output(tmp_path: Path) -> 
 
     assert result.data["status"] == "completed"
     assert result.data["result"]["findings"][0]["evidence"][0]["path"] == "src.py"
-    assert recorder.invocation is not None
-    assert recorder.invocation.mode == "inline"
-    assert recorder.invocation.parent_messages == []
-    assert "private parent history" not in recorder.invocation.prompt
+    assert recorder.name == "explore"
+    assert recorder.request is not None
+    assert "private parent history" not in recorder.request.prompt
 
 
 def test_agent_tool_returns_specific_errors_for_unknown_input_and_output(tmp_path: Path) -> None:
     initialize_repository(tmp_path)
     class InvalidRunner:
-        async def run(self, invocation: AgentInvocation) -> AgentRunResult:
-            return AgentRunResult(
+        async def run(self, name: str, request: SubagentRequest) -> SubagentRunResult:
+            return SubagentRunResult(
                 session_id="child-1",
                 status="completed",
                 output='{"summary":"unsupported","findings":[],"relevant_files":[],"likely_change_locations":[],"recommended_tests":[],"unresolved_questions":[]}',
             )
 
-    registry = AgentRegistry(
-        [build_explore_registration(model="test-model", config=EXPLORE_CONFIG)]
+    registry = SubagentRegistry(
+        [build_explore_subagent(model="test-model", config=EXPLORE_CONFIG)]
     )
     tool = AgentTool(InvalidRunner(), registry)  # type: ignore[arg-type]
 
@@ -286,15 +206,15 @@ def test_agent_tool_limits_parallel_runs_and_propagates_cancellation(tmp_path: P
             self.two_started = asyncio.Event()
             self.release = asyncio.Event()
 
-        async def run(self, invocation: AgentInvocation) -> AgentRunResult:
+        async def run(self, name: str, request: SubagentRequest) -> SubagentRunResult:
             self.active += 1
             self.maximum = max(self.maximum, self.active)
             if self.active == 2:
                 self.two_started.set()
             try:
                 await self.release.wait()
-                return AgentRunResult(
-                    session_id=invocation.prompt[-8:] or "child",
+                return SubagentRunResult(
+                    session_id=request.prompt[-8:] or "child",
                     status="completed",
                     output='{"value":"done"}',
                 )
@@ -303,7 +223,7 @@ def test_agent_tool_limits_parallel_runs_and_propagates_cancellation(tmp_path: P
 
     async def exercise_parallelism() -> int:
         runner = ControlledRunner()
-        registry = AgentRegistry([registration(max_parallel=2)])
+        registry = SubagentRegistry([registration(max_parallel=2)])
         tool = AgentTool(runner, registry)  # type: ignore[arg-type]
         calls = [
             asyncio.create_task(
@@ -323,14 +243,14 @@ def test_agent_tool_limits_parallel_runs_and_propagates_cancellation(tmp_path: P
     assert asyncio.run(exercise_parallelism()) == 2
 
     class CancellingRunner:
-        async def run(self, invocation: AgentInvocation) -> AgentRunResult:
+        async def run(self, name: str, request: SubagentRequest) -> SubagentRunResult:
             await asyncio.Event().wait()
             raise AssertionError("unreachable")
 
     async def exercise_cancellation() -> None:
         tool = AgentTool(
             CancellingRunner(),  # type: ignore[arg-type]
-            AgentRegistry([registration()]),
+            SubagentRegistry([registration()]),
         )
         pending = asyncio.create_task(
             tool.call(AgentToolInput(agent="explore", task="wait"), context(tmp_path))
@@ -346,15 +266,15 @@ def test_agent_tool_limits_parallel_runs_and_propagates_cancellation(tmp_path: P
 def test_one_parallel_agent_failure_does_not_cancel_its_sibling(tmp_path: Path) -> None:
     initialize_repository(tmp_path)
     class MixedRunner:
-        async def run(self, invocation: AgentInvocation) -> AgentRunResult:
+        async def run(self, name: str, request: SubagentRequest) -> SubagentRunResult:
             await asyncio.sleep(0)
-            if "fail" in invocation.prompt:
-                return AgentRunResult(
+            if "fail" in request.prompt:
+                return SubagentRunResult(
                     session_id="failed-child",
                     status="failed",
                     error="bounded exploration failed",
                 )
-            return AgentRunResult(
+            return SubagentRunResult(
                 session_id="successful-child",
                 status="completed",
                 output='{"value":"evidence"}',
@@ -363,7 +283,7 @@ def test_one_parallel_agent_failure_does_not_cancel_its_sibling(tmp_path: Path) 
     async def scenario():
         tool = AgentTool(
             MixedRunner(),  # type: ignore[arg-type]
-            AgentRegistry([registration()]),
+            SubagentRegistry([registration()]),
         )
         return await asyncio.gather(
             tool.call(AgentToolInput(agent="explore", task="fail"), context(tmp_path)),
@@ -417,8 +337,8 @@ def test_parent_cancellation_stops_explore_and_persists_tool_pair(tmp_path: Path
             session_store=store,
         )
     )
-    registry = AgentRegistry([registration()])
-    runner = AgentRunner(runtime, registry, default_model="test-model")
+    registry = SubagentRegistry([registration()])
+    runner = SubagentRunner(runtime, registry, default_model="test-model")
     tools.register(AgentTool(runner, registry))
 
     async def scenario():

@@ -7,9 +7,9 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from osc_agent.agents.definitions import AgentDefinition
-from osc_agent.agents.registry import AgentContract, AgentRegistration
 from osc_agent.runtime.models import CapabilityScope, ContractModel, FrozenContractModel, QueryConfig
+from osc_agent.subagents.models import SubagentDefinition
+from osc_agent.subagents.registry import SubagentContract, SubagentRegistration
 
 
 VERIFY_TOOLS = frozenset(
@@ -96,8 +96,8 @@ class VerificationReport(FrozenContractModel):
         return self
 
 
-def build_verify_registration(*, model: str, config: QueryConfig) -> AgentRegistration:
-    definition = AgentDefinition(
+def build_verify_subagent(*, model: str, config: QueryConfig) -> SubagentRegistration:
+    definition = SubagentDefinition(
         name="verify",
         description="Independently run checks and adversarial probes without modifying the repository",
         system_prompt=(
@@ -112,7 +112,7 @@ def build_verify_registration(*, model: str, config: QueryConfig) -> AgentRegist
         config=config,
         context_policy="minimal",
     )
-    return AgentRegistration(
+    return SubagentRegistration(
         definition=definition,
         input_model=VerifyAgentArguments,
         output_model=VerificationReport,
@@ -123,7 +123,7 @@ def build_verify_registration(*, model: str, config: QueryConfig) -> AgentRegist
     )
 
 
-def _build_verify_prompt(arguments: AgentContract) -> str:
+def _build_verify_prompt(arguments: SubagentContract) -> str:
     parsed = VerifyAgentArguments.model_validate(arguments)
     focus = "\n".join(f"- {item}" for item in parsed.focus_areas) or "- (none)"
     return (

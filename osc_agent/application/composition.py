@@ -5,11 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from osc_agent.agents.explore import build_explore_registration
-from osc_agent.agents.registry import AgentRegistry
-from osc_agent.agents.runner import AgentRunner
-from osc_agent.agents.tool import AgentTool
-from osc_agent.agents.verify import build_verify_registration
 from osc_agent.application.models import AgentApplicationConfig
 from osc_agent.config import Settings
 from osc_agent.workspaces.git_worktree import GitWorktreeManager
@@ -31,6 +26,10 @@ from osc_agent.skills.executor import SkillExecutor
 from osc_agent.skills.loader import SkillLoader
 from osc_agent.skills.resource_tool import ReadSkillResourceTool
 from osc_agent.skills.tool import SkillTool
+from osc_agent.subagents.builtins import build_explore_subagent, build_verify_subagent
+from osc_agent.subagents.registry import SubagentRegistry
+from osc_agent.subagents.runner import SubagentRunner
+from osc_agent.subagents.tool import AgentTool
 from osc_agent.tools.registry import build_tool_registry
 
 
@@ -41,8 +40,8 @@ class ApplicationGraph:
     tool_registry: ToolRegistry
     tool_executor: ToolExecutor
     runtime: AgentRuntime
-    agent_registry: AgentRegistry
-    agent_runner: AgentRunner
+    subagent_registry: SubagentRegistry
+    subagent_runner: SubagentRunner
     skill_catalog: SkillCatalog
     skill_executor: SkillExecutor
     query_config: QueryConfig
@@ -141,32 +140,32 @@ def compose_application(config: AgentApplicationConfig) -> ApplicationGraph:
             ),
         )
     )
-    agent_registry = AgentRegistry(
-        list(config.agent_registrations)
-        if config.agent_registrations is not None
+    subagent_registry = SubagentRegistry(
+        list(config.subagent_registrations)
+        if config.subagent_registrations is not None
         else [
-            build_explore_registration(
+            build_explore_subagent(
                 model=model_id,
                 config=settings.runtime.agents.explore.to_query_config(),
             ),
-            build_verify_registration(
+            build_verify_subagent(
                 model=model_id,
                 config=settings.runtime.agents.verify.to_query_config(),
             ),
         ]
     )
-    runner = AgentRunner(runtime, agent_registry, default_model=model_id)
-    skill_executor = SkillExecutor(catalog, agent_runner=runner, query_config=query_config)
+    runner = SubagentRunner(runtime, subagent_registry, default_model=model_id)
+    skill_executor = SkillExecutor(catalog, subagent_runner=runner, query_config=query_config)
     registry.register(SkillTool(skill_executor))
-    registry.register(AgentTool(runner, agent_registry))
+    registry.register(AgentTool(runner, subagent_registry))
     general_capabilities = CapabilityScope(allowed_tools=frozenset(registry.names()))
-    discovery_prompt = build_discovery_prompt(catalog, agent_registry, general_capabilities)
+    discovery_prompt = build_discovery_prompt(catalog, subagent_registry, general_capabilities)
     return ApplicationGraph(
         tool_registry=registry,
         tool_executor=executor,
         runtime=runtime,
-        agent_registry=agent_registry,
-        agent_runner=runner,
+        subagent_registry=subagent_registry,
+        subagent_runner=runner,
         skill_catalog=catalog,
         skill_executor=skill_executor,
         query_config=query_config,
@@ -179,7 +178,7 @@ def compose_application(config: AgentApplicationConfig) -> ApplicationGraph:
 
 def build_discovery_prompt(
     catalog: SkillCatalog,
-    agent_registry: AgentRegistry,
+    subagent_registry: SubagentRegistry,
     capabilities: CapabilityScope,
 ) -> str:
     skills = [
@@ -190,7 +189,7 @@ def build_discovery_prompt(
     agents = (
         [
             f"- {item.definition.name}: {item.definition.description}"
-            for item in agent_registry.list()
+            for item in subagent_registry.list()
         ]
         if capabilities.permits_tool("agent")
         else []

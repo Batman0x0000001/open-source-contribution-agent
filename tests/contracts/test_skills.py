@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from osc_agent.agents.definitions import AgentDefinition, AgentInvocation, AgentRunResult
 from osc_agent.runtime.models import CapabilityScope, RuntimeMessage, TextBlock, ToolUseBlock, ToolUseContext
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
@@ -15,6 +14,7 @@ from osc_agent.skills.executor import SkillExecutor
 from osc_agent.skills.loader import SkillLoader
 from osc_agent.skills.models import SkillInvocation
 from osc_agent.skills.tool import SkillTool, SkillToolInput
+from osc_agent.subagents.models import SubagentDefinition, SubagentRequest, SubagentRunResult
 
 
 def write_skill(
@@ -162,22 +162,22 @@ def test_issue_planning_accepts_the_authenticated_github_evidence_envelope() -> 
     assert '"author_association": "OWNER"' in result.rendered_prompt
 
 
-def test_fork_skill_uses_agent_runner_and_validates_structured_output(tmp_path: Path) -> None:
+def test_fork_skill_uses_subagent_runner_and_validates_structured_output(tmp_path: Path) -> None:
     write_skill(tmp_path, context="fork")
 
     class RecordingRunner:
         def __init__(self) -> None:
-            self.definition: AgentDefinition | None = None
-            self.invocation: AgentInvocation | None = None
+            self.definition: SubagentDefinition | None = None
+            self.request: SubagentRequest | None = None
 
-        async def run_with_definition(
+        async def run_definition(
             self,
-            definition: AgentDefinition,
-            invocation: AgentInvocation,
-        ) -> AgentRunResult:
+            definition: SubagentDefinition,
+            request: SubagentRequest,
+        ) -> SubagentRunResult:
             self.definition = definition
-            self.invocation = invocation
-            return AgentRunResult(
+            self.request = request
+            return SubagentRunResult(
                 session_id="child-1",
                 status="completed",
                 output='{"verdict":"pass"}',
@@ -186,7 +186,7 @@ def test_fork_skill_uses_agent_runner_and_validates_structured_output(tmp_path: 
     runner = RecordingRunner()
     executor = SkillExecutor(
         SkillCatalog([SkillLoader(tmp_path, source="project")]),
-        agent_runner=runner,  # type: ignore[arg-type]
+        subagent_runner=runner,  # type: ignore[arg-type]
     )
     parent = [RuntimeMessage(role="user", content=[TextBlock(text="parent")])]
 
@@ -195,7 +195,8 @@ def test_fork_skill_uses_agent_runner_and_validates_structured_output(tmp_path: 
     assert result.status == "completed"
     assert result.output == {"verdict": "pass"}
     assert runner.definition.capabilities.allowed_tools == frozenset({"read"})
-    assert runner.invocation.mode == "fork"
+    assert runner.definition.context_policy == "fork"
+    assert runner.request.parent_messages == tuple(parent)
 
 
 def test_skill_tool_delegates_to_the_shared_executor(tmp_path: Path) -> None:

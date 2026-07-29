@@ -8,7 +8,6 @@ from pathlib import Path
 
 from pydantic import Field, JsonValue
 
-from osc_agent.agents.registry import AgentRegistration
 from osc_agent.config import Settings
 from osc_agent.runtime.gateway import ModelGateway
 from osc_agent.runtime.hooks import PreToolHook, StopHook
@@ -23,6 +22,7 @@ from osc_agent.runtime.models import (
 from osc_agent.runtime.permissions import PermissionPolicy
 from osc_agent.runtime.session_store import SessionStore
 from osc_agent.runtime.tool import Tool
+from osc_agent.subagents.registry import SubagentRegistration
 from osc_agent.tools.process_runner import ProcessRunner
 
 
@@ -64,7 +64,7 @@ class AgentApplicationConfig:
     extra_tools: tuple[Tool, ...] = ()
     pre_tool_hooks: tuple[PreToolHook, ...] = ()
     stop_hooks: tuple[StopHook, ...] = ()
-    agent_registrations: tuple[AgentRegistration, ...] | None = None
+    subagent_registrations: tuple[SubagentRegistration, ...] | None = None
 
 
 @dataclass(frozen=True)

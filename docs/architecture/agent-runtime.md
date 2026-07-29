@@ -91,7 +91,10 @@ Manifest 声明的资源由 `read_skill_resource` 在调用时读取，并受根
 
 ## Agent
 
-`AgentTool` 通过构造隔离的 `StartQueryParams` 和 QueryState，递归调用同一个 `AgentRuntime.query()`。main agent、inline/fork subagent 和 fork Skill 不允许拥有第二套模型循环。后台 Agent 在最小稳定版中不提供。
+`AgentTool` 委派给 `SubagentRunner`，后者通过隔离的 `StartQueryParams` 和 QueryState
+递归调用同一个 `AgentRuntime.query()`。子 Agent 的 capability 必须显式枚举，并在运行前
+移除 `agent` 工具以禁止递归。main agent、minimal/fork subagent 和 fork Skill 不允许拥有
+第二套模型循环。后台 Agent 在最小稳定版中不提供。
 
 ## Session、Plan 与 Contribution
 

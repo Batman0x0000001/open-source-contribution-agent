@@ -13,9 +13,9 @@
 | S1 | Catalog 只发现 manifest，正文和资源延迟加载 | `SkillLoader`、`ReadSkillResourceTool` | 调用时读取与路径逃逸测试 |
 | S2 | 产品 Skill、SkillTool 共用执行器 | `AgentConversation`、`SkillTool`、`SkillExecutor` | composition 对象同一性测试 |
 | P1 | Plan Mode 是 Permission 状态，不是 Workflow Gate | interaction tools、`DefaultPermissionPolicy` | 禁止普通写、固定计划路径、批准退出 |
-| A1 | 子 Agent 递归复用 Query | `AgentRunner`、`AgentTool` | Runtime 同一性与隔离测试 |
+| A1 | 子 Agent 递归复用 Query，且不能再次调用 AgentTool | `SubagentRunner`、`AgentTool` | Runtime 同一性、隔离与 capability 收窄测试 |
 | W1 | Git worktree 是工作区隔离 | `GitWorktreeManager`、enter/exit tools | 创建、上下文切换、脏状态保护 |
-| D1 | 无第二套执行架构 | `runtime/`、`agents/`、`skills/`、`workspaces/` | 禁止 `support`、`workflows`、Todo、Task、Mock MCP 依赖 |
+| D1 | 无第二套执行架构 | `runtime/`、`subagents/`、`skills/`、`workspaces/` | 禁止 `support`、`workflows`、Todo、Task、Mock MCP 依赖 |
 | B1 | 所有产品入口共享 Agent 生命周期 | `AgentApplication`、`AgentConversation` | CLI/Worker 不直接构造 Query 参数 |
 | B3 | 仓库与 Profile 只在构建时绑定 | `AgentApplicationConfig` | 单轮输入不能覆盖仓库路径或 Profile |
 | B2 | 服务状态机不侵入 Agent Runtime | `BotJobStateMachine` | Runtime 不 import Bot，状态图自动校验 |

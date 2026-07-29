@@ -82,14 +82,14 @@ def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -
 
     assert graph.runtime.dependencies.tool_executor is graph.tool_executor
     assert graph.runtime.dependencies.tool_registry is graph.tool_registry
-    assert graph.agent_runner.runtime is graph.runtime
-    assert graph.skill_executor.agent_runner is graph.agent_runner
+    assert graph.subagent_runner.runtime is graph.runtime
+    assert graph.skill_executor.subagent_runner is graph.subagent_runner
     assert graph.tool_registry.get("skill").executor is graph.skill_executor
-    assert graph.tool_registry.get("agent").runner is graph.agent_runner
-    assert graph.tool_registry.get("agent").registry is graph.agent_registry
-    assert [item.definition.name for item in graph.agent_registry.list()] == ["explore", "verify"]
-    assert graph.agent_registry.get("verify").definition.config.max_rounds == 16
-    assert graph.agent_registry.get("explore").definition.config.max_rounds == 8
+    assert graph.tool_registry.get("agent").runner is graph.subagent_runner
+    assert graph.tool_registry.get("agent").registry is graph.subagent_registry
+    assert [item.definition.name for item in graph.subagent_registry.list()] == ["explore", "verify"]
+    assert graph.subagent_registry.get("verify").definition.config.max_rounds == 16
+    assert graph.subagent_registry.get("explore").definition.config.max_rounds == 8
     assert graph.query_config.max_rounds == 30
     assert "agent" in graph.general_capabilities.allowed_tools
     assert "<available_skills>" in graph.discovery_prompt
@@ -109,7 +109,7 @@ def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -
         allowed_tools=contribution.manifest.allowed_tools
     )
     skill_discovery = build_discovery_prompt(
-        graph.skill_catalog, graph.agent_registry, contribution_capabilities
+        graph.skill_catalog, graph.subagent_registry, contribution_capabilities
     )
     assert "- explore:" in skill_discovery
     assert "- verify:" in skill_discovery

@@ -27,6 +27,7 @@ def test_old_execution_architecture_is_absent() -> None:
         PACKAGE_ROOT / "skills" / "runner.py",
         PACKAGE_ROOT / "agent_service.py",
         PACKAGE_ROOT / "composition.py",
+        PACKAGE_ROOT / "agents",
         PACKAGE_ROOT / "workflows" / "contribution" / "agents.py",
         PACKAGE_ROOT / "workflows" / "contribution" / "design.py",
         PACKAGE_ROOT / "workflows" / "contribution" / "discover.py",
@@ -84,15 +85,17 @@ def test_removed_minimum_version_capabilities_are_absent() -> None:
     assert not (PACKAGE_ROOT / "tools" / "pr.py").exists()
     for name in ("docs", "python", "javascript", "tests"):
         assert not (PACKAGE_ROOT / "skills" / name / "SKILL.md").exists()
-    agent_sources = "\n".join(
-        path.read_text(encoding="utf-8") for path in (PACKAGE_ROOT / "agents").glob("*.py")
+    subagent_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (PACKAGE_ROOT / "subagents").rglob("*.py")
     )
-    assert "background" not in agent_sources
+    assert "background" not in subagent_sources
 
 
-def test_agent_registry_has_no_file_or_plugin_loading_path() -> None:
-    agent_sources = "\n".join(
-        path.read_text(encoding="utf-8") for path in (PACKAGE_ROOT / "agents").glob("*.py")
+def test_subagent_registry_has_no_file_or_plugin_loading_path() -> None:
+    subagent_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (PACKAGE_ROOT / "subagents").rglob("*.py")
     )
     for forbidden in (
         ".osc_agent/agents",
@@ -101,4 +104,4 @@ def test_agent_registry_has_no_file_or_plugin_loading_path() -> None:
         "plugin_agent",
         "AgentLoader",
     ):
-        assert forbidden not in agent_sources
+        assert forbidden not in subagent_sources

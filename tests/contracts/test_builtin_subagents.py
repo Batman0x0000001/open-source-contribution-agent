@@ -1,4 +1,4 @@
-"""验证独立验证 Agent的契约、边界条件与回归行为。"""
+"""验证内置 Explore 与 Verify 子 Agent 的契约和边界。"""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ import subprocess
 import pytest
 from pydantic import ValidationError
 
-from osc_agent.agents.definitions import AgentInvocation, AgentRunResult
-from osc_agent.agents.registry import AgentRegistry
-from osc_agent.agents.tool import AgentTool, AgentToolInput
-from osc_agent.agents.verify import (
+from osc_agent.subagents.builtins.verify import (
     VERIFY_TOOLS,
     VerificationReport,
-    build_verify_registration,
+    build_verify_subagent,
 )
+from osc_agent.subagents.models import SubagentRequest, SubagentRunResult
+from osc_agent.subagents.registry import SubagentRegistry
+from osc_agent.subagents.tool import AgentTool, AgentToolInput
 from osc_agent.runtime.models import CapabilityScope, ToolUseContext
 from osc_agent.runtime_config import default_runtime_config_path, load_runtime_config
 
@@ -53,7 +53,7 @@ def report(*, verdict: str, checks: list[dict], risks=None, unverified=None) -> 
 
 
 def test_verify_registration_is_minimal_read_only_and_bounded() -> None:
-    registration = build_verify_registration(model="test-model", config=VERIFY_CONFIG)
+    registration = build_verify_subagent(model="test-model", config=VERIFY_CONFIG)
 
     assert registration.definition.name == "verify"
     assert registration.definition.context_policy == "minimal"
@@ -140,11 +140,13 @@ def test_verify_agent_returns_typed_report_without_parent_transcript(tmp_path: P
     initialize_repository(tmp_path)
 
     class Runner:
-        invocation: AgentInvocation | None = None
+        name: str | None = None
+        request: SubagentRequest | None = None
 
-        async def run(self, invocation: AgentInvocation) -> AgentRunResult:
-            self.invocation = invocation
-            return AgentRunResult(
+        async def run(self, name: str, request: SubagentRequest) -> SubagentRunResult:
+            self.name = name
+            self.request = request
+            return SubagentRunResult(
                 session_id="verify-child",
                 status="completed",
                 output=(
@@ -169,8 +171,8 @@ def test_verify_agent_returns_typed_report_without_parent_transcript(tmp_path: P
             )
 
     runner = Runner()
-    registry = AgentRegistry(
-        [build_verify_registration(model="test-model", config=VERIFY_CONFIG)]
+    registry = SubagentRegistry(
+        [build_verify_subagent(model="test-model", config=VERIFY_CONFIG)]
     )
     result = asyncio.run(
         AgentTool(runner, registry).call(
@@ -189,13 +191,13 @@ def test_verify_agent_returns_typed_report_without_parent_transcript(tmp_path: P
 
     assert result.error is None
     assert result.data["result"]["verdict"] == "PASS"
-    assert runner.invocation is not None
-    assert runner.invocation.parent_messages == []
-    assert runner.invocation.working_directory == str(tmp_path)
+    assert runner.name == "verify"
+    assert runner.request is not None
+    assert runner.request.working_directory == str(tmp_path)
 
 
 def test_verify_prompt_states_semantic_output_constraints() -> None:
-    registration = build_verify_registration(model="test-model", config=VERIFY_CONFIG)
+    registration = build_verify_subagent(model="test-model", config=VERIFY_CONFIG)
     prompt = registration.prompt_builder(
         registration.input_model.model_validate(
             {
@@ -214,12 +216,12 @@ def test_read_only_agent_guard_fails_closed_and_preserves_changes(tmp_path: Path
     initialize_repository(tmp_path)
 
     class MutatingRunner:
-        async def run(self, invocation: AgentInvocation) -> AgentRunResult:
-            (Path(invocation.working_directory) / "unexpected.bin").write_bytes(b"\x00\x01")
-            return AgentRunResult(session_id="child", status="completed", output="{}")
+        async def run(self, name: str, request: SubagentRequest) -> SubagentRunResult:
+            (Path(request.working_directory) / "unexpected.bin").write_bytes(b"\x00\x01")
+            return SubagentRunResult(session_id="child", status="completed", output="{}")
 
-    registry = AgentRegistry(
-        [build_verify_registration(model="test-model", config=VERIFY_CONFIG)]
+    registry = SubagentRegistry(
+        [build_verify_subagent(model="test-model", config=VERIFY_CONFIG)]
     )
     result = asyncio.run(
         AgentTool(MutatingRunner(), registry).call(

@@ -8,9 +8,9 @@ from typing import Literal
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
-from osc_agent.agents.definitions import AgentDefinition
-from osc_agent.agents.registry import AgentContract, AgentRegistration
 from osc_agent.runtime.models import CapabilityScope, ContractModel, FrozenContractModel, QueryConfig
+from osc_agent.subagents.models import SubagentDefinition
+from osc_agent.subagents.registry import SubagentContract, SubagentRegistration
 from osc_agent.tools.path_policy import normalize_repo_relative_path, safe_repo_path
 
 
@@ -44,7 +44,7 @@ class ExploreAgentArguments(ContractModel):
         return normalized
 
 
-class AgentEvidence(FrozenContractModel):
+class ExploreEvidence(FrozenContractModel):
     path: str = Field(min_length=1)
     line_start: int | None = Field(default=None, ge=1)
     line_end: int | None = Field(default=None, ge=1)
@@ -60,7 +60,7 @@ class AgentEvidence(FrozenContractModel):
         return normalized
 
     @model_validator(mode="after")
-    def validate_line_range(self, info: ValidationInfo) -> "AgentEvidence":
+    def validate_line_range(self, info: ValidationInfo) -> "ExploreEvidence":
         if self.line_end is not None and self.line_start is None:
             raise ValueError("line_end requires line_start")
         if (
@@ -85,15 +85,15 @@ class AgentEvidence(FrozenContractModel):
         return self
 
 
-class AgentFinding(FrozenContractModel):
+class ExploreFinding(FrozenContractModel):
     claim: str = Field(min_length=1, max_length=2_000)
     confidence: Literal["high", "medium", "low"]
-    evidence: list[AgentEvidence] = Field(min_length=1, max_length=5)
+    evidence: list[ExploreEvidence] = Field(min_length=1, max_length=5)
 
 
 class ExploreReport(FrozenContractModel):
     summary: str = Field(min_length=1, max_length=8_000)
-    findings: list[AgentFinding] = Field(default_factory=list, max_length=20)
+    findings: list[ExploreFinding] = Field(default_factory=list, max_length=20)
     relevant_files: list[str] = Field(default_factory=list, max_length=30)
     likely_change_locations: list[str] = Field(default_factory=list, max_length=20)
     recommended_tests: list[str] = Field(default_factory=list, max_length=20)
@@ -126,8 +126,8 @@ class ExploreReport(FrozenContractModel):
         return self
 
 
-def build_explore_registration(*, model: str, config: QueryConfig) -> AgentRegistration:
-    definition = AgentDefinition(
+def build_explore_subagent(*, model: str, config: QueryConfig) -> SubagentRegistration:
+    definition = SubagentDefinition(
         name="explore",
         description="Read-only repository exploration with evidence-backed findings",
         system_prompt=(
@@ -139,7 +139,7 @@ def build_explore_registration(*, model: str, config: QueryConfig) -> AgentRegis
         config=config,
         context_policy="minimal",
     )
-    return AgentRegistration(
+    return SubagentRegistration(
         definition=definition,
         input_model=ExploreAgentArguments,
         output_model=ExploreReport,
@@ -150,7 +150,7 @@ def build_explore_registration(*, model: str, config: QueryConfig) -> AgentRegis
     )
 
 
-def _build_explore_prompt(arguments: AgentContract) -> str:
+def _build_explore_prompt(arguments: SubagentContract) -> str:
     parsed = ExploreAgentArguments.model_validate(arguments)
     return (
         "Scope paths:\n"

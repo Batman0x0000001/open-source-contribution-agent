@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 from pydantic import ConfigDict, JsonValue, ValidationError, create_model
 
-from osc_agent.agents.definitions import AgentDefinition, AgentInvocation
-from osc_agent.agents.runner import AgentRunner
 from osc_agent.runtime.models import CapabilityScope
 from osc_agent.runtime.models import QueryConfig
 from osc_agent.skills.catalog import SkillCatalog
 from osc_agent.skills.loader import SkillLoader
 from osc_agent.skills.models import SkillInvocation, SkillResult
+from osc_agent.subagents.models import SubagentDefinition, SubagentRequest
+from osc_agent.subagents.runner import SubagentRunner
 
 
 class SkillExecutor:
@@ -19,11 +19,11 @@ class SkillExecutor:
         self,
         catalog: SkillCatalog,
         *,
-        agent_runner: AgentRunner | None = None,
+        subagent_runner: SubagentRunner | None = None,
         query_config: QueryConfig | None = None,
     ) -> None:
         self.catalog = catalog
-        self.agent_runner = agent_runner
+        self.subagent_runner = subagent_runner
         self.query_config = query_config or QueryConfig()
 
     async def execute(self, invocation: SkillInvocation) -> SkillResult:
@@ -59,27 +59,25 @@ class SkillExecutor:
                 capabilities=capabilities,
                 completion_requirements=descriptor.manifest.completion,
             )
-        if self.agent_runner is None:
-            return SkillResult(name=invocation.name, status="failed", error="fork skill requires AgentRunner")
+        if self.subagent_runner is None:
+            return SkillResult(name=invocation.name, status="failed", error="fork skill requires SubagentRunner")
 
-        definition = AgentDefinition(
+        definition = SubagentDefinition(
             name=f"skill:{invocation.name}",
             description=descriptor.manifest.description,
             system_prompt="Execute the supplied skill instructions and return only its declared JSON output.",
             model=descriptor.manifest.model,
             capabilities=capabilities,
             config=self.query_config,
+            context_policy="fork" if invocation.parent_messages else "minimal",
         )
-        run = await self.agent_runner.run_with_definition(
+        run = await self.subagent_runner.run_definition(
             definition,
-            AgentInvocation(
-                agent_name=definition.name,
+            SubagentRequest(
                 prompt=prompt,
-                mode="fork" if invocation.parent_messages else "inline",
-                parent_session_id=invocation.session_id,
                 working_directory=invocation.working_directory,
                 caller_capabilities=invocation.caller_capabilities,
-                parent_messages=invocation.parent_messages,
+                parent_messages=tuple(invocation.parent_messages),
             ),
         )
         if run.status != "completed":

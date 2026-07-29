@@ -1,10 +1,10 @@
-"""定义子 Agent 的调用参数、运行结果和静态配置。"""
+"""定义子 Agent 的静态配置、单次请求和运行结果。"""
 
 from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from osc_agent.runtime.models import (
     CapabilityScope,
@@ -14,33 +14,24 @@ from osc_agent.runtime.models import (
 )
 
 
-class AgentDefinition(FrozenContractModel):
+class SubagentDefinition(FrozenContractModel):
     name: str = Field(min_length=1)
     description: str = Field(min_length=1)
     system_prompt: str = Field(min_length=1)
     model: str | None = None
-    capabilities: CapabilityScope = Field(default_factory=CapabilityScope)
+    capabilities: CapabilityScope
     config: QueryConfig = Field(default_factory=QueryConfig)
     context_policy: Literal["minimal", "fork"] = "minimal"
 
 
-class AgentInvocation(FrozenContractModel):
-    agent_name: str = Field(min_length=1)
+class SubagentRequest(FrozenContractModel):
     prompt: str = Field(min_length=1)
-    mode: Literal["inline", "fork"] = "inline"
-    parent_session_id: str = Field(min_length=1)
     working_directory: str = Field(min_length=1)
     caller_capabilities: CapabilityScope = Field(default_factory=CapabilityScope)
-    parent_messages: list[RuntimeMessage] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def fork_requires_parent_context(self) -> "AgentInvocation":
-        if self.mode == "fork" and not self.parent_messages:
-            raise ValueError("fork mode requires parent_messages")
-        return self
+    parent_messages: tuple[RuntimeMessage, ...] = ()
 
 
-class AgentRunResult(FrozenContractModel):
+class SubagentRunResult(FrozenContractModel):
     session_id: str = Field(min_length=1)
     status: Literal["completed", "failed", "cancelled"]
     output: str = ""
