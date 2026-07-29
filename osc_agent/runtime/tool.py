@@ -12,10 +12,10 @@ from osc_agent.runtime.tool_models import (
     Allow,
     PermissionDecision,
     ToolResult,
-    ToolUseContext,
     ValidationResult,
     ValidationSuccess,
 )
+from osc_agent.runtime.state import ToolContext
 
 
 InputT = TypeVar("InputT", bound=ContractModel)
@@ -42,25 +42,25 @@ class Tool(Protocol[InputT, OutputT]):
     def permission_preview(
         self,
         input: InputT,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> dict[str, JsonValue]: ...
 
     async def validate_input(
         self,
         input: InputT,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> ValidationResult: ...
 
     async def check_permissions(
         self,
         input: InputT,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> PermissionDecision: ...
 
     async def call(
         self,
         input: InputT,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> ToolResult: ...
 
 
@@ -90,21 +90,21 @@ class BaseTool(Generic[InputT, OutputT]):
     def permission_preview(
         self,
         input: InputT,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> dict[str, JsonValue]:
         return _bounded_preview(input.model_dump(mode="json"))
 
     async def validate_input(
         self,
         input: InputT,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> ValidationResult:
         return ValidationSuccess()
 
     async def check_permissions(
         self,
         input: InputT,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> PermissionDecision:
         updated_input: dict[str, JsonValue] = input.model_dump(mode="json")
         return Allow(updated_input=updated_input)
@@ -113,7 +113,7 @@ class BaseTool(Generic[InputT, OutputT]):
     async def call(
         self,
         input: InputT,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> ToolResult:
         raise NotImplementedError
 
@@ -141,14 +141,14 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return sorted(name for name, tool in self._tools.items() if tool.is_enabled())
 
-    def available(self, context: ToolUseContext) -> list[Tool[ContractModel, ContractModel]]:
+    def available(self, context: ToolContext) -> list[Tool[ContractModel, ContractModel]]:
         return [
             tool
             for tool in self._tools.values()
             if tool.is_enabled() and context.capabilities.permits_tool(tool.name)
         ]
 
-    def schemas(self, context: ToolUseContext) -> list[dict[str, JsonValue]]:
+    def schemas(self, context: ToolContext) -> list[dict[str, JsonValue]]:
         return [
             {
                 "name": tool.name,

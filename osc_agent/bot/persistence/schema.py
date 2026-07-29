@@ -1,8 +1,8 @@
 """定义 Bot SQLite Schema 及其兼容版本。"""
 
-SCHEMA_EPOCH = 2
-SCHEMA_MIGRATION_VERSION = 2
-STATE_MODEL_REVISION = "bot-job-v2"
+SCHEMA_EPOCH = 3
+SCHEMA_MIGRATION_VERSION = 3
+STATE_MODEL_REVISION = "bot-job-v3-session-v5"
 APPLICATION_VERSION = "0.2.4"
 
 
@@ -110,5 +110,3 @@ CREATE TABLE IF NOT EXISTS session_leases (
     lease_until TEXT NOT NULL
 );
 """
-
-

@@ -5,7 +5,8 @@ from __future__ import annotations
 from pydantic import Field
 
 from osc_agent.contracts import ContractModel
-from osc_agent.runtime.tool_models import ToolResult, ToolUseContext
+from osc_agent.runtime.state import ToolContext
+from osc_agent.runtime.tool_models import ToolResult
 from osc_agent.runtime.session_store import ToolResultStore
 from osc_agent.runtime.tool import BaseTool
 
@@ -31,6 +32,6 @@ class ReadToolResultTool(BaseTool[ReadToolResultInput, ReadToolResultOutput]):
     def is_read_only(self, input: ReadToolResultInput) -> bool:
         return True
 
-    async def call(self, input: ReadToolResultInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: ReadToolResultInput, context: ToolContext) -> ToolResult:
         content = self.store.read(session_id=context.session_id, result_id=input.result_id)
         return ToolResult(data={"result_id": input.result_id, "content": content})

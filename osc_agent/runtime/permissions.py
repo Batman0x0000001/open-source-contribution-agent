@@ -7,7 +7,8 @@ from typing import Protocol
 from pydantic import JsonValue
 
 from osc_agent.contracts import ContractModel
-from osc_agent.runtime.tool_models import Allow, Ask, Deny, PermissionDecision, ToolUseContext
+from osc_agent.runtime.state import ToolContext
+from osc_agent.runtime.tool_models import Allow, Ask, Deny, PermissionDecision
 from osc_agent.runtime.tool import Tool
 
 
@@ -16,7 +17,7 @@ class PermissionPolicy(Protocol):
         self,
         tool: Tool[ContractModel, ContractModel],
         input: ContractModel,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> PermissionDecision: ...
 
 
@@ -27,12 +28,12 @@ class DefaultPermissionPolicy:
         self,
         tool: Tool[ContractModel, ContractModel],
         input: ContractModel,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> PermissionDecision:
         if not context.capabilities.permits_tool(tool.name):
             return Deny(reason=f"tool {tool.name} is outside the current capability scope")
         if (
-            context.permission_mode == "plan"
+            context.permissions.mode == "plan"
             and not tool.is_read_only(input)
             and tool.name != "write_plan"
         ):
@@ -41,7 +42,7 @@ class DefaultPermissionPolicy:
             return Ask(
                 tool_name=tool.name,
                 prompt=f"Allow {tool.permission_risk(input)} tool call {tool.name}?",
-                working_directory=context.working_directory,
+                working_directory=context.workspace.working_directory,
                 risk=tool.permission_risk(input),
                 preview=tool.permission_preview(input, context),
             )

@@ -40,11 +40,6 @@ class RepositoryBotConfig(FrozenContractModel):
     def validate_commands_and_paths(self) -> "RepositoryBotConfig":
         if any(not command.strip() for command in self.validation_commands):
             raise ValueError("validation commands must be non-empty")
-        from osc_agent.processes.contracts import CommandKind
-        from osc_agent.processes.policy import classify_command
-
-        if not any(classify_command(command) == CommandKind.TEST for command in self.validation_commands):
-            raise ValueError("validation commands must include at least one recognized test command")
         for pattern in self.denied_paths:
             normalized = pattern.replace("\\", "/")
             if not normalized or PurePosixPath(normalized).is_absolute() or ".." in PurePosixPath(normalized).parts:

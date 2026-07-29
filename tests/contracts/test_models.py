@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import tool_context
+
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from osc_agent.completion.models import CompletionRequirements
+from osc_agent.runtime.state import CapabilityScope
 from osc_agent.contracts import FrozenContractModel
 from osc_agent.runtime.query_models import QueryConfig
 from osc_agent.runtime.tool_models import (
     Allow,
-    CapabilityScope,
     PermissionDecision,
-    ToolExecutionUpdate,
     ToolResult,
-    ToolUseContext,
 )
 
 
@@ -54,17 +54,6 @@ def test_frozen_base_is_itself_strict() -> None:
 
     with pytest.raises(ValidationError, match="int_type"):
         Sample.model_validate({"count": "1"})
-
-
-def test_tool_execution_update_requires_result_and_identity_together() -> None:
-    context = ToolUseContext(
-        session_id="session-1",
-        working_directory="C:/repo",
-        state_directory="C:/state",
-    )
-
-    with pytest.raises(ValidationError, match="must either both be set or both be omitted"):
-        ToolExecutionUpdate(tool_use_id="call-1", context=context)
 
 
 def test_child_capabilities_can_only_narrow_the_caller_scope() -> None:

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from osc_agent.runtime.state import CapabilityScope
+
 import asyncio
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from osc_agent.runtime.tool_models import CapabilityScope
+
 from osc_agent.skills.catalog import SkillCatalog
 from osc_agent.skills.loader import SkillLoader
 from osc_agent.skills.models import PreparedSkill, SkillPreparationFailure, SkillRequest

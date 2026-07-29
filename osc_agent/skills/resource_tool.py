@@ -8,7 +8,8 @@ from pathlib import Path
 from pydantic import Field
 
 from osc_agent.contracts import ContractModel
-from osc_agent.runtime.tool_models import ToolResult, ToolUseContext, ValidationFailure, ValidationResult, ValidationSuccess
+from osc_agent.runtime.state import ToolContext
+from osc_agent.runtime.tool_models import ToolResult, ValidationFailure, ValidationResult, ValidationSuccess
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.skills.catalog import SkillCatalog
 
@@ -41,7 +42,7 @@ class ReadSkillResourceTool(BaseTool[ReadSkillResourceInput, ReadSkillResourceOu
     def is_concurrency_safe(self, input: ReadSkillResourceInput) -> bool:
         return True
 
-    async def validate_input(self, input: ReadSkillResourceInput, context: ToolUseContext) -> ValidationResult:
+    async def validate_input(self, input: ReadSkillResourceInput, context: ToolContext) -> ValidationResult:
         descriptor = self.catalog.get(input.skill)
         if descriptor is None:
             return ValidationFailure(reason="skill not found")
@@ -53,7 +54,7 @@ class ReadSkillResourceTool(BaseTool[ReadSkillResourceInput, ReadSkillResourceOu
             return ValidationFailure(reason="skill resource is missing or escapes the skill root")
         return ValidationSuccess()
 
-    async def call(self, input: ReadSkillResourceInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: ReadSkillResourceInput, context: ToolContext) -> ToolResult:
         descriptor = self.catalog.get(input.skill)
         assert descriptor is not None
         content = await asyncio.to_thread(_read_resource, descriptor.root, input.path)

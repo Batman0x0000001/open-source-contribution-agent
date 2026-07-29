@@ -21,11 +21,11 @@ from osc_agent.runtime.messages import ToolResultBlock
 from osc_agent.runtime.tool_models import (
     ToolError,
     ToolResult,
-    ToolUseContext,
     ValidationFailure,
     ValidationResult,
     ValidationSuccess,
 )
+from osc_agent.runtime.state import ToolContext
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.processes.policy import build_subprocess_environment
 
@@ -72,10 +72,10 @@ class GitHubListIssuesTool(BaseTool[GitHubListIssuesInput, GitHubListIssuesOutpu
     def is_concurrency_safe(self, input: GitHubListIssuesInput) -> bool:
         return True
 
-    async def validate_input(self, input: GitHubListIssuesInput, context: ToolUseContext) -> ValidationResult:
+    async def validate_input(self, input: GitHubListIssuesInput, context: ToolContext) -> ValidationResult:
         return _validate_remote(input.repo_url, context)
 
-    async def call(self, input: GitHubListIssuesInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: GitHubListIssuesInput, context: ToolContext) -> ToolResult:
         result = await asyncio.to_thread(
             fetch_issues,
             input.repo_url,
@@ -117,11 +117,11 @@ class GitHubGetIssueTool(BaseTool[GitHubGetIssueInput, GitHubGetIssueOutput]):
     def is_concurrency_safe(self, input: GitHubGetIssueInput) -> bool:
         return True
 
-    async def validate_input(self, input: GitHubGetIssueInput, context: ToolUseContext) -> ValidationResult:
+    async def validate_input(self, input: GitHubGetIssueInput, context: ToolContext) -> ValidationResult:
         valid = _validate_remote(input.repo_url, context)
         return valid
 
-    async def call(self, input: GitHubGetIssueInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: GitHubGetIssueInput, context: ToolContext) -> ToolResult:
         result = await asyncio.to_thread(
             fetch_issue,
             input.repo_url,
@@ -139,11 +139,11 @@ class GitHubGetIssueTool(BaseTool[GitHubGetIssueInput, GitHubGetIssueOutput]):
         )
 
 
-def _validate_remote(repo_url: str, context: ToolUseContext) -> ValidationResult:
+def _validate_remote(repo_url: str, context: ToolContext) -> ValidationResult:
     valid = _validate_repo_url(repo_url)
     if isinstance(valid, ValidationFailure):
         return valid
-    remote = _local_origin(Path(context.working_directory))
+    remote = _local_origin(Path(context.workspace.working_directory))
     requested = parse_github_repo(repo_url)
     if (
         remote is not None
@@ -346,7 +346,7 @@ def _local_origin(repo_root: Path) -> tuple[str, str] | None:
 
 
 def _remote_mismatch_approved(
-    context: ToolUseContext,
+    context: ToolContext,
     *,
     local_origin: tuple[str, str],
     requested_repository: tuple[str, str],

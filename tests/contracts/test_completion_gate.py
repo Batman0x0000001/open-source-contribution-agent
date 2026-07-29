@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import tool_context
+
 import asyncio
 from pathlib import Path
 import subprocess
 
-from osc_agent.completion.evidence import CompletionEvidenceStopHook
+from osc_agent.completion.hooks import CompletionStopHook
 from osc_agent.completion.models import CompletionRequirements
 from osc_agent.runtime.hooks import StopHookPayload
 from osc_agent.runtime.messages import RuntimeMessage, ToolResultBlock, ToolUseBlock
-from osc_agent.runtime.tool_models import ToolUseContext
 from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
@@ -36,8 +37,8 @@ def snapshot(root: Path) -> dict:
     )
 
 
-def context(root: Path) -> ToolUseContext:
-    return ToolUseContext(
+def context(root: Path) -> tool_context:
+    return tool_context(
         session_id="completion",
         working_directory=str(root),
         state_directory=str(root / "state"),
@@ -50,7 +51,7 @@ def context(root: Path) -> ToolUseContext:
     )
 
 
-def independent_context(root: Path) -> ToolUseContext:
+def independent_context(root: Path) -> tool_context:
     return context(root).model_copy(
         update={
             "completion_requirements": CompletionRequirements(
@@ -89,7 +90,7 @@ def completed(call_id: str, name: str, input: dict, data: dict) -> list[RuntimeM
 
 def evaluate(messages: list[RuntimeMessage], root: Path):
     return asyncio.run(
-        CompletionEvidenceStopHook()(
+        CompletionStopHook()(
             StopHookPayload(messages=messages),
             context(root),
         )
@@ -98,7 +99,7 @@ def evaluate(messages: list[RuntimeMessage], root: Path):
 
 def evaluate_independent(messages: list[RuntimeMessage], root: Path):
     return asyncio.run(
-        CompletionEvidenceStopHook()(
+        CompletionStopHook()(
             StopHookPayload(messages=messages),
             independent_context(root),
         )

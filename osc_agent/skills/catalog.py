@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from osc_agent.skills.loader import SkillLoader
 from osc_agent.skills.models import SkillDescriptor, SkillDiagnostic, SkillTrigger
 
@@ -87,6 +89,19 @@ class SkillCatalog:
                 )
             )
             del self._descriptors[name]
+
+
+def build_skill_catalog(repository_root: Path) -> SkillCatalog:
+    """从内置、用户和项目三个固定来源构建 Skill Catalog。"""
+
+    builtin = Path(__file__).resolve().parent / "builtins"
+    return SkillCatalog(
+        [
+            SkillLoader(builtin, source="builtin"),
+            SkillLoader(Path.home() / ".osc_agent" / "skills", source="user"),
+            SkillLoader(repository_root.resolve() / ".osc_agent" / "skills", source="project"),
+        ]
+    )
 
 
 def _is_user_invocable(descriptor: SkillDescriptor) -> bool:

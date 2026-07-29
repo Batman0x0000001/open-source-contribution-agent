@@ -5,12 +5,12 @@
 | 编号 | 最小机制 | Python 对应 | 硬验证 |
 |---|---|---|---|
 | Q1 | Query 是唯一 AsyncGenerator 循环 | `AgentRuntime.query` | 事件序列与单一入口测试 |
-| Q2 | 配置、依赖、状态、Tool 上下文分离 | `QueryConfig`、`QueryDependencies`、私有 `_QueryState`、`ToolUseContext` | Pydantic / frozen dataclass |
+| Q2 | 配置、循环计数、持久状态、Tool 投影分离 | `QueryConfig`、私有 `_QueryState`、`AgentRunState`、`ToolContext` | Pydantic / frozen dataclass |
 | T1 | Tool 是输入敏感的完整行为对象 | `Tool`、`ToolExecutor` | validation → permission → hooks → call 测试 |
-| T2 | 并发完成可乱序，ContextUpdate 按调用顺序应用 | `tool_orchestration.py` | 并发与串行测试 |
+| T2 | 并发完成可乱序，StateChange 按调用顺序应用 | `tool_orchestration.py`、`AgentRunState.apply()` | 并发与串行测试 |
 | T3 | Tool 只适配模型协议，共享文件、Git 和进程能力位于 Tool 外部 | `tools/`、`workspaces/`、`processes/` | AST 依赖边界与核心注册表测试 |
 | C1 | Transcript 与模型 Projection 分离 | `SessionTranscript`、`ContextPipeline` | compact 不改变权威历史和 Tool 配对 |
-| R1 | Transcript 驱动恢复 | `FileSessionStore` | JSONL 新建、追加、损坏拒绝、状态恢复 |
+| R1 | Session V5 无平行运行字段，Transcript 驱动恢复 | `SessionMetadata`、`AgentRunState`、File/SQLite Store | V4 拒绝、V5 新建、追加与恢复 |
 | S1 | Catalog 只发现 manifest，正文和资源延迟加载 | `SkillLoader`、`ReadSkillResourceTool` | 调用时读取与路径逃逸测试 |
 | S2 | 产品 Skill、SkillTool 共用准备器 | `AgentConversation`、`SkillTool`、`SkillPreparer` | composition 对象同一性测试 |
 | S3 | Skill 只注入当前 Conversation，不创建子模型循环 | `SkillPreparer`、`AgentTool` | Skills 禁止导入 Subagents 与旧 fork 路径测试 |
@@ -22,6 +22,8 @@
 | B1 | 所有产品入口共享 Agent 生命周期 | `AgentApplication`、`AgentConversation` | CLI/Worker 不直接构造 Query 参数 |
 | B3 | 仓库与 Profile 只在构建时绑定 | `AgentApplicationConfig` | 单轮输入不能覆盖仓库路径或 Profile |
 | B2 | 服务状态机不侵入 Agent Runtime | `BotJobStateMachine` | Runtime 不 import Bot，状态图自动校验 |
+| E1 | Runtime 与 Publisher 使用同一完成判定 | `CompletionEvaluator`、`CompletionStopHook` | 相同输入得到相同 blocking reasons |
+| X1 | Workspace、Process、Bot Domain/Control 不依赖 Runtime Context | 包依赖方向 | AST 边界测试 |
 
 Bot 只持有 Plan/Approval/Implementation/Publish 的信任转换；分析、规划、实现和验证方法仍由
 Skill 驱动。Skill Prompt 不能替代 ExecutionContract、Docker、Artifact Tool 或 Publisher

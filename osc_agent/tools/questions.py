@@ -13,8 +13,8 @@ from osc_agent.contracts import ContractModel
 from osc_agent.runtime.tool_models import (
     ToolError,
     ToolResult,
-    ToolUseContext,
 )
+from osc_agent.runtime.state import ToolContext
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
@@ -145,7 +145,7 @@ class AskUserQuestionTool(BaseTool[AskUserQuestionInput, AskUserQuestionOutput])
     async def call(
         self,
         input: AskUserQuestionInput,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> ToolResult:
         if self.question_handler is None:
             return _error("USER_INTERACTION_REQUIRED", "no question handler is configured")
@@ -183,7 +183,7 @@ class AskUserQuestionTool(BaseTool[AskUserQuestionInput, AskUserQuestionOutput])
         try:
             fingerprint = await asyncio.to_thread(
                 git_workspace_fingerprint,
-                repo_root=Path(context.working_directory),
+                repo_root=Path(context.workspace.working_directory),
             )
         except (OSError, ValueError):
             fingerprint = None

@@ -9,7 +9,8 @@ from pathlib import Path
 from pydantic import Field
 
 from osc_agent.contracts import ContractModel
-from osc_agent.runtime.tool_models import ToolError, ToolResult, ToolUseContext
+from osc_agent.runtime.state import ToolContext
+from osc_agent.runtime.tool_models import ToolError, ToolResult
 from osc_agent.runtime.session_store import ToolResultStore
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.workspaces.git_state import (
@@ -43,10 +44,12 @@ class GitStatusTool(BaseTool[GitStatusInput, GitStatusOutput]):
     def is_concurrency_safe(self, input: GitStatusInput) -> bool:
         return True
 
-    async def call(self, input: GitStatusInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: GitStatusInput, context: ToolContext) -> ToolResult:
         return _git_tool_result(
             "status",
-            await asyncio.to_thread(git_status, repo_root=Path(context.working_directory)),
+            await asyncio.to_thread(
+                git_status, repo_root=Path(context.workspace.working_directory)
+            ),
         )
 
 
@@ -89,20 +92,24 @@ class GitDiffTool(BaseTool[GitDiffInput, GitDiffOutput]):
     def is_concurrency_safe(self, input: GitDiffInput) -> bool:
         return True
 
-    async def call(self, input: GitDiffInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: GitDiffInput, context: ToolContext) -> ToolResult:
         try:
             before = await asyncio.to_thread(
                 git_workspace_fingerprint,
-                repo_root=Path(context.working_directory),
+                repo_root=Path(context.workspace.working_directory),
             )
             snapshot = await asyncio.to_thread(
                 git_snapshot,
-                repo_root=Path(context.working_directory),
-                base_commit=context.worktree.base_commit if context.worktree else None,
+                repo_root=Path(context.workspace.working_directory),
+                base_commit=(
+                    context.workspace.worktree.base_commit
+                    if context.workspace.worktree
+                    else None
+                ),
             )
             after = await asyncio.to_thread(
                 git_workspace_fingerprint,
-                repo_root=Path(context.working_directory),
+                repo_root=Path(context.workspace.working_directory),
             )
             if before != after:
                 raise ValueError("Git workspace changed while the snapshot was being generated")
@@ -150,12 +157,12 @@ class GitLogTool(BaseTool[GitLogInput, GitLogOutput]):
     def is_concurrency_safe(self, input: GitLogInput) -> bool:
         return True
 
-    async def call(self, input: GitLogInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: GitLogInput, context: ToolContext) -> ToolResult:
         return _git_tool_result(
             "log",
             await asyncio.to_thread(
                 git_log,
-                repo_root=Path(context.working_directory),
+                repo_root=Path(context.workspace.working_directory),
                 limit=input.limit,
             ),
         )

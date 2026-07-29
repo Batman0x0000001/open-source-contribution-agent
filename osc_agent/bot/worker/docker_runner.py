@@ -12,7 +12,6 @@ from time import monotonic
 from typing import Callable
 
 from osc_agent.bot.domain.repositories import RepositoryBotConfig
-from osc_agent.runtime.tool_models import ToolUseContext
 from osc_agent.processes.contracts import CommandResult, ProcessRequest, ProcessRunner
 from osc_agent.processes.policy import build_subprocess_environment
 from osc_agent.workspaces.git_state import git_snapshot, git_workspace_fingerprint
@@ -53,11 +52,7 @@ class DockerProcessRunner(ProcessRunner):
         if not self.docker:
             raise ValueError("Docker executable was not found; Host fallback is forbidden")
 
-    async def run(
-        self,
-        request: ProcessRequest,
-        context: ToolUseContext | None,
-    ) -> CommandResult:
+    async def run(self, request: ProcessRequest) -> CommandResult:
         repository = Path(request.repo_root).resolve()
         if not repository.is_relative_to(self.workspace_root):
             raise ValueError("Docker workspace is outside the configured bot workspace root")
@@ -66,11 +61,10 @@ class DockerProcessRunner(ProcessRunner):
             raise ValueError("Docker bot workspace must be a fresh clone with a real .git directory")
         if "," in str(repository):
             raise ValueError("Docker bind mount path cannot contain a comma")
-        tool_id = context.tool_use_id if context is not None else "process"
         fingerprint_before = await asyncio.to_thread(
             git_workspace_fingerprint, repo_root=repository
         )
-        name = _container_name(self.job_id, tool_id or "process")
+        name = _container_name(self.job_id, request.invocation_id)
         started = monotonic()
         process = await asyncio.create_subprocess_exec(
             *self._argv(name, repository, request.command),

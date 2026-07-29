@@ -12,18 +12,12 @@ import subprocess
 import time
 
 from osc_agent.processes.contracts import CommandResult, ProcessRequest
-from osc_agent.runtime.tool_models import ToolUseContext
 
 
 class DisabledProcessRunner:
     """为禁止执行仓库进程的 Agent profile 提供 fail-closed runner。"""
 
-    async def run(
-        self,
-        request: ProcessRequest,
-        context: ToolUseContext | None,
-    ) -> CommandResult:
-        del context
+    async def run(self, request: ProcessRequest) -> CommandResult:
         return CommandResult(
             command=request.command,
             exit_code=-4,
@@ -34,12 +28,7 @@ class DisabledProcessRunner:
 
 
 class HostProcessRunner:
-    async def run(
-        self,
-        request: ProcessRequest,
-        context: ToolUseContext | None,
-    ) -> CommandResult:
-        del context
+    async def run(self, request: ProcessRequest) -> CommandResult:
         return await run_command(
             request.executable,
             request.command,

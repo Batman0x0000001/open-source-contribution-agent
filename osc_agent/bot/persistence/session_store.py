@@ -1,4 +1,4 @@
-"""使用 Bot SQLite 数据库持久化 Runtime Session V4 记录。"""
+"""使用 Bot SQLite 数据库持久化 Runtime Session V5 记录。"""
 
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ from osc_agent.runtime.messages import RuntimeMessage
 from osc_agent.runtime.session import (
     SessionMetadata,
     SessionOverview,
-    SessionRuntimeState,
     SessionSnapshot,
 )
 from osc_agent.runtime.session_store import SessionStore
+from osc_agent.runtime.state import AgentRunState
 
 
 class SqliteSessionStore(SessionStore):
@@ -53,16 +53,17 @@ class SqliteSessionStore(SessionStore):
                     "DELETE FROM session_leases WHERE session_id=? AND owner=?", (session_id, owner)
                 )
 
-    def create(self, metadata: SessionMetadata) -> None:
+    def create(self, metadata: SessionMetadata, state: AgentRunState) -> None:
         if self.load(metadata.session_id) is not None:
             raise ValueError(f"session already exists: {metadata.session_id}")
         self._append(metadata.session_id, "metadata", metadata.model_dump_json())
+        self._append(metadata.session_id, "state", state.model_dump_json())
 
     def append_message(self, session_id: str, message: RuntimeMessage) -> None:
         self._require(session_id)
         self._append(session_id, "message", message.model_dump_json())
 
-    def save_state(self, session_id: str, state: SessionRuntimeState) -> None:
+    def save_state(self, session_id: str, state: AgentRunState) -> None:
         self._require(session_id)
         self._append(session_id, "state", state.model_dump_json())
 
@@ -77,7 +78,7 @@ class SqliteSessionStore(SessionStore):
             return None
         metadata: SessionMetadata | None = None
         messages: list[RuntimeMessage] = []
-        state = SessionRuntimeState()
+        state: AgentRunState | None = None
         previous: str | None = None
         for expected_sequence, row in enumerate(rows, start=1):
             sequence, event_id, previous_event_id, record_type, payload = row
@@ -91,12 +92,14 @@ class SqliteSessionStore(SessionStore):
             elif record_type == "message":
                 messages.append(RuntimeMessage.model_validate_json(payload))
             elif record_type == "state":
-                state = SessionRuntimeState.model_validate_json(payload)
+                state = AgentRunState.model_validate_json(payload)
             else:
                 raise ValueError(f"unknown session record type: {record_type}")
         if metadata is None:
             raise ValueError("session metadata is missing")
-        return SessionSnapshot(metadata=metadata, messages=messages, runtime_state=state)
+        if state is None:
+            raise ValueError("session state is missing")
+        return SessionSnapshot(metadata=metadata, messages=messages, state=state)
 
     def list_overviews(self, *, limit: int | None = None) -> list[SessionOverview]:
         with self.store.connect() as connection:
@@ -112,15 +115,16 @@ class SqliteSessionStore(SessionStore):
             try:
                 snapshot = self.load(session_id)
                 assert snapshot is not None
+                state = snapshot.state
                 overviews.append(
                     SessionOverview(
                         session_id=session_id,
                         model=snapshot.metadata.model,
-                        repository_root=snapshot.metadata.repository_root,
+                        workspace_root=snapshot.metadata.workspace_root,
                         updated_at=utc_now(),
-                        status=snapshot.runtime_state.last_status or "unknown",
-                        working_directory=snapshot.metadata.initial_working_directory,
-                        worktree=snapshot.runtime_state.worktree,
+                        status=state.last_status or "unknown",
+                        working_directory=state.workspace.working_directory,
+                        worktree=state.workspace.worktree,
                     )
                 )
             except ValueError as exc:
@@ -160,7 +164,3 @@ class SqliteSessionStore(SessionStore):
                 (session_id, sequence, str(uuid4()), previous, record_type, payload_json, utc_now()),
             )
             connection.commit()
-
-
-
-

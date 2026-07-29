@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import tool_context
+
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -13,7 +15,7 @@ from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
 from osc_agent.contracts import ContractModel
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolUseBlock
 from osc_agent.runtime.query_models import ResumeQueryParams, StartQueryParams
-from osc_agent.runtime.tool_models import ApprovalResponse, Ask, ToolResult, ToolUseContext
+from osc_agent.runtime.tool_models import ApprovalResponse, Ask, ToolResult
 from osc_agent.runtime.query import AgentRuntime
 from osc_agent.runtime.session_store import FileSessionStore
 from osc_agent.runtime.tool import BaseTool, ToolRegistry
@@ -39,7 +41,7 @@ class MutateTool(BaseTool[MutateInput, MutateOutput]):
     def permission_risk(self, input: MutateInput) -> str:
         return "process"
 
-    async def call(self, input: MutateInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: MutateInput, context: tool_context) -> ToolResult:
         return ToolResult(data={"value": input.value})
 
 
@@ -113,7 +115,7 @@ def test_exact_permission_grant_persists_across_resume(tmp_path: Path) -> None:
     )
     snapshot = store.load("session-1")
     assert snapshot is not None
-    assert len(snapshot.runtime_state.permission_grants) == 1
+    assert len(snapshot.state.permissions.grants) == 1
 
     async def reject_repeat(_decision: Ask) -> ApprovalResponse:
         raise AssertionError("exact Session permission should be reused")

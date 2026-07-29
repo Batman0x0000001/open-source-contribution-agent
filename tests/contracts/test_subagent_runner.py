@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from osc_agent.runtime.state import CapabilityScope
+
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -13,7 +15,7 @@ from osc_agent.runtime.dependencies import QueryDependencies
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
 from osc_agent.contracts import ContractModel, FrozenContractModel
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
-from osc_agent.runtime.tool_models import CapabilityScope
+
 from osc_agent.runtime.query import AgentRuntime
 from osc_agent.runtime.session_store import FileSessionStore
 from osc_agent.runtime.tool import ToolRegistry
@@ -151,7 +153,7 @@ def test_subagent_runner_reuses_runtime_and_removes_recursive_capability(tmp_pat
     assert gateway.requests[0].model == "test-model"
     snapshot = store.load("child-session")
     assert snapshot is not None
-    assert snapshot.metadata.capabilities.allowed_tools == frozenset({"read"})
+    assert snapshot.state.capabilities.allowed_tools == frozenset({"read"})
 
 
 def test_fork_copies_parent_messages_and_minimal_ignores_them() -> None:
@@ -197,4 +199,4 @@ def test_dynamic_subagent_definition_cannot_retain_agent_tool(tmp_path: Path) ->
 
     snapshot = store.load("dynamic-child")
     assert snapshot is not None
-    assert snapshot.metadata.capabilities.allowed_tools == frozenset({"read"})
+    assert snapshot.state.capabilities.allowed_tools == frozenset({"read"})

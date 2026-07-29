@@ -1,42 +1,52 @@
-"""根据测试、差异和独立验证证据控制会话完成。"""
+"""以中立输入评估 Agent transcript 的完成证据与配置验证。"""
 
 from __future__ import annotations
 
 import asyncio
 from pathlib import Path
 
-from osc_agent.runtime.hooks import StopHookPayload, StopHookResult
+from pydantic import Field
+
+from osc_agent.completion.models import CompletionRequirements
+from osc_agent.contracts import FrozenContractModel
+from osc_agent.runtime.messages import RuntimeMessage
 from osc_agent.runtime.messages import ToolResultBlock, ToolUseBlock
-from osc_agent.runtime.tool_models import ToolUseContext
 from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
-class CompletionEvidenceStopHook:
-    """从权威 transcript 推导证据，不维护 Contribution 阶段状态。"""
+class CompletionEvaluation(FrozenContractModel):
+    messages: tuple[RuntimeMessage, ...]
+    workspace_root: str = Field(min_length=1)
+    requirements: CompletionRequirements = Field(default_factory=CompletionRequirements)
+    validation_commands: tuple[str, ...] = ()
 
-    async def __call__(
-        self,
-        payload: StopHookPayload,
-        context: ToolUseContext,
-    ) -> StopHookResult:
-        required = context.completion_requirements.required_evidence
+
+class CompletionReport(FrozenContractModel):
+    blocking_reasons: tuple[str, ...] = ()
+
+
+class CompletionEvaluator:
+    """从权威 transcript 推导完成结果，不依赖 Runtime Hook。"""
+
+    async def evaluate(self, evaluation: CompletionEvaluation) -> CompletionReport:
+        required = evaluation.requirements.required_evidence
         if not required:
-            return StopHookResult()
+            return CompletionReport()
         try:
             current_fingerprint = await asyncio.to_thread(
                 git_workspace_fingerprint,
-                repo_root=Path(context.working_directory),
+                repo_root=Path(evaluation.workspace_root),
             )
         except (OSError, ValueError) as exc:
-            return StopHookResult(
-                blocking_reasons=[
+            return CompletionReport(
+                blocking_reasons=(
                     f"Unable to verify the current Git workspace fingerprint: {exc}"
-                ]
+                ,)
             )
 
         calls: dict[str, tuple[int, ToolUseBlock]] = {}
         completed: list[tuple[int, ToolUseBlock, dict]] = []
-        for index, message in enumerate(payload.messages):
+        for index, message in enumerate(evaluation.messages):
             for block in message.content:
                 if isinstance(block, ToolUseBlock):
                     calls[block.id] = (index, block)
@@ -74,7 +84,7 @@ class CompletionEvidenceStopHook:
                 successful_test,
                 waiver
                 if "successful_test"
-                in context.completion_requirements.waivable_evidence
+                in evaluation.requirements.waivable_evidence
                 else None,
             )
             if item is not None
@@ -122,7 +132,7 @@ class CompletionEvidenceStopHook:
                 independent_verification,
                 independent_waiver
                 if "independent_verification"
-                in context.completion_requirements.waivable_evidence
+                in evaluation.requirements.waivable_evidence
                 else None,
             )
             if item is not None
@@ -224,7 +234,63 @@ class CompletionEvidenceStopHook:
             reasons.append(
                 "No DeliveryDraft bound to the current workspace was submitted after the final git snapshot."
             )
-        return StopHookResult(blocking_reasons=reasons)
+        reasons.extend(
+            await _configured_validation_reasons(
+                evaluation,
+                current_fingerprint=current_fingerprint,
+            )
+        )
+        return CompletionReport(blocking_reasons=tuple(reasons))
+
+
+async def _configured_validation_reasons(
+    evaluation: CompletionEvaluation,
+    *,
+    current_fingerprint: str,
+) -> list[str]:
+    if (
+        not evaluation.validation_commands
+        or "successful_test" not in evaluation.requirements.required_evidence
+    ):
+        return []
+    calls: dict[str, tuple[int, ToolUseBlock]] = {}
+    success: dict[str, tuple[int, str]] = {}
+    last_write = -1
+    for index, message in enumerate(evaluation.messages):
+        for block in message.content:
+            if isinstance(block, ToolUseBlock):
+                calls[block.id] = (index, block)
+            elif isinstance(block, ToolResultBlock):
+                call = calls.get(block.tool_use_id)
+                if call is None or not isinstance(block.content, dict):
+                    continue
+                if call[1].name in {"write_file", "edit_file"} and not block.content.get(
+                    "error"
+                ):
+                    last_write = index
+                data = block.content.get("data")
+                if (
+                    call[1].name == "bash"
+                    and isinstance(data, dict)
+                    and data.get("success") is True
+                ):
+                    command = data.get("command")
+                    fingerprint = data.get("workspace_fingerprint")
+                    if isinstance(command, str) and isinstance(fingerprint, str):
+                        success[command.strip()] = (index, fingerprint)
+    missing = [
+        command
+        for command in evaluation.validation_commands
+        if command.strip() not in success
+        or success[command.strip()][0] <= last_write
+        or success[command.strip()][1] != current_fingerprint
+    ]
+    if not missing:
+        return []
+    return [
+        "Configured validation commands have not all succeeded on the current workspace: "
+        + ", ".join(missing)
+    ]
 
 
 def _has_verification_waiver(content: dict) -> bool:

@@ -15,10 +15,10 @@ from pydantic import Field
 
 from osc_agent.contracts import ContractModel
 from osc_agent.runtime.messages import RuntimeMessage
+from osc_agent.runtime.state import AgentRunState
 from osc_agent.runtime.session import (
     SessionMetadata,
     SessionOverview,
-    SessionRuntimeState,
     SessionSnapshot,
 )
 
@@ -56,11 +56,11 @@ class MemoryToolResultStore:
 class SessionStore(Protocol):
     def lease(self, session_id: str) -> ContextManager[None]: ...
 
-    def create(self, metadata: SessionMetadata) -> None: ...
+    def create(self, metadata: SessionMetadata, state: AgentRunState) -> None: ...
 
     def append_message(self, session_id: str, message: RuntimeMessage) -> None: ...
 
-    def save_state(self, session_id: str, state: SessionRuntimeState) -> None: ...
+    def save_state(self, session_id: str, state: AgentRunState) -> None: ...
 
     def load(self, session_id: str) -> SessionSnapshot | None: ...
 
@@ -81,7 +81,7 @@ class _MessageRecord(ContractModel):
 
 class _StateRecord(ContractModel):
     type: Literal["state"] = "state"
-    state: SessionRuntimeState
+    state: AgentRunState
 
 
 _SessionRecord: TypeAlias = Annotated[
@@ -117,20 +117,21 @@ class FileSessionStore:
         except portalocker.exceptions.LockException as exc:
             raise ValueError(f"SESSION_IN_USE: session is active in another process: {session_id}") from exc
 
-    def create(self, metadata: SessionMetadata) -> None:
+    def create(self, metadata: SessionMetadata, state: AgentRunState) -> None:
         path = self._path(metadata.session_id)
         with self._lock:
             if path.exists():
                 raise ValueError(f"session already exists: {metadata.session_id}")
             path.parent.mkdir(parents=True, exist_ok=True)
             self._append(path, _MetadataRecord(metadata=metadata))
+            self._append(path, _StateRecord(state=state))
 
     def append_message(self, session_id: str, message: RuntimeMessage) -> None:
         with self._lock:
             self._require_session(session_id)
             self._append(self._path(session_id), _MessageRecord(message=message))
 
-    def save_state(self, session_id: str, state: SessionRuntimeState) -> None:
+    def save_state(self, session_id: str, state: AgentRunState) -> None:
         with self._lock:
             self._require_session(session_id)
             self._append(self._path(session_id), _StateRecord(state=state))
@@ -141,7 +142,7 @@ class FileSessionStore:
             return None
         metadata: SessionMetadata | None = None
         messages: list[RuntimeMessage] = []
-        state = SessionRuntimeState()
+        state: AgentRunState | None = None
         with self._lock:
             self._recover_partial_tail(path)
         with self._lock, path.open("r", encoding="utf-8") as stream:
@@ -155,11 +156,11 @@ class FileSessionStore:
                         and raw_record.get("type") == "metadata"
                         and (
                             not isinstance(raw_record.get("metadata"), dict)
-                            or raw_record["metadata"].get("schema_version") != 4
+                            or raw_record["metadata"].get("schema_version") != 5
                         )
                     ):
                         raise ValueError(
-                            "unsupported session schema version; V4 requires schema_version=4"
+                            "unsupported session schema version; V5 requires schema_version=5"
                         )
                     record = _RecordEnvelope.model_validate_json(
                         json.dumps({"record": raw_record}, ensure_ascii=False)
@@ -176,7 +177,9 @@ class FileSessionStore:
                     state = record.state
         if metadata is None:
             raise ValueError("session metadata is missing")
-        return SessionSnapshot(metadata=metadata, messages=messages, runtime_state=state)
+        if state is None:
+            raise ValueError("session state is missing")
+        return SessionSnapshot(metadata=metadata, messages=messages, state=state)
 
     def list_overviews(self, *, limit: int | None = None) -> list[SessionOverview]:
         if limit is not None and limit < 1:
@@ -198,20 +201,16 @@ class FileSessionStore:
                 snapshot = self.load(path.stem)
                 if snapshot is None:
                     continue
-                state = snapshot.runtime_state
+                state = snapshot.state
                 overviews.append(
                     SessionOverview(
                         session_id=path.stem,
                         model=snapshot.metadata.model,
-                        repository_root=snapshot.metadata.repository_root,
+                        workspace_root=snapshot.metadata.workspace_root,
                         updated_at=updated_at,
                         status=state.last_status or "unknown",
-                        working_directory=(
-                            state.worktree.path
-                            if state.worktree is not None
-                            else snapshot.metadata.initial_working_directory
-                        ),
-                        worktree=state.worktree,
+                        working_directory=state.workspace.working_directory,
+                        worktree=state.workspace.worktree,
                     )
                 )
             except (OSError, ValueError) as exc:

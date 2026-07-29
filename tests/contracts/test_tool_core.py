@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from osc_agent.runtime.state import CapabilityScope, PlanModeEntered
+
+from tests.runtime_factories import agent_run_state, tool_context
+
 import asyncio
 
 from pydantic import Field
@@ -12,10 +16,8 @@ from osc_agent.runtime.messages import ToolUseBlock
 from osc_agent.runtime.tool_models import (
     Ask,
     ApprovalResponse,
-    CapabilityScope,
     Deny,
     ToolResult,
-    ToolUseContext,
     ValidationFailure,
 )
 from osc_agent.runtime.tool import BaseTool, ToolRegistry
@@ -44,7 +46,7 @@ class EchoTool(BaseTool[EchoInput, EchoOutput]):
     def is_concurrency_safe(self, input: EchoInput) -> bool:
         return True
 
-    async def call(self, input: EchoInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: EchoInput, context: tool_context) -> ToolResult:
         self.calls += 1
         return ToolResult(data={"value": input.value})
 
@@ -52,7 +54,7 @@ class EchoTool(BaseTool[EchoInput, EchoOutput]):
 class InvalidOutputTool(EchoTool):
     name = "invalid_output"
 
-    async def call(self, input: EchoInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: EchoInput, context: tool_context) -> ToolResult:
         return ToolResult(data={"value": 123})
 
 
@@ -76,19 +78,19 @@ class ProcessTool(DestructiveTool):
 class DestructiveDeniedByTool(DestructiveTool):
     name = "destructive_denied"
 
-    async def check_permissions(self, input: EchoInput, context: ToolUseContext):
+    async def check_permissions(self, input: EchoInput, context: tool_context):
         return Deny(reason="tool-specific denial")
 
 
 class RejectedTool(EchoTool):
     name = "rejected"
 
-    async def validate_input(self, input: EchoInput, context: ToolUseContext):
+    async def validate_input(self, input: EchoInput, context: tool_context):
         return ValidationFailure(reason="domain validation failed")
 
 
-def context(*, allowed_tools: frozenset[str] | None = None) -> ToolUseContext:
-    return ToolUseContext(
+def context(*, allowed_tools: frozenset[str] | None = None) -> tool_context:
+    return tool_context(
         session_id="session-1",
         working_directory="C:/repo",
         state_directory="C:/state",
@@ -186,26 +188,28 @@ def test_session_permission_matches_exact_validated_input_and_cwd() -> None:
         ToolRegistry([tool]),
         dependencies=ToolExecutionDependencies(approval_handler=approve),
     )
-    tool_context = context()
+    state = agent_run_state("C:/repo")
 
     for call_id in ("first", "second"):
         result = asyncio.run(
             executor.execute(
                 ToolUseBlock(id=call_id, name=tool.name, input={"value": "same"}),
-                tool_context,
+                state.tool_context(session_id="session-1", state_directory="C:/state"),
             )
         )
+        state = state.apply_all(result.state_changes)
         assert result.error is None
     changed = asyncio.run(
         executor.execute(
             ToolUseBlock(id="changed", name=tool.name, input={"value": "different"}),
-            tool_context,
+            state.tool_context(session_id="session-1", state_directory="C:/state"),
         )
     )
+    state = state.apply_all(changed.state_changes)
 
     assert changed.error is None
     assert approvals == 2
-    assert len(tool_context.permission_grants) == 2
+    assert len(state.permissions.grants) == 2
 
 
 def test_cached_session_permission_cannot_bypass_plan_mode() -> None:
@@ -217,12 +221,23 @@ def test_cached_session_permission_cannot_bypass_plan_mode() -> None:
         ToolRegistry([tool]),
         dependencies=ToolExecutionDependencies(approval_handler=approve),
     )
-    tool_context = context()
+    state = agent_run_state("C:/repo")
     call = ToolUseBlock(id="first", name=tool.name, input={"value": "same"})
-    assert asyncio.run(executor.execute(call, tool_context)).error is None
-    tool_context.permission_mode = "plan"
+    first = asyncio.run(
+        executor.execute(
+            call,
+            state.tool_context(session_id="session-1", state_directory="C:/state"),
+        )
+    )
+    assert first.error is None
+    state = state.apply_all(first.state_changes).apply(PlanModeEntered())
 
-    blocked = asyncio.run(executor.execute(call, tool_context))
+    blocked = asyncio.run(
+        executor.execute(
+            call,
+            state.tool_context(session_id="session-1", state_directory="C:/state"),
+        )
+    )
 
     assert blocked.error and blocked.error.code == "PERMISSION_DENIED"
 
@@ -232,7 +247,7 @@ def test_validation_and_pre_hook_run_before_call() -> None:
     tool = RejectedTool()
     hooks = HookRegistry()
 
-    async def pre_hook(payload, tool_context):
+    async def pre_hook(payload, context):
         events.append("pre")
         return HookContinue()
 
@@ -254,11 +269,11 @@ def test_pre_hook_can_block_and_post_hook_observes_success() -> None:
     tool = EchoTool()
     hooks = HookRegistry()
 
-    async def blocking_hook(payload, tool_context):
+    async def blocking_hook(payload, context):
         events.append("pre")
         return HookBlock(reason="blocked by hook")
 
-    async def post_hook(payload, tool_context):
+    async def post_hook(payload, context):
         events.append("post")
 
     hooks.register_pre_tool_use(blocking_hook)

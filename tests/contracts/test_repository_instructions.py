@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import tool_context
+
 import asyncio
 from pathlib import Path
 
@@ -14,7 +16,6 @@ from osc_agent.workspaces.instructions import (
 )
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
 from osc_agent.runtime.query_models import QueryConfig
-from osc_agent.runtime.tool_models import ToolUseContext
 from osc_agent.workspaces.models import RepositoryInstructionState
 
 
@@ -55,7 +56,7 @@ def test_instruction_context_is_reinjected_and_marks_conflict_policy(
         session_id="instructions",
         messages=[RuntimeMessage(role="user", content=[TextBlock(text="work")])],
     )
-    context = ToolUseContext(
+    context = tool_context(
         session_id="instructions",
         working_directory=str(tmp_path),
         state_directory=str(tmp_path / "state"),

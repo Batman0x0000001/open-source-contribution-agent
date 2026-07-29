@@ -14,13 +14,10 @@ from osc_agent.bot.domain.jobs import BotJob
 from osc_agent.bot.domain.repositories import RepositoryBotConfig
 from osc_agent.bot.persistence.session_store import SqliteSessionStore
 from osc_agent.bot.persistence.store import BotStore
-from osc_agent.bot.validation import ConfiguredValidationStopHook
 from osc_agent.processes.policy import build_subprocess_environment
 from osc_agent.workspaces.git_state import git_snapshot, git_workspace_fingerprint
-from osc_agent.completion.evidence import CompletionEvidenceStopHook
+from osc_agent.completion.evaluator import CompletionEvaluation, CompletionEvaluator
 from osc_agent.completion.models import CompletionRequirements
-from osc_agent.runtime.hooks import StopHookPayload
-from osc_agent.runtime.tool_models import ToolUseContext
 from osc_agent.workspaces.path_policy import repo_path_matches
 
 
@@ -271,24 +268,22 @@ class TrustedPublisher:
         if not job.implementation_session_id:
             raise ValueError("publish job has no implementation Session")
         snapshot = SqliteSessionStore(self.store).load(job.implementation_session_id)
-        if snapshot is None or snapshot.runtime_state.last_status != "completed":
+        if snapshot is None or snapshot.state.last_status != "completed":
             raise ValueError("implementation Session is not completed")
         requirements = CompletionRequirements(
             required_evidence=frozenset(
                 {"successful_test", "independent_verification", "git_change_snapshot", "delivery_draft"}
             )
         )
-        context = ToolUseContext(
-            session_id=job.implementation_session_id,
-            working_directory=str(workspace),
-            state_directory=str(workspace),
-            capabilities=snapshot.metadata.capabilities,
-            completion_requirements=requirements,
+        report = await CompletionEvaluator().evaluate(
+            CompletionEvaluation(
+                messages=tuple(snapshot.messages),
+                workspace_root=str(workspace),
+                requirements=requirements,
+                validation_commands=config.validation_commands,
+            )
         )
-        payload = StopHookPayload(messages=snapshot.messages)
-        evidence = await CompletionEvidenceStopHook()(payload, context)
-        configured = await ConfiguredValidationStopHook(config.validation_commands)(payload, context)
-        reasons = evidence.blocking_reasons + configured.blocking_reasons
+        reasons = report.blocking_reasons
         if reasons:
             raise ValueError("publisher completion validation failed: " + "; ".join(reasons))
 

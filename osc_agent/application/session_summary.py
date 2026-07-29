@@ -84,15 +84,13 @@ def build_session_summary(snapshot: SessionSnapshot) -> SessionSummary:
                 if isinstance(has_changes, bool):
                     snapshot_has_changes = has_changes
 
-    runtime_state = snapshot.runtime_state
-    worktree = runtime_state.worktree
+    run_state = snapshot.state
+    worktree = run_state.workspace.worktree
     return SessionSummary(
         session_id=snapshot.metadata.session_id,
-        status=runtime_state.last_status or "unknown",
-        reason=runtime_state.last_reason,
-        working_directory=(
-            worktree.path if worktree is not None else snapshot.metadata.initial_working_directory
-        ),
+        status=run_state.last_status or "unknown",
+        reason=run_state.last_reason,
+        working_directory=run_state.workspace.working_directory,
         worktree_path=worktree.path if worktree is not None else None,
         worktree_branch=worktree.branch if worktree is not None else None,
         touched_files=touched_files,

@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from osc_agent.application import AgentProfile, SkillInput, UserPrompt
-from osc_agent.application.service import AgentApplication
+from osc_agent.application.agent import AgentApplication
 from osc_agent.completion.models import CompletionRequirements
+from osc_agent.runtime.state import CapabilityScope
 from osc_agent.runtime.events import Complete, RunCompleted
 from osc_agent.runtime.query_models import QueryConfig, ResumeQueryParams, StartQueryParams
-from osc_agent.runtime.tool_models import CapabilityScope
+
 from osc_agent.skills.models import PreparedSkill
 
 
@@ -53,16 +53,13 @@ class SkillPreparer:
 def _application(root: Path, *, existing=None, allowed_initial_skills=frozenset()):
     runtime = RecordingRuntime()
     skill_preparer = SkillPreparer()
-    graph = SimpleNamespace(
-        runtime=runtime,
-        session_store=SessionStore(existing),
-        skill_preparer=skill_preparer,
-        query_config=QueryConfig(),
-        general_capabilities=CapabilityScope(allowed_tools=frozenset({"read_file", "grep"})),
-        discovery_prompt="discovery",
-    )
     application = AgentApplication(
-        graph,  # type: ignore[arg-type]
+        runtime=runtime,  # type: ignore[arg-type]
+        session_store=SessionStore(existing),  # type: ignore[arg-type]
+        skill_preparer=skill_preparer,  # type: ignore[arg-type]
+        query_config=QueryConfig(),
+        capabilities=CapabilityScope(allowed_tools=frozenset({"read_file", "grep"})),
+        discovery_prompt="discovery",
         repository_root=root,
         model="persisted-model",
         profile=AgentProfile(

@@ -10,10 +10,12 @@ from osc_agent.bot.domain.events import OutboxEvent
 from osc_agent.bot.domain.repositories import RepositoryBotCatalog
 from osc_agent.bot.persistence.session_store import SqliteSessionStore
 from osc_agent.bot.persistence.store import BotStore
-from osc_agent.bot.worker.context import BotModelContractMismatch
+from osc_agent.bot.worker.agent_jobs import (
+    BotModelContractMismatch,
+    ImplementationJobExecutor,
+    PlanJobExecutor,
+)
 from osc_agent.bot.worker.docker_runner import resolve_image_id
-from osc_agent.bot.worker.implementation import ImplementationJobExecutor
-from osc_agent.bot.worker.plan import PlanJobExecutor
 from osc_agent.configuration import AgentSettings
 from osc_agent.runtime.gateway import ModelGateway
 

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from osc_agent.runtime.state import CapabilityScope
+
+from tests.runtime_factories import tool_context
+
 import asyncio
 from pathlib import Path
 import subprocess
@@ -17,7 +21,7 @@ from osc_agent.subagents.builtins.verify import (
 from osc_agent.subagents.models import SubagentRequest, SubagentRunResult
 from osc_agent.subagents.registry import SubagentRegistry
 from osc_agent.subagents.tool import AgentTool, AgentToolInput
-from osc_agent.runtime.tool_models import CapabilityScope, ToolUseContext
+
 from osc_agent.configuration.runtime import default_runtime_config_path, load_runtime_config
 
 
@@ -31,8 +35,8 @@ def initialize_repository(root: Path) -> None:
     subprocess.run(["git", "commit", "--quiet", "--allow-empty", "-m", "initial"], cwd=root, check=True)
 
 
-def context(root: Path) -> ToolUseContext:
-    return ToolUseContext(
+def context(root: Path) -> tool_context:
+    return tool_context(
         session_id="parent",
         working_directory=str(root),
         state_directory=str(root.parent / "state"),

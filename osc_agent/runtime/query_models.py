@@ -9,7 +9,7 @@ from pydantic import Field, model_validator
 from osc_agent.completion.models import CompletionRequirements
 from osc_agent.contracts import FrozenContractModel
 from osc_agent.runtime.messages import RuntimeMessage
-from osc_agent.runtime.tool_models import CapabilityScope
+from osc_agent.runtime.state import CapabilityScope
 
 
 class QueryConfig(FrozenContractModel):

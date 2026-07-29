@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from osc_agent.runtime.state import CapabilityScope
+
+from tests.runtime_factories import agent_run_state, apply_tool_result, tool_context
+
 import asyncio
 from pathlib import Path
 
 from osc_agent.runtime.messages import ToolUseBlock
-from osc_agent.runtime.tool_models import CapabilityScope, ToolUseContext
+
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
 from osc_agent.runtime.tool_orchestration import run_tools
@@ -38,7 +42,7 @@ def test_skill_tool_delegates_to_preparer_and_updates_context(tmp_path: Path) ->
     _write_skill(tmp_path, "review")
     preparer = SkillPreparer(SkillCatalog([SkillLoader(tmp_path, source="builtin")]))
     tool = SkillTool(preparer)
-    context = ToolUseContext(
+    context = tool_context(
         session_id="session-1",
         working_directory=str(tmp_path),
         state_directory=str(tmp_path / "state"),
@@ -56,7 +60,7 @@ def test_skill_tool_delegates_to_preparer_and_updates_context(tmp_path: Path) ->
         "error": None,
     }
     assert "Review carefully." in result.new_messages[0].content[0].text
-    assert result.context_update.capabilities.allowed_tools == {"read_file"}
+    assert apply_tool_result(context, result).capabilities.allowed_tools == {"read_file"}
 
     registry = ToolRegistry([tool])
 
@@ -66,12 +70,17 @@ def test_skill_tool_delegates_to_preparer_and_updates_context(tmp_path: Path) ->
             async for update in run_tools(
                 [ToolUseBlock(id="skill-call", name="skill", input={"skill": "review"})],
                 executor=ToolExecutor(registry),
-                context=context,
+                state=agent_run_state(
+                    str(tmp_path), capabilities=context.capabilities
+                ),
+                session_id="session-1",
+                state_directory=str(tmp_path / "state"),
+                transcript_messages=[],
             )
         ]
 
     updates = asyncio.run(execute_through_runtime_path())
-    assert updates[-1].context.completion_requirements.required_evidence == {
+    assert updates[-1].state.completion_requirements.required_evidence == {
         "successful_test",
         "git_change_snapshot",
     }

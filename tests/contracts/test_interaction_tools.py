@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import tool_context
+
 import asyncio
 from pathlib import Path
 
 from osc_agent.runtime.messages import ToolUseBlock
-from osc_agent.runtime.tool_models import ApprovalResponse, Ask, ToolUseContext
+from osc_agent.runtime.tool_models import ApprovalResponse, Ask
 from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
 from tests.contracts.registry_factory import build_test_tool_registry
 
 
-def context(root: Path, *, mode: str = "default", plan_path: str | None = None) -> ToolUseContext:
-    return ToolUseContext(
+def context(root: Path, *, mode: str = "default", plan_path: str | None = None) -> tool_context:
+    return tool_context(
         session_id="session-1",
         working_directory=str(root),
         state_directory=str(root / "state"),

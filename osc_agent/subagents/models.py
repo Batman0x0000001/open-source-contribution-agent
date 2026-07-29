@@ -9,7 +9,7 @@ from pydantic import Field
 from osc_agent.contracts import FrozenContractModel
 from osc_agent.runtime.messages import RuntimeMessage
 from osc_agent.runtime.query_models import QueryConfig
-from osc_agent.runtime.tool_models import CapabilityScope
+from osc_agent.runtime.state import CapabilityScope
 
 
 class SubagentDefinition(FrozenContractModel):

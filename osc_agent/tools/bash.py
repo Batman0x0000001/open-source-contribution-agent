@@ -17,11 +17,11 @@ from osc_agent.runtime.tool_models import (
     PermissionDecision,
     ToolError,
     ToolResult,
-    ToolUseContext,
     ValidationFailure,
     ValidationResult,
     ValidationSuccess,
 )
+from osc_agent.runtime.state import ToolContext
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.processes.contracts import ProcessRequest, ProcessRunner
 from osc_agent.processes.policy import build_subprocess_environment, classify_command
@@ -85,14 +85,14 @@ class BashTool(BaseTool[BashInput, BashOutput]):
     def permission_risk(self, input: BashInput) -> str:
         return "process"
 
-    def permission_preview(self, input: BashInput, context: ToolUseContext) -> dict[str, object]:
+    def permission_preview(self, input: BashInput, context: ToolContext) -> dict[str, object]:
         return {
             "command": input.command,
             "timeout_seconds": input.timeout_seconds,
             "command_kind": classify_command(input.command).value,
         }
 
-    async def validate_input(self, input: BashInput, context: ToolUseContext) -> ValidationResult:
+    async def validate_input(self, input: BashInput, context: ToolContext) -> ValidationResult:
         if "\x00" in input.command or any(pattern.search(input.command) for pattern in _HARD_DENY):
             return ValidationFailure(reason="Bash command violates the hard host-safety policy")
         try:
@@ -102,20 +102,20 @@ class BashTool(BaseTool[BashInput, BashOutput]):
         return ValidationSuccess()
 
     async def check_permissions(
-        self, input: BashInput, context: ToolUseContext
+        self, input: BashInput, context: ToolContext
     ) -> PermissionDecision:
         return Allow(updated_input=input.model_dump(mode="json"))
 
-    async def call(self, input: BashInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: BashInput, context: ToolContext) -> ToolResult:
         result = await self.process_runner.run(
             ProcessRequest(
+                invocation_id=context.tool_use_id or "process",
                 executable=self.executable,
                 command=input.command,
-                repo_root=context.working_directory,
+                repo_root=context.workspace.working_directory,
                 timeout_seconds=input.timeout_seconds,
                 environment=self.environment,
-            ),
-            context,
+            )
         )
         if result.termination_reason in {"timeout", "os_error", "cancelled"}:
             return ToolResult(error=ToolError(
@@ -129,7 +129,8 @@ class BashTool(BaseTool[BashInput, BashOutput]):
             ))
         try:
             fingerprint = await asyncio.to_thread(
-                git_workspace_fingerprint, repo_root=Path(context.working_directory)
+                git_workspace_fingerprint,
+                repo_root=Path(context.workspace.working_directory),
             )
         except (OSError, ValueError):
             fingerprint = None

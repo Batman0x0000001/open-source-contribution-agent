@@ -13,7 +13,8 @@ from uuid import uuid4
 
 from pydantic import Field
 
-from osc_agent.application import build_model_gateway, build_skill_catalog
+from osc_agent.providers.factory import build_model_gateway
+from osc_agent.skills.catalog import build_skill_catalog
 from osc_agent.configuration import AgentSettings
 from osc_agent.runtime.gateway import ModelCompleted, ModelRequest
 from osc_agent.contracts import FrozenContractModel

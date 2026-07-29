@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from osc_agent.runtime.state import CapabilityScope
+
+from tests.runtime_factories import tool_context
+
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -16,7 +20,7 @@ from osc_agent.contracts import ContractModel, FrozenContractModel
 from osc_agent.runtime.events import RunStopped
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
 from osc_agent.runtime.query_models import StartQueryParams
-from osc_agent.runtime.tool_models import CapabilityScope, ToolUseContext
+
 from osc_agent.runtime.query import AgentRuntime
 from osc_agent.configuration.runtime import default_runtime_config_path, load_runtime_config
 from osc_agent.runtime.session_store import FileSessionStore
@@ -64,8 +68,8 @@ def registration(*, max_parallel: int = 2) -> SubagentRegistration:
     )
 
 
-def context(repo: Path) -> ToolUseContext:
-    return ToolUseContext(
+def context(repo: Path) -> tool_context:
+    return tool_context(
         session_id="parent-1",
         working_directory=str(repo),
         state_directory=str(repo / ".state"),

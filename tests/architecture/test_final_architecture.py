@@ -60,6 +60,19 @@ def test_old_execution_architecture_is_absent() -> None:
         PACKAGE_ROOT / "runtime" / "instructions.py",
         PACKAGE_ROOT / "runtime" / "session_summary.py",
         PACKAGE_ROOT / "runtime" / "state_paths.py",
+        PACKAGE_ROOT / "application" / "models.py",
+        PACKAGE_ROOT / "application" / "service.py",
+        PACKAGE_ROOT / "application" / "composition.py",
+        PACKAGE_ROOT / "cli" / "application.py",
+        PACKAGE_ROOT / "cli" / "config.py",
+        PACKAGE_ROOT / "cli" / "session.py",
+        PACKAGE_ROOT / "bot" / "validation.py",
+        PACKAGE_ROOT / "bot" / "worker" / "context.py",
+        PACKAGE_ROOT / "bot" / "worker" / "inputs.py",
+        PACKAGE_ROOT / "bot" / "worker" / "conversation.py",
+        PACKAGE_ROOT / "bot" / "worker" / "application.py",
+        PACKAGE_ROOT / "bot" / "worker" / "plan.py",
+        PACKAGE_ROOT / "bot" / "worker" / "implementation.py",
         PACKAGE_ROOT / "workflows" / "contribution" / "agents.py",
         PACKAGE_ROOT / "workflows" / "contribution" / "design.py",
         PACKAGE_ROOT / "workflows" / "contribution" / "discover.py",
@@ -81,6 +94,24 @@ def test_query_and_tool_execution_have_one_authoritative_definition() -> None:
     assert _class_definitions("SqliteSessionStore") == [
         PACKAGE_ROOT / "bot" / "persistence" / "session_store.py"
     ]
+    assert _class_definitions("AgentRunState") == [PACKAGE_ROOT / "runtime" / "state.py"]
+    assert not _class_definitions("ApplicationGraph")
+    assert not _class_definitions("ContextUpdate")
+
+
+def test_reader_entrypoints_match_the_documented_vertical_paths() -> None:
+    for relative in (
+        "cli/app.py",
+        "cli/agent.py",
+        "cli/sessions.py",
+        "bot/worker/coordinator.py",
+        "bot/worker/agent_jobs.py",
+        "application/agent.py",
+        "runtime/query.py",
+        "runtime/state.py",
+        "completion/evaluator.py",
+    ):
+        assert (PACKAGE_ROOT / relative).is_file()
 
 
 def test_workspace_capabilities_have_explicit_names() -> None:

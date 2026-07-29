@@ -101,7 +101,9 @@ def schema_check() -> None:
     except (ValidationError, ValueError, OSError) as exc:
         _operation_error("schema", exc)
         return
-    typer.echo("PASS\tschema\tepoch 2 / bot-job-v2")
+    from osc_agent.bot.persistence.schema import SCHEMA_EPOCH, STATE_MODEL_REVISION
+
+    typer.echo(f"PASS\tschema\tepoch {SCHEMA_EPOCH} / {STATE_MODEL_REVISION}")
 
 
 @app.command("archive-state")
@@ -123,7 +125,7 @@ def archive() -> None:
 def reset(
     confirm: Annotated[bool, typer.Option("--confirm", help="Archive then replace Bot state.")] = False,
 ) -> None:
-    """Archive Bot state, then create a fresh epoch-2 database and workspace root."""
+    """Archive Bot state, then create a fresh current-epoch database and workspace root."""
 
     if not confirm:
         raise typer.BadParameter("--confirm is required")
@@ -135,7 +137,9 @@ def reset(
     except (ValidationError, ValueError, OSError) as exc:
         _operation_error("reset", exc)
         return
-    typer.echo("PASS\treset\tepoch 2 state initialized")
+    from osc_agent.bot.persistence.schema import SCHEMA_EPOCH
+
+    typer.echo(f"PASS\treset\tepoch {SCHEMA_EPOCH} state initialized")
 
 
 @app.command("smoke-test")

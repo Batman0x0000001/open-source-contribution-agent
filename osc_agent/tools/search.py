@@ -11,11 +11,10 @@ import subprocess
 from pydantic import Field
 
 from osc_agent.contracts import ContractModel
+from osc_agent.runtime.state import InstructionsActivated, ToolContext
 from osc_agent.runtime.tool_models import (
-    ContextUpdate,
     ToolError,
     ToolResult,
-    ToolUseContext,
     ValidationFailure,
     ValidationResult,
     ValidationSuccess,
@@ -71,12 +70,12 @@ class GrepTool(BaseTool[GrepInput, GrepOutput]):
     async def validate_input(
         self,
         input: GrepInput,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> ValidationResult:
         try:
             if input.path != ".":
                 normalize_repo_relative_path(input.path)
-            safe_repo_path(Path(context.working_directory), input.path)
+            safe_repo_path(Path(context.workspace.working_directory), input.path)
             if input.glob is not None and (
                 input.glob.startswith("-") or ".." in Path(input.glob.replace("\\", "/")).parts
             ):
@@ -85,17 +84,20 @@ class GrepTool(BaseTool[GrepInput, GrepOutput]):
             return ValidationFailure(reason=str(exc))
         return ValidationSuccess()
 
-    async def call(self, input: GrepInput, context: ToolUseContext) -> ToolResult:
-        root = Path(context.working_directory)
+    async def call(self, input: GrepInput, context: ToolContext) -> ToolResult:
+        root = Path(context.workspace.working_directory)
         state = self.instructions.activate_for_path(
-            root, input.path, context.instruction_state
+            root, input.path, context.workspace.instruction_state
         )
         result = await asyncio.to_thread(self._search, root, input)
         if isinstance(result, ToolError):
-            return ToolResult(error=result, context_update=ContextUpdate(instruction_state=state))
+            return ToolResult(
+                error=result,
+                state_changes=(InstructionsActivated(state=state),),
+            )
         return ToolResult(
             data=result,
-            context_update=ContextUpdate(instruction_state=state),
+            state_changes=(InstructionsActivated(state=state),),
         )
 
     def _search(self, root: Path, input: GrepInput) -> dict[str, object] | ToolError:

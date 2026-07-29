@@ -8,31 +8,28 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from osc_agent.cli.app import app
-from osc_agent.cli.session import run_conversation
+from osc_agent.cli.agent import run_conversation
 from osc_agent.runtime.events import Complete, RunCompleted, RuntimeEvent
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
-from osc_agent.runtime.session import SessionMetadata, SessionRuntimeState
+from osc_agent.runtime.session import SessionMetadata
 from osc_agent.runtime.session_store import FileSessionStore
+from tests.runtime_factories import agent_run_state
 
 
 def _store_with_session(root: Path, *, session_id: str = "session-1") -> FileSessionStore:
     store = FileSessionStore(root)
     store.create(
         SessionMetadata(
-            schema_version=4,
+            schema_version=5,
             session_id=session_id,
-            repository_root=str(root),
-            initial_working_directory=str(root),
+            workspace_root=str(root),
             model="test-model",
-        )
+        ),
+        agent_run_state(str(root), status="completed"),
     )
     store.append_message(
         session_id,
         RuntimeMessage(role="user", content=[TextBlock(text="private goal")]),
-    )
-    store.save_state(
-        session_id,
-        SessionRuntimeState(last_status="completed", last_reason="end_turn"),
     )
     return store
 
@@ -45,12 +42,12 @@ def test_session_cli_hides_messages_by_default(monkeypatch, tmp_path: Path) -> N
     store = FileSessionStore(ApplicationStatePaths.for_repository(tmp_path).sessions)
     store.create(
         SessionMetadata(
-            schema_version=4,
+            schema_version=5,
             session_id="session-1",
-            repository_root=str(tmp_path),
-            initial_working_directory=str(tmp_path),
+            workspace_root=str(tmp_path),
             model="test-model",
-        )
+        ),
+        agent_run_state(str(tmp_path)),
     )
     store.append_message(
         "session-1",
@@ -105,9 +102,9 @@ def test_conversation_driver_reuses_session_for_follow_up(
 ) -> None:
     store = _store_with_session(tmp_path / "sessions")
     prompts = iter(["follow up", "/exit"])
-    monkeypatch.setattr("osc_agent.cli.session.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("osc_agent.cli.agent.sys.stdin.isatty", lambda: True)
     monkeypatch.setattr(
-        "osc_agent.cli.session.typer.prompt",
+        "osc_agent.cli.agent.typer.prompt",
         lambda *_args, **_kwargs: next(prompts),
     )
     submitted = []
@@ -143,17 +140,17 @@ def test_resume_latest_resolves_repository_scoped_session(
 ) -> None:
     state = tmp_path / "state"
     monkeypatch.setenv("OSC_AGENT_STATE_DIR", str(state))
-    from osc_agent.application import build_session_store
+    from osc_agent.cli.sessions import session_store
 
-    store = build_session_store(tmp_path)
+    store = session_store(tmp_path)
     store.create(
         SessionMetadata(
-            schema_version=4,
+            schema_version=5,
             session_id="latest-session",
-            repository_root=str(tmp_path),
-            initial_working_directory=str(tmp_path),
+            workspace_root=str(tmp_path),
             model="test",
-        )
+        ),
+        agent_run_state(str(tmp_path)),
     )
     captured = {}
 

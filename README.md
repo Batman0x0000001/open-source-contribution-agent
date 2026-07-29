@@ -20,12 +20,12 @@ AgentApplicationConfig → AgentApplication.open_session
         ↓
 AgentConversation.submit(UserPrompt | SkillInput | None)
         ↓
-AgentRuntime.query ← SkillPreparer ← SkillTool
+AgentRuntime.query → AgentRunState → ToolContext
         ├── AgentTool → code-only AgentRegistry → AgentRunner
         ↓
-ToolExecutor → Permission / Plan Mode → Hooks → Tool
+ToolExecutor → Permission / Plan Mode → Hooks → ToolResult.state_changes
         ↓
-Session JSONL / Git Worktree Workspace
+AgentRunState.apply → Session V5 / Git Workspace
 ```
 
 - Runtime 不知道 Contribution 阶段，也不存在固定 Workflow 状态机。

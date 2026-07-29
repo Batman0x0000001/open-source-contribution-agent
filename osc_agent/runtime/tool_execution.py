@@ -19,12 +19,11 @@ from osc_agent.runtime.tool_models import (
     ApprovalResponse,
     Ask,
     Deny,
-    PermissionGrant,
     ToolError,
     ToolResult,
-    ToolUseContext,
     ValidationFailure,
 )
+from osc_agent.runtime.state import PermissionGrant, PermissionGranted, ToolContext
 from osc_agent.runtime.permissions import DefaultPermissionPolicy, PermissionPolicy
 from osc_agent.runtime.tool import Tool, ToolRegistry
 
@@ -49,7 +48,8 @@ class ToolExecutor:
         self.hooks = hooks or HookRegistry()
         self.dependencies = dependencies or ToolExecutionDependencies()
 
-    async def execute(self, call: ToolUseBlock, context: ToolUseContext) -> ToolResult:
+    async def execute(self, call: ToolUseBlock, context: ToolContext) -> ToolResult:
+        granted: list[PermissionGranted] = []
         tool = self.registry.get(call.name)
         if tool is None:
             return _error("TOOL_NOT_FOUND", f"unknown or disabled tool: {call.name}")
@@ -68,9 +68,10 @@ class ToolExecutor:
             parsed,
             tool,
             context,
+            granted,
         )
         if isinstance(generally_allowed_input, ToolResult):
-            return generally_allowed_input
+            return _with_grants(generally_allowed_input, granted)
 
         tool_permission = await tool.check_permissions(generally_allowed_input, context)
         allowed_input = await self._resolve_permission(
@@ -78,9 +79,10 @@ class ToolExecutor:
             generally_allowed_input,
             tool,
             context,
+            granted,
         )
         if isinstance(allowed_input, ToolResult):
-            return allowed_input
+            return _with_grants(allowed_input, granted)
 
         serialized_input: dict[str, JsonValue] = allowed_input.model_dump(mode="json")
         hook_result = await self.hooks.run_pre_tool_use(
@@ -88,18 +90,15 @@ class ToolExecutor:
             context,
         )
         if not hook_result.allowed:
-            return _error("HOOK_BLOCKED", hook_result.reason)
+            return _with_grants(_error("HOOK_BLOCKED", hook_result.reason), granted)
 
         try:
-            execution_context = context.model_copy(
-                update={"tool_use_id": call.id},
-                deep=True,
-            )
-            result = await tool.call(allowed_input, execution_context)
+            result = await tool.call(allowed_input, context)
         except Exception as exc:  # noqa: BLE001 - Tool 异常必须转换为结构化结果。
             result = _error("TOOL_EXECUTION_FAILED", str(exc) or type(exc).__name__)
 
         result = _validate_output(tool, result)
+        result = _with_grants(result, granted)
         await self.hooks.run_post_tool_use(
             PostToolUsePayload(tool_name=tool.name, input=serialized_input, result=result),
             context,
@@ -111,13 +110,14 @@ class ToolExecutor:
         decision: Allow | Deny | Ask,
         input: ContractModel,
         tool: Tool[ContractModel, ContractModel],
-        context: ToolUseContext,
+        context: ToolContext,
+        granted: list[PermissionGranted],
     ) -> ContractModel | ToolResult:
         if isinstance(decision, Deny):
             return _error("PERMISSION_DENIED", decision.reason)
         if isinstance(decision, Ask):
             grant = _permission_grant(decision, input, context)
-            if grant is not None and grant in context.permission_grants:
+            if grant is not None and grant in context.permissions.grants:
                 return input
             if self.dependencies.approval_handler is None:
                 return _error("PERMISSION_REQUIRED", decision.prompt)
@@ -135,8 +135,10 @@ class ToolExecutor:
                         "PERMISSION_RESPONSE_INVALID",
                         "this permission risk cannot be remembered for the session",
                     )
-                if grant not in context.permission_grants:
-                    context.permission_grants.append(grant)
+                if grant not in context.permissions.grants and all(
+                    change.grant != grant for change in granted
+                ):
+                    granted.append(PermissionGranted(grant=grant))
             return input
         try:
             return tool.input_model.model_validate(decision.updated_input)
@@ -171,14 +173,24 @@ def _error(code: str, message: str) -> ToolResult:
     return ToolResult(error=ToolError(code=code, message=message))
 
 
+def _with_grants(result: ToolResult, granted: list[PermissionGranted]) -> ToolResult:
+    if not granted:
+        return result
+    return result.model_copy(
+        update={"state_changes": (*granted, *result.state_changes)}, deep=True
+    )
+
+
 def _permission_grant(
     decision: Ask,
     input: ContractModel,
-    context: ToolUseContext,
+    context: ToolContext,
 ) -> PermissionGrant | None:
     if decision.risk not in {"write", "process"}:
         return None
-    working_directory = os.path.normcase(str(Path(context.working_directory).resolve()))
+    working_directory = os.path.normcase(
+        str(Path(context.workspace.working_directory).resolve())
+    )
     canonical = json.dumps(
         input.model_dump(mode="json"),
         ensure_ascii=False,

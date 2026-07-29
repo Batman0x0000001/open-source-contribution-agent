@@ -1,177 +1,91 @@
-# Agent Runtime 核心架构
+# Agent Runtime 与代码阅读地图
 
-## 目的
+本文描述统一 Agent 执行内核及其纵向入口。目录划分服务于阅读路径，而不是文件数量。
 
-本文档定义 Open Source Contribution Agent `0.2.4` 的通用 Agent 核心，以及 Runtime、Tool、Context、Skill、Agent 和 Session 之间的稳定职责边界。
-
-## 核心数据流
+## 总体数据流
 
 ```text
-AgentApplicationConfig
-          │
-          ▼
-AgentApplication.open_session(session_id)
-          │
-          ▼
-AgentConversation.submit(UserPrompt | SkillInput | None)
-          │
-          ▼
-QueryConfig + QueryDependencies + _QueryState
-                    │
-                    ▼
-             AgentRuntime.query
-                    │
-         ┌──────────┴──────────┐
-         ▼                     ▼
-   ModelGateway          Context Projection
-         │
-         ▼
-     Tool requests
-         │
-         ▼
-   ToolOrchestration
-         │
-         ▼
- Validation → Permission → Hooks → Tool.call
-         │
-         ▼
- ToolResult + ContextUpdate + RuntimeEvent
-         │
-         └──────────────► 下一轮 _QueryState
+CLI / Bot Worker
+    → AgentApplicationConfig
+    → build_agent_application()
+    → AgentApplication.open_session()
+    → AgentConversation.submit()
+    → AgentRuntime.query()
+    → AgentRunState
+    → ToolContext
+    → ToolResult.state_changes
+    → AgentRunState.apply()
+    → Session V5
 ```
 
-## 产品入口
+`application/agent.py` 是唯一 composition root，也是产品进入 Runtime 的唯一入口。CLI 与
+Bot Worker 都不能构造 `StartQueryParams`、`ResumeQueryParams` 或直接调用 Runtime。
 
-本地命令与 GitHub Bot 是两个独立产品适配层：`osc-agent` 只接收终端 Prompt、Skill 和
-Session 操作；`osc-agent-bot` 只启动 Control、Worker 和 Bot 状态维护。Control 处理
-Webhook、审批与发布，不进入 AgentApplication；只有 Worker 将可信 Job 投影为 Plan 或
-Implementation Application，并调用同一个 `AgentConversation → AgentRuntime`。
-
-CLI 不得导入 Bot。Control 启动路径不得加载 Worker、Application、模型 Provider 或 Docker
-Runner。CLI 与 Worker 共用的 `AgentSettings` 由 `configuration/` 显式加载；GitHub App
-凭据只存在于 Bot Control 配置中。
-
-Bot 内部按信任边界阅读：
+## 按目标阅读
 
 ```text
-bot/entrypoint.py + bot/config.py
-  → bot/domain
-  → bot/persistence
-  → bot/control 或 bot/worker
-  → application → runtime  # 仅 Worker
+想看 CLI 调用       → cli/app.py → cli/agent.py
+想看 CLI Session    → cli/sessions.py
+想看 Bot Agent Run → bot/worker/coordinator.py → bot/worker/agent_jobs.py
+想看应用组装        → application/agent.py
+想看模型循环        → runtime/query.py
+想看运行状态        → runtime/state.py
+想看 Tool 执行      → runtime/tool_execution.py → runtime/tool_orchestration.py
+想看具体 Tool       → tools/<domain>.py
+想看完成判定        → completion/evaluator.py
+想看可信发布        → bot/control/publisher.py
 ```
 
-`domain/` 保存跨进程合同，`persistence/` 保存 SQLite 权威状态；`control/` 持有 GitHub
-凭据、Webhook、Outbox 和唯一 Publisher，`worker/` 持有 Conversation、Artifact Tool 与
-Docker ProcessRunner。Control 不得导入 Worker、Application 或模型 Provider，Worker 不得
-导入 GitHub App Client、Webhook、Outbox Dispatcher 或 Publisher。
+## Application
 
-## Query
+`application/agent.py` 从上到下依次包含产品配置、Application、Conversation 和组装函数。
+Application 直接持有 Conversation 所需的 Runtime、SessionStore、SkillPreparer、QueryConfig、
+capabilities 和 discovery prompt，不存在中间 `ApplicationGraph`。
 
-Query 是异步生成器，而不是只返回最终文本的同步函数。它负责推进一次 Agent turn，并持续输出模型流、Tool 事件、上下文事件和终态。
+Skill 的默认来源由 `skills/catalog.py` 构建，Provider 由 `providers/factory.py` 构建；doctor
+和只读查询不需要构造完整 Application。
 
-Query 内部必须分离：
+## Runtime 与状态
 
-- 不可变的 `QueryConfig`。
-- 可注入的 `QueryDependencies`。
-- 仅在 Query 内部跨轮变化的 `_QueryState` dataclass。
-- 受控的 `ToolUseContext`。
+`AgentRuntime.query()` 是唯一模型循环。不可变 Query 参数、私有循环计数 `_QueryState` 和
+可持久化 `AgentRunState` 分离：前者控制预算，后者保存 workspace、permissions、capabilities、
+completion requirements 与终态。
 
-Query 是唯一允许推进 `_QueryState` 的组件。CLI、Skill 和 Tool 都不能直接修改它。
+Tool 只接收从状态投影出的只读 `ToolContext`。Tool 不修改上下文，而是返回有序
+`state_changes`。串行调用立即应用变化；并发调用可乱序完成，但变化始终按模型调用顺序应用。
+capability 和 completion requirement 只能收窄，合并规则只存在于 `AgentRunState.apply()`。
 
-Application 的仓库根、Profile 和 Runtime 依赖只在构建 `AgentApplication` 时绑定。内部
-`StartQueryParams/ResumeQueryParams.workspace_root` 表示 Session 的初始执行边界；Session V4
-仍以历史字段名 `repository_root` 保存同一个值。产品入口只持有 `AgentConversation`：新
-Session 必须提交 Prompt 或 Skill，恢复 Session 可提交新 Prompt 或 `None`。
+Context projection 只改变发送给模型的视图，不能改变权威 transcript 或破坏
+`tool_use/tool_result` 配对。Reactive Compact、取消配对、预算和完成阻断仍由唯一 Query
+循环处理。
 
-## Tool
+## Session V5
 
-Tool 是完整行为对象，同时包含：
+V5 Metadata 只保存不可变身份：`session_id`、`workspace_root`、`model` 和 `system_prompt`。
+当前 workspace、permissions、capabilities、completion requirements 与终态只保存在
+`AgentRunState`，不存在平行字段。File 与 SQLite Store 使用相同模型；V4 明确拒绝，不迁移。
 
-- 输入和输出 Pydantic 模型。
-- 启用判断。
-- 按输入计算的只读与并发安全判断。
-- 输入验证和 Tool 专属权限检查。
-- 执行方法。
-- 最大结果大小。
+## Completion
 
-所有 Tool 都经过同一执行管线。并发安全的连续调用组成并发批次，其他调用串行执行。并发完成顺序可以变化，但 ContextUpdate 必须按原 Tool call 顺序应用。
+`completion/evaluator.py` 是与 Runtime 无关的中立能力。Runtime 的 `CompletionStopHook` 只把
+Hook 输入适配为 `CompletionEvaluation`；Bot Publisher 直接调用同一个 Evaluator。相同的
+transcript、workspace、requirements 和 validation commands 必须产生相同 blocking reasons。
 
-## Context
+## Tool、Workspace 与 Process
 
-完整 Transcript 是权威历史；Context Projection 是当前模型请求使用的视图。上下文压缩只能改变 Projection，不能破坏 Transcript 或 `tool_use/tool_result` 配对。
+`tools/` 只保存模型 Tool 协议和薄适配；文件、Git 与路径能力在 `workspaces/`，进程契约和
+Host runner 在 `processes/`。`ProcessRequest.invocation_id` 提供容器命名信息，ProcessRunner
+不依赖 Runtime Context。Application 是唯一允许同时导入 Provider、具体 Tools、Skills、
+Subagents、Runtime 和 Workspace 实现的模块。
 
-最小管线包括：
+## Skill 与 Subagent
 
-1. 超大 Tool Result 落盘并生成预览。
-2. 压缩旧 Tool Result。
-3. 接近窗口限制时 Auto Compact。
-4. API 拒绝上下文时执行有上限的 Reactive Compact。
+Skill 是当前 Conversation 的声明式方法，不拥有模型循环。隔离调查和验证统一走
+`Runtime → AgentTool → SubagentRunner → 同一 Runtime`；子 Agent 使用独立 Session，并移除
+`agent` capability 防止递归。
 
-## Skill
+## Bot 信任边界
 
-Skill 是延迟加载的声明式 Agent 方法。Catalog 默认只读取发现元数据，正文在调用时加载；
-`when_to_use` 同时进入 CLI 和模型发现信息。模型侧的 `SkillTool` 和产品侧的
-`AgentConversation.submit(SkillInput)` 共用 `SkillPreparer`，后者只做调用授权、自由 JSON
-参数渲染和 capability 收窄。用户与模型调用由 Catalog 策略控制；产品主动启动还必须由
-`AgentProfile.allowed_initial_skills` 显式授权，且只有该路径能获得 manifest 的
-`product_tools`。Manifest 声明的资源由 `read_skill_resource` 按需读取，并受解析后根目录
-边界保护。
-
-Skill 不拥有子模型循环。隔离调查和验证统一通过 `AgentTool → SubagentRunner → 同一
-AgentRuntime.query()` 执行。推荐阅读顺序是：`models → loader → catalog → preparer →
-invocation_tool → resource_tool → builtins`。
-
-## Agent
-
-`AgentTool` 委派给 `SubagentRunner`，后者通过隔离的 `StartQueryParams` 和私有 Query state
-递归调用同一个 `AgentRuntime.query()`。子 Agent 的 capability 必须显式枚举，并在运行前
-移除 `agent` 工具以禁止递归。main agent 和 minimal/fork subagent 不允许拥有第二套模型
-循环。后台 Agent 在最小稳定版中不提供。
-
-## Session、Plan 与 Contribution
-
-完整 JSONL Session transcript 是恢复依据；Plan Mode 与 Worktree 是少量类型化会话状态。
-`workspaces/git_worktree.py` 管理 Git 工作目录生命周期，`tools/worktree.py` 只负责权限、
-输入输出与 Session Context 适配。Contribution 是 inline Skill，不是 Workflow：Agent Loop
-根据 transcript、批准的 plan、测试和 git diff 动态推进，人工检查点由 AskUserQuestion 与
-PermissionPolicy 表达。
-
-## Pydantic 与 Protocol
-
-- 数据、状态、事件、输入输出和 Artifact 使用严格 Pydantic 模型。
-- Tool、ModelGateway、Store、Executor 等行为边界使用 `Protocol`。
-- 包含函数和服务对象的依赖容器使用冻结 `dataclass`。
-- 未验证的 SDK 数据只能存在于 Provider adapter 内部。
-
-## 扩展边界
-
-后续扩展只依赖四个稳定入口：
-
-- 注册 Tool 增加原子能力。
-- 注册 Skill 增加知识和任务方法。
-- 通过 `AgentApplicationConfig` 绑定产品配置。
-- 通过 `AgentConversation`、Skill 与 Tool 组合新的用户任务入口。
-
-在出现真实分发需求前，不引入额外 Plugin 框架。
-
-## Runtime 阅读顺序
-
-建议按依赖方向阅读，而不是从主循环直接向下追踪：
-
-```text
-contracts
-  → runtime/messages
-  → runtime/tool_models
-  → runtime/query_models + runtime/events
-  → runtime/context
-  → runtime/tool_execution + runtime/tool_orchestration
-  → runtime/session + runtime/session_store
-  → runtime/query
-  → application/composition
-```
-
-Runtime 之外的职责也按边界放置：Contribution 完成要求和证据评估位于
-`completion/`，CLI 会话摘要和应用状态路径位于 `application/`，工作区数据与仓库指令
-位于 `workspaces/`。Runtime 可以依赖这些通用数据契约，但不能反向依赖 Application、
-Bot、Skill、Subagent、具体 Tool、Provider 实现或 `completion.evidence`。
+Control 处理 Webhook、审批、Outbox 与可信发布，不进入 Agent Runtime。Worker 的
+`agent_jobs.py` 顺序包含 Plan 与 Implementation 两条完整用例；两者仍是必要的信任阶段，
+不是通用 Workflow。Plan 使用 Disabled runner，Implementation 使用无网络 Docker runner。

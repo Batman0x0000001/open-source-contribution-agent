@@ -11,7 +11,8 @@ from pydantic import JsonValue
 from osc_agent.bot.domain.repositories import RepositoryBotConfig
 from osc_agent.runtime.hooks import HookBlock, HookContinue, PreToolUsePayload
 from osc_agent.contracts import ContractModel
-from osc_agent.runtime.tool_models import Allow, Deny, PermissionDecision, ToolUseContext
+from osc_agent.runtime.state import ToolContext
+from osc_agent.runtime.tool_models import Allow, Deny, PermissionDecision
 from osc_agent.workspaces.git_state import git_snapshot
 from osc_agent.workspaces.path_policy import repo_path_matches
 from osc_agent.runtime.permissions import PermissionPolicy
@@ -24,10 +25,10 @@ class BotPermissionPolicy(PermissionPolicy):
     def __init__(self, *, implementation_approved: bool) -> None:
         self.implementation_approved = implementation_approved
 
-    async def decide(self, tool: Tool[ContractModel, ContractModel], input: ContractModel, context: ToolUseContext) -> PermissionDecision:
+    async def decide(self, tool: Tool[ContractModel, ContractModel], input: ContractModel, context: ToolContext) -> PermissionDecision:
         if not context.capabilities.permits_tool(tool.name):
             return Deny(reason=f"tool {tool.name} is outside the bot capability scope")
-        if context.permission_mode == "plan" and not tool.is_read_only(input) and tool.name != "write_plan":
+        if context.permissions.mode == "plan" and not tool.is_read_only(input) and tool.name != "write_plan":
             return Deny(reason=f"tool {tool.name} is not allowed in plan mode")
         risk = tool.permission_risk(input)
         if tool.is_destructive(input):
@@ -52,7 +53,7 @@ class BotRepositoryPolicyHook:
             self.on_violation(reason)
         return HookBlock(reason=reason)
 
-    async def __call__(self, payload: PreToolUsePayload, context: ToolUseContext) -> HookContinue | HookBlock:
+    async def __call__(self, payload: PreToolUsePayload, context: ToolContext) -> HookContinue | HookBlock:
         if payload.tool_name not in {"write_file", "edit_file"}:
             return HookContinue()
         value = payload.input.get("path")
@@ -74,7 +75,7 @@ class BotRepositoryPolicyHook:
         try:
             snapshot = await asyncio.to_thread(
                 git_snapshot,
-                repo_root=Path(context.working_directory),
+                repo_root=Path(context.workspace.working_directory),
             )
         except (OSError, ValueError) as exc:
             return self._block(f"bot cannot verify repository change limits: {exc}")
@@ -85,5 +86,3 @@ class BotRepositoryPolicyHook:
         if patch_bytes >= self.config.max_patch_bytes:
             return self._block("bot repository has reached the patch-size limit")
         return HookContinue()
-
-

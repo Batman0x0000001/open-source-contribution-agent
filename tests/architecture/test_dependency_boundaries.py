@@ -95,3 +95,20 @@ def test_skills_do_not_depend_on_subagents() -> None:
     ]
 
     assert not violations, "Skills must not depend on subagents:\n" + "\n".join(violations)
+
+
+def test_shared_and_control_packages_do_not_import_runtime_context() -> None:
+    roots = (
+        PROJECT_ROOT / "osc_agent" / "processes",
+        PROJECT_ROOT / "osc_agent" / "workspaces",
+        PROJECT_ROOT / "osc_agent" / "bot" / "domain",
+        PROJECT_ROOT / "osc_agent" / "bot" / "control",
+    )
+    violations = [
+        f"{path.relative_to(PROJECT_ROOT)} -> {module}"
+        for root in roots
+        for path in root.rglob("*.py")
+        for module in _imports(path)
+        if module.startswith(("osc_agent.runtime.state", "osc_agent.runtime.hooks"))
+    ]
+    assert not violations

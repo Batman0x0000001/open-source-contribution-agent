@@ -5,15 +5,16 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from osc_agent.runtime.tool_models import ToolError, ToolResult, ToolUseContext
+from osc_agent.runtime.state import ToolContext
+from osc_agent.runtime.tool_models import ToolError, ToolResult
 from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
-async def capture_workspace_fingerprint(context: ToolUseContext) -> str | ToolResult:
+async def capture_workspace_fingerprint(context: ToolContext) -> str | ToolResult:
     try:
         return await asyncio.to_thread(
             git_workspace_fingerprint,
-            repo_root=Path(context.working_directory),
+            repo_root=Path(context.workspace.working_directory),
         )
     except (OSError, ValueError) as exc:
         return _error(
@@ -24,7 +25,7 @@ async def capture_workspace_fingerprint(context: ToolUseContext) -> str | ToolRe
 
 async def verify_workspace_unchanged(
     before: str | ToolResult | None,
-    context: ToolUseContext,
+    context: ToolContext,
 ) -> tuple[ToolResult | None, str | None]:
     after = await capture_workspace_fingerprint(context)
     if isinstance(after, ToolResult):

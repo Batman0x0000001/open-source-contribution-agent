@@ -10,7 +10,8 @@ from pydantic import Field
 from osc_agent.bot.domain.artifacts import DeliveryDraft, IssuePlanArtifact
 from osc_agent.bot.persistence.store import BotStore
 from osc_agent.contracts import ContractModel
-from osc_agent.runtime.tool_models import ToolError, ToolResult, ToolUseContext
+from osc_agent.runtime.state import ToolContext
+from osc_agent.runtime.tool_models import ToolError, ToolResult
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
@@ -39,7 +40,7 @@ class SubmitIssuePlanTool(BaseTool[SubmitIssuePlanInput, SubmitIssuePlanOutput])
     def is_read_only(self, input: SubmitIssuePlanInput) -> bool:
         return True
 
-    async def call(self, input: SubmitIssuePlanInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: SubmitIssuePlanInput, context: ToolContext) -> ToolResult:
         if input.base_sha != self.base_sha:
             return ToolResult(error=ToolError(code="PLAN_BASE_MISMATCH", message="plan base SHA differs from the job base SHA"))
         if input.execution_contract_hash != self.execution_contract_hash:
@@ -74,9 +75,10 @@ class SubmitDeliveryDraftTool(BaseTool[SubmitDeliveryDraftInput, SubmitDeliveryD
     def is_read_only(self, input: SubmitDeliveryDraftInput) -> bool:
         return True
 
-    async def call(self, input: SubmitDeliveryDraftInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: SubmitDeliveryDraftInput, context: ToolContext) -> ToolResult:
         fingerprint = await asyncio.to_thread(
-            git_workspace_fingerprint, repo_root=Path(context.working_directory)
+            git_workspace_fingerprint,
+            repo_root=Path(context.workspace.working_directory),
         )
         if input.issue_number != self.issue_number or input.base_sha != self.base_sha:
             return ToolResult(error=ToolError(code="DELIVERY_JOB_MISMATCH", message="delivery draft does not belong to this job"))

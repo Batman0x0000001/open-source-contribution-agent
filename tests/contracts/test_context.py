@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import tool_context
+
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -11,7 +13,6 @@ from osc_agent.runtime.session_store import MemoryToolResultStore
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
 from osc_agent.runtime.query_models import QueryConfig
-from osc_agent.runtime.tool_models import ToolUseContext
 from osc_agent.workspaces.models import WorktreeSession
 
 
@@ -113,7 +114,7 @@ def test_runtime_reminder_reinjects_plan_and_worktree_without_mutating_transcrip
         session_id="session-1",
         messages=[message("user", TextBlock(text="continue"))],
     )
-    context = ToolUseContext(
+    context = tool_context(
         session_id="session-1",
         working_directory=str(tmp_path / "worktree"),
         state_directory=str(tmp_path / "state"),
@@ -131,7 +132,7 @@ def test_runtime_reminder_reinjects_plan_and_worktree_without_mutating_transcrip
         ContextPipeline().project(
             transcript,
             config=QueryConfig(),
-            working_directory=context.working_directory,
+            working_directory=context.workspace.working_directory,
             runtime_context=context,
         )
     )

@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Literal
 
-from osc_agent.completion.models import CompletionRequirements
 from osc_agent.runtime.context import SessionTranscript
 from osc_agent.runtime.dependencies import QueryDependencies
 from osc_agent.runtime.gateway import ModelCompleted, ModelGatewayError, ModelRequest, ModelTextDelta
@@ -41,9 +40,10 @@ from osc_agent.runtime.query_models import (
     ResumeQueryParams,
     StartQueryParams,
 )
-from osc_agent.runtime.session import SessionMetadata, SessionRuntimeState
+from osc_agent.runtime.session import SessionMetadata
 from osc_agent.runtime.session_store import SessionStore
-from osc_agent.runtime.tool_models import CapabilityScope, ToolError, ToolResult, ToolUseContext
+from osc_agent.runtime.state import AgentRunState, InstructionsActivated
+from osc_agent.runtime.tool_models import ToolError, ToolResult
 from osc_agent.runtime.tool_orchestration import run_tools
 
 
@@ -67,9 +67,7 @@ class _OpenedSession:
     messages: list[RuntimeMessage]
     model: str
     system_prompt: str
-    runtime_state: SessionRuntimeState
-    capabilities: CapabilityScope
-    completion_requirements: CompletionRequirements
+    run_state: AgentRunState
 
 
 @dataclass
@@ -77,7 +75,7 @@ class _ActiveQuery:
     params: QueryParams
     state: _QueryState
     transcript: SessionTranscript
-    tool_context: ToolUseContext
+    run_state: AgentRunState
     model: str
     system_prompt: str
     store: SessionStore | None
@@ -95,11 +93,9 @@ class _ActiveQuery:
     ) -> None:
         self.state.status = status
         self.state.stop_reason = reason
+        self.run_state = self.run_state.with_status(status, reason)
         if self.store is not None:
-            self.store.save_state(
-                self.params.session_id,
-                _session_state(self.tool_context, status=status, reason=reason),
-            )
+            self.store.save_state(self.params.session_id, self.run_state)
 
 
 class AgentRuntime:
@@ -121,13 +117,7 @@ class AgentRuntime:
                 if snapshot is not None:
                     store.save_state(
                         params.session_id,
-                        snapshot.runtime_state.model_copy(
-                            update={
-                                "last_status": "cancelled",
-                                "last_reason": "query was cancelled",
-                            },
-                            deep=True,
-                        ),
+                        snapshot.state.with_status("cancelled", "query was cancelled"),
                     )
                 raise
 
@@ -135,13 +125,17 @@ class AgentRuntime:
         run = self._open_run(params)
         state = run.state
         transcript = run.transcript
-        tool_context = run.tool_context
         model = run.model
         system_prompt = run.system_prompt
         started_at = run.started_at
         force_compact_reason: str | None = None
 
         while True:
+            tool_context = run.run_state.tool_context(
+                session_id=params.session_id,
+                state_directory=self.dependencies.state_directory,
+                transcript_messages=transcript.snapshot(),
+            )
             failure = _budget_failure(state, params.config, started_at, self.dependencies.monotonic())
             if failure is not None:
                 yield _stopped(run, failure)
@@ -151,7 +145,7 @@ class AgentRuntime:
             projection = await self.dependencies.context_pipeline.project(
                 transcript,
                 config=params.config,
-                working_directory=tool_context.working_directory,
+                working_directory=tool_context.workspace.working_directory,
                 runtime_context=tool_context,
                 instruction_resolver=self.dependencies.instruction_resolver,
                 force_reason=force_compact_reason,
@@ -264,7 +258,6 @@ class AgentRuntime:
                         ),
                     )
                     return
-                tool_context.transcript_messages = transcript.snapshot()
                 stop_result = await self.dependencies.tool_executor.hooks.run_stop(
                     StopHookPayload(messages=transcript.snapshot()),
                     tool_context,
@@ -304,16 +297,17 @@ class AgentRuntime:
             for call in tool_calls:
                 yield ToolRequested(call=call)
 
-            tool_context.transcript_messages = transcript.snapshot()
             results: dict[str, ToolResult] = {}
             try:
                 async for update in run_tools(
                     tool_calls,
                     executor=self.dependencies.tool_executor,
-                    context=tool_context,
+                    state=run.run_state,
+                    session_id=params.session_id,
+                    state_directory=self.dependencies.state_directory,
+                    transcript_messages=transcript.snapshot(),
                 ):
-                    tool_context = update.context
-                    run.tool_context = tool_context
+                    run.run_state = update.state
                     run.persist("running")
                     if update.result is not None and update.tool_use_id is not None:
                         results[update.tool_use_id] = update.result
@@ -350,33 +344,21 @@ class AgentRuntime:
         else:
             assert isinstance(params, StartQueryParams)
             opened = self._start(params, workspace_root)
-        runtime_state = opened.runtime_state
-        working_directory = (
-            runtime_state.worktree.path if runtime_state.worktree is not None else workspace_root
-        )
-        runtime_state.instruction_state = self.dependencies.instruction_resolver.activate_for_path(
+        run_state = opened.run_state
+        working_directory = run_state.workspace.working_directory
+        instruction_state = self.dependencies.instruction_resolver.activate_for_path(
             Path(working_directory),
             ".",
-            runtime_state.instruction_state,
+            run_state.workspace.instruction_state,
         )
-        tool_context = ToolUseContext(
-            session_id=params.session_id,
-            working_directory=working_directory,
-            state_directory=self.dependencies.state_directory,
-            capabilities=opened.capabilities,
-            permission_mode=runtime_state.permission_mode,
-            plan_path=runtime_state.plan_path,
-            worktree=runtime_state.worktree,
-            instruction_state=runtime_state.instruction_state,
-            file_observations=runtime_state.file_observations,
-            completion_requirements=opened.completion_requirements,
-            permission_grants=runtime_state.permission_grants,
+        run_state = run_state.apply(
+            InstructionsActivated(state=instruction_state, replace=True)
         )
         run = _ActiveQuery(
             params=params,
             state=_QueryState(session_id=params.session_id),
             transcript=SessionTranscript(session_id=params.session_id, messages=opened.messages),
-            tool_context=tool_context,
+            run_state=run_state,
             model=opened.model,
             system_prompt=opened.system_prompt,
             store=store,
@@ -388,18 +370,25 @@ class AgentRuntime:
     def _start(self, params: StartQueryParams, workspace_root: str) -> _OpenedSession:
         store = self.dependencies.session_store
         messages = list(params.messages)
+        instruction_state = self.dependencies.instruction_resolver.activate_root(
+            Path(workspace_root)
+        )
+        run_state = AgentRunState.start(
+            workspace_root=workspace_root,
+            capabilities=params.capabilities,
+            completion_requirements=params.completion_requirements,
+            instruction_state=instruction_state,
+        )
         if store is not None:
             store.create(
                 SessionMetadata(
-                    schema_version=4,
+                    schema_version=5,
                     session_id=params.session_id,
-                    repository_root=workspace_root,
-                    initial_working_directory=workspace_root,
+                    workspace_root=workspace_root,
                     model=params.model,
                     system_prompt=params.system_prompt,
-                    capabilities=params.capabilities,
-                    completion_requirements=params.completion_requirements,
-                )
+                ),
+                run_state,
             )
             for message in messages:
                 store.append_message(params.session_id, message)
@@ -407,9 +396,7 @@ class AgentRuntime:
             messages=messages,
             model=params.model,
             system_prompt=params.system_prompt,
-            runtime_state=SessionRuntimeState(),
-            capabilities=params.capabilities,
-            completion_requirements=params.completion_requirements,
+            run_state=run_state,
         )
 
     def _resume(self, params: ResumeQueryParams, workspace_root: str) -> _OpenedSession:
@@ -419,20 +406,14 @@ class AgentRuntime:
         snapshot = store.load(params.session_id)
         if snapshot is None:
             raise ValueError(f"unknown session: {params.session_id}")
-        if str(Path(snapshot.metadata.repository_root).resolve()) != workspace_root:
+        if str(Path(snapshot.metadata.workspace_root).resolve()) != workspace_root:
             raise ValueError("resume workspace does not match the saved session")
 
-        runtime_state = snapshot.runtime_state
-        capabilities = snapshot.metadata.capabilities
-        requirements = snapshot.metadata.completion_requirements
-        if runtime_state.capabilities is not None:
-            capabilities = capabilities.intersect(runtime_state.capabilities)
-        if runtime_state.completion_requirements is not None:
-            requirements = requirements.tighten(runtime_state.completion_requirements)
-        if runtime_state.worktree is not None:
+        run_state = snapshot.state
+        if run_state.workspace.worktree is not None:
             if self.dependencies.workspace_validator is None:
                 raise ValueError("resume of a worktree session requires a workspace validator")
-            self.dependencies.workspace_validator.validate_session(runtime_state.worktree)
+            self.dependencies.workspace_validator.validate_session(run_state.workspace.worktree)
 
         messages = [*snapshot.messages, *params.messages]
         interrupted = _repair_interrupted_tool_uses(snapshot.messages)
@@ -445,9 +426,7 @@ class AgentRuntime:
             messages=messages,
             model=snapshot.metadata.model,
             system_prompt=snapshot.metadata.system_prompt,
-            runtime_state=runtime_state,
-            capabilities=capabilities,
-            completion_requirements=requirements,
+            run_state=run_state,
         )
 
 
@@ -498,26 +477,6 @@ def _tool_result_message(calls: list[ToolUseBlock], results: dict[str, ToolResul
             )
             for call in calls
         ],
-    )
-
-
-def _session_state(
-    context: ToolUseContext,
-    *,
-    status: Literal["running", "completed", "blocked", "failed", "cancelled"],
-    reason: str | None = None,
-) -> SessionRuntimeState:
-    return SessionRuntimeState(
-        permission_mode=context.permission_mode,
-        plan_path=context.plan_path,
-        worktree=context.worktree,
-        capabilities=context.capabilities,
-        instruction_state=context.instruction_state,
-        file_observations=context.file_observations,
-        completion_requirements=context.completion_requirements,
-        permission_grants=context.permission_grants,
-        last_status=status,
-        last_reason=reason,
     )
 
 

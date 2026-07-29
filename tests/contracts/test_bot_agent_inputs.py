@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from osc_agent.bot.worker.inputs import (
+from osc_agent.bot.worker.agent_jobs import (
     build_implementation_skill_input,
     build_planning_skill_input,
 )

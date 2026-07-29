@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import tool_context
+
 import asyncio
 
 from osc_agent.contracts import ContractModel
 from osc_agent.runtime.messages import ToolUseBlock
-from osc_agent.runtime.tool_models import ContextUpdate, ToolResult, ToolUseContext
+from osc_agent.runtime.tool_models import ToolResult
+from osc_agent.runtime.state import PlanSaved
+from tests.runtime_factories import agent_run_state
 from osc_agent.runtime.tool import BaseTool, ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
 from osc_agent.runtime.tool_orchestration import partition_tool_calls, run_tools
@@ -36,12 +40,12 @@ class DelayTool(BaseTool[DelayInput, DelayOutput]):
     def is_concurrency_safe(self, input: DelayInput) -> bool:
         return input.concurrency_safe
 
-    async def call(self, input: DelayInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: DelayInput, context: tool_context) -> ToolResult:
         await asyncio.sleep(input.delay)
         self.completion_order.append(input.name)
         return ToolResult(
             data={"name": input.name},
-            context_update=ContextUpdate(plan_path=input.name),
+            state_changes=(PlanSaved(path=input.name),),
         )
 
 
@@ -53,8 +57,8 @@ def call(id: str, name: str, delay: float, *, safe: bool = True) -> ToolUseBlock
     )
 
 
-def context() -> ToolUseContext:
-    return ToolUseContext(
+def context() -> tool_context:
+    return tool_context(
         session_id="session-1",
         working_directory="C:/repo",
         state_directory="C:/state",
@@ -85,19 +89,22 @@ def test_concurrent_completion_is_streamed_but_context_updates_follow_call_order
             update
             async for update in run_tools(
             [call("1", "first", 0.02), call("2", "second", 0)],
-            executor=executor,
-            context=context(),
+                executor=executor,
+                state=agent_run_state("C:/repo"),
+                session_id="session-1",
+                state_directory="C:/state",
+                transcript_messages=[],
         )
         ]
 
     updates = asyncio.run(collect_updates())
 
     result_updates = [update for update in updates if update.result is not None]
-    final_context = updates[-1].context
+    final_state = updates[-1].state
 
     assert completion_order == ["second", "first"]
     assert [update.tool_use_id for update in result_updates] == ["2", "1"]
-    assert final_context.plan_path == "second"
+    assert final_state.permissions.plan_path == "second"
 
 
 def test_non_safe_calls_execute_serially() -> None:
@@ -110,12 +117,15 @@ def test_non_safe_calls_execute_serially() -> None:
             update
             async for update in run_tools(
             [call("1", "first", 0.01, safe=False), call("2", "second", 0, safe=False)],
-            executor=executor,
-            context=context(),
+                executor=executor,
+                state=agent_run_state("C:/repo"),
+                session_id="session-1",
+                state_directory="C:/state",
+                transcript_messages=[],
         )
         ]
 
     updates = asyncio.run(collect_updates())
 
     assert completion_order == ["first", "second"]
-    assert updates[-1].context.plan_path == "second"
+    assert updates[-1].state.permissions.plan_path == "second"

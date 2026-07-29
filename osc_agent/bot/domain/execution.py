@@ -39,7 +39,7 @@ class ExecutionContract(FrozenContractModel):
     issue_input_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     provider: Literal["anthropic"] = "anthropic"
     model_id: str
-    runtime_revision: str = "bot-job-v2"
+    runtime_revision: str = "bot-job-v3-session-v5"
     plan_profile_revision: str = "bot-plan-v1"
     implementation_profile_revision: str = "bot-implementation-v1"
     planning_skill_name: Literal["issue-planning"] = "issue-planning"

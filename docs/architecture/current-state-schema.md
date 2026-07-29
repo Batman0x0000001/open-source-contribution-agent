@@ -2,6 +2,10 @@
 
 本文描述 Open Source Contribution Agent `0.2.4` 的持久化状态边界。Control 与 Worker 必须使用相同的状态模型；不支持不同状态模型的进程混跑或滚动升级。
 
+Runtime Session 使用 V5。Metadata 只保存 `session_id`、`workspace_root`、`model` 和
+`system_prompt`；workspace、permissions、capabilities、completion requirements 与终态统一
+保存在 `AgentRunState`。JSONL 与 SQLite Store 使用相同记录模型。V4 不兼容且不会自动迁移。
+
 `ExecutionContract` 使用不可变的规范 JSON。它绑定仓库、GitHub App 安装、Issue、默认分支和 base SHA，以及 Issue 输入哈希、模型、Runtime、Agent profile、Skill、Tool allowlist、验证命令、拒绝路径、patch 限制、不可变 Docker image ID、容器资源和 PR 发布模式。Token、私钥、Secret、Prompt 和宿主绝对路径不属于契约字段。
 
 `bot_jobs` 把稳定的仓库与 Issue 身份保存为索引列，并把完整类型化 Job 保存为规范 JSON。针对 `(repository_id, issue_number)` 的部分唯一索引覆盖所有活动状态，确保一个 Issue 同时只有一个活动 Job。

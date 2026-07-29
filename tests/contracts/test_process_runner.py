@@ -15,6 +15,7 @@ from osc_agent.processes.runner import DisabledProcessRunner, HostProcessRunner
 
 def _request(root: Path, command: str, *, timeout: float = 5) -> ProcessRequest:
     return ProcessRequest(
+        invocation_id="test-process",
         executable=sys.executable,
         command=command,
         repo_root=str(root),
@@ -42,8 +43,8 @@ def test_process_policy_filters_secrets_and_classifies_commands() -> None:
 
 def test_disabled_and_host_runners_share_one_contract(tmp_path: Path) -> None:
     request = _request(tmp_path, "print('ok')")
-    disabled = asyncio.run(DisabledProcessRunner().run(request, None))
-    completed = asyncio.run(HostProcessRunner().run(request, None))
+    disabled = asyncio.run(DisabledProcessRunner().run(request))
+    completed = asyncio.run(HostProcessRunner().run(request))
 
     assert disabled.termination_reason == "disabled"
     assert completed.exit_code == 0
@@ -54,7 +55,6 @@ def test_host_runner_reports_timeout(tmp_path: Path) -> None:
     result = asyncio.run(
         HostProcessRunner().run(
             _request(tmp_path, "import time; time.sleep(5)", timeout=0.05),
-            None,
         )
     )
 
@@ -67,7 +67,6 @@ def test_host_runner_propagates_cancellation_after_cleanup(tmp_path: Path) -> No
         task = asyncio.create_task(
             HostProcessRunner().run(
                 _request(tmp_path, "import time; time.sleep(5)"),
-                None,
             )
         )
         await asyncio.sleep(0.05)
@@ -76,4 +75,3 @@ def test_host_runner_propagates_cancellation_after_cleanup(tmp_path: Path) -> No
             await task
 
     asyncio.run(cancel())
-

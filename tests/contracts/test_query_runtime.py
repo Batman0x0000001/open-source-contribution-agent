@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import tool_context
+
 import asyncio
 import inspect
 from pathlib import Path
@@ -17,19 +19,21 @@ from osc_agent.runtime.gateway import (
     ModelRequest,
     ModelTextDelta,
 )
-from osc_agent.completion.evidence import CompletionEvidenceStopHook
+from osc_agent.completion.hooks import CompletionStopHook
 from osc_agent.completion.models import CompletionRequirements
+from osc_agent.runtime.state import CapabilitiesRestricted, CapabilityScope
 from osc_agent.contracts import ContractModel
 from osc_agent.runtime.events import RunCompleted, RunStopped
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
 from osc_agent.runtime.query_models import QueryConfig, QueryParams, ResumeQueryParams, StartQueryParams
 from osc_agent.runtime.session import SessionMetadata
-from osc_agent.runtime.tool_models import CapabilityScope, ContextUpdate, ToolResult, ToolUseContext
+from osc_agent.runtime.tool_models import ToolResult
 from osc_agent.runtime.hooks import HookRegistry
 from osc_agent.runtime.query import AgentRuntime
 from osc_agent.runtime.tool import BaseTool, ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
 from osc_agent.runtime.session_store import FileSessionStore
+from tests.runtime_factories import agent_run_state
 
 
 class EchoInput(ContractModel):
@@ -45,18 +49,20 @@ class EchoTool(BaseTool[EchoInput, EchoOutput]):
     input_model = EchoInput
     output_model = EchoOutput
 
-    async def call(self, input: EchoInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: EchoInput, context: tool_context) -> ToolResult:
         return ToolResult(data={"value": input.value})
 
 
 class NarrowTool(EchoTool):
     name = "narrow"
 
-    async def call(self, input: EchoInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: EchoInput, context: tool_context) -> ToolResult:
         return ToolResult(
             data={"value": input.value},
-            context_update=ContextUpdate(
-                capabilities=CapabilityScope(allowed_tools=frozenset({"echo"}))
+            state_changes=(
+                CapabilitiesRestricted(
+                    capabilities=CapabilityScope(allowed_tools=frozenset({"echo"}))
+                ),
             ),
         )
 
@@ -136,7 +142,7 @@ def test_completion_gate_blocks_three_identical_stop_attempts() -> None:
     )
     gateway = FakeGateway([[final], [final], [final]])
     hooks = HookRegistry()
-    hooks.register_stop(CompletionEvidenceStopHook())
+    hooks.register_stop(CompletionStopHook())
     query_params = StartQueryParams(
         session_id="completion-gate",
         model="test-model",
@@ -336,13 +342,15 @@ def test_resume_repairs_interrupted_tool_use_before_new_user_message(
     store = FileSessionStore(tmp_path / "sessions")
     store.create(
         SessionMetadata(
-            schema_version=4,
+            schema_version=5,
             session_id="interrupted",
-            repository_root=str(tmp_path),
-            initial_working_directory=str(tmp_path),
+            workspace_root=str(tmp_path),
             model="saved-model",
+        ),
+        agent_run_state(
+            str(tmp_path),
             capabilities=CapabilityScope(allowed_tools=frozenset({"echo"})),
-        )
+        ),
     )
     store.append_message(
         "interrupted",
@@ -446,7 +454,7 @@ def test_cancelled_tool_gets_a_persisted_result_pair(tmp_path: Path) -> None:
     class BlockingTool(EchoTool):
         name = "blocking"
 
-        async def call(self, input: EchoInput, context: ToolUseContext) -> ToolResult:
+        async def call(self, input: EchoInput, context: tool_context) -> ToolResult:
             started.set()
             await asyncio.Event().wait()
             return ToolResult(data={"value": input.value})
@@ -528,5 +536,5 @@ def test_cancelled_model_request_marks_session_without_partial_message(
     snapshot = store.load("model-cancelled")
 
     assert snapshot is not None
-    assert snapshot.runtime_state.last_status == "cancelled"
+    assert snapshot.state.last_status == "cancelled"
     assert len(snapshot.messages) == 1

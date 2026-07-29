@@ -40,9 +40,17 @@ def test_repository_config_requires_an_immutable_image_id(image: str) -> None:
         )
 
 
-def test_repository_config_requires_a_recognized_test() -> None:
-    with pytest.raises(ValidationError, match="recognized test"):
-        RepositoryBotConfig(image=IMAGE_ID, validation_commands=("python -m pip check",))
+def test_repository_config_requires_a_recognized_test_at_loading_boundary(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "repositories.yml"
+    path.write_text(
+        f"repositories:\n  owner/repo:\n    image: {IMAGE_ID}\n"
+        "    validation_commands: [python -m pip check]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="recognized test"):
+        load_repository_catalog(path)
     config = RepositoryBotConfig(
         image=IMAGE_ID,
         validation_commands=("python -m pytest", "python -m pip check"),

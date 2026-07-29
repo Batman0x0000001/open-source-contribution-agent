@@ -15,17 +15,23 @@ from pydantic import JsonValue
 from osc_agent.application import (
     SkillInput,
     UserPrompt,
-    build_session_store,
-    build_skill_catalog,
 )
-from osc_agent.cli.application import build_cli_application
-from osc_agent.cli.config import build_general_profile, build_skill_profile
-from osc_agent.cli.session import render_session_summary, run_conversation
+from osc_agent.cli.agent import (
+    approve_tool,
+    ask_questions,
+    build_cli_application,
+    build_general_profile,
+    build_skill_profile,
+    run_conversation,
+)
+from osc_agent.cli.sessions import (
+    latest_session_id,
+    list_sessions as render_session_list,
+    show_session as render_session,
+)
 from osc_agent.configuration import load_agent_settings
 from osc_agent.cli.doctor import run_doctor
-from osc_agent.application.session_summary import build_session_summary
-from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
-from osc_agent.runtime.tool_models import ApprovalResponse, Ask
+from osc_agent.skills.catalog import build_skill_catalog
 
 
 app = typer.Typer(help="Extensible coding agent for open-source contribution workflows.")
@@ -55,8 +61,8 @@ def run_agent(
     agent_application = build_cli_application(
         repo,
         build_general_profile(),
-        approval_handler=_approve,
-        question_handler=_ask_questions,
+        approval_handler=approve_tool,
+        question_handler=ask_questions,
     )
     conversation = agent_application.open_session(session_id)
 
@@ -84,15 +90,15 @@ def resume_session(
     if (session_id is None) == (not latest):
         raise typer.BadParameter("provide exactly one of SESSION_ID or --latest")
     if latest:
-        session_id = build_session_store(repo).latest_session_id()
+        session_id = latest_session_id(repo)
         if session_id is None:
             raise typer.BadParameter("no valid Session exists for this repository")
     assert session_id is not None
     agent_application = build_cli_application(
         repo,
         build_general_profile(resume=True),
-        approval_handler=_approve,
-        question_handler=_ask_questions,
+        approval_handler=approve_tool,
+        question_handler=ask_questions,
     )
     conversation = agent_application.open_session(session_id)
     typer.echo(f"Session: {session_id}")
@@ -200,8 +206,8 @@ def _run_inline_skill(
     agent_application = build_cli_application(
         repo,
         build_skill_profile(name),
-        approval_handler=_approve,
-        question_handler=_ask_questions,
+        approval_handler=approve_tool,
+        question_handler=ask_questions,
     )
     conversation = agent_application.open_session(session_id)
     typer.echo(f"Session: {session_id}")
@@ -218,61 +224,6 @@ def _run_inline_skill(
         raise typer.BadParameter(str(exc)) from exc
 
 
-async def _approve(decision: Ask) -> ApprovalResponse:
-    typer.echo(f"\nTool: {decision.tool_name}")
-    typer.echo(f"Working directory: {decision.working_directory}")
-    typer.echo(f"Risk: {decision.risk}")
-    typer.echo("Input preview:")
-    typer.echo(json.dumps(decision.preview, ensure_ascii=False, indent=2))
-    if decision.tool_name == "bash":
-        typer.echo(
-            "WARNING: this Bash command runs on the Host without an OS sandbox and may access files available to the current user."
-        )
-    if decision.risk in {"write", "process"}:
-        typer.echo("  1. Allow once")
-        typer.echo("  2. Allow for this Session")
-        typer.echo("  3. Deny")
-        choice = typer.prompt("Choose", type=int)
-        mapping = {
-            1: "allow_once",
-            2: "allow_for_session",
-            3: "deny",
-        }
-        if choice not in mapping:
-            raise typer.BadParameter("permission choice must be 1, 2, or 3")
-        return ApprovalResponse(choice=mapping[choice])
-    return ApprovalResponse(
-        choice="allow_once" if typer.confirm(decision.prompt, default=False) else "deny"
-    )
-
-
-async def _ask_questions(questions: list[dict[str, JsonValue]]) -> dict[str, str]:
-    answers: dict[str, str] = {}
-    for question in questions:
-        question_id = str(question["id"])
-        text = str(question["question"])
-        options = question.get("options", [])
-        typer.echo(f"\n{text}")
-        labels: list[str] = []
-        option_ids: list[str] = []
-        for index, option in enumerate(options, start=1):
-            if isinstance(option, dict):
-                label = str(option.get("label", ""))
-                labels.append(label)
-                option_ids.append(str(option.get("id", "")))
-                typer.echo(f"  {index}. {label} — {option.get('description', '')}")
-        raw = typer.prompt("Choose a number or enter a custom answer")
-        try:
-            selected = int(raw)
-        except ValueError:
-            answers[question_id] = raw
-        else:
-            if selected < 1 or selected > len(labels):
-                raise typer.BadParameter("question choice is outside the available options")
-            answers[question_id] = option_ids[selected - 1]
-    return answers
-
-
 @session_app.command("list")
 def list_sessions(
     repo: RepoOption = Path.cwd(),
@@ -280,11 +231,7 @@ def list_sessions(
 ) -> None:
     """List Sessions isolated to the selected repository."""
 
-    for item in build_session_store(repo).list_overviews(limit=limit):
-        typer.echo(
-            f"{item.session_id}\t{item.status}\t{item.updated_at}\t"
-            f"{item.working_directory or '-'}"
-        )
+    render_session_list(repo, limit=limit)
 
 
 @session_app.command("show")
@@ -295,63 +242,7 @@ def show_session(
 ) -> None:
     """Show Session metadata without exposing transcript content by default."""
 
-    try:
-        snapshot = build_session_store(repo).load(session_id)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    if snapshot is None:
-        raise typer.BadParameter(f"unknown session: {session_id}")
-    render_session_summary(build_session_summary(snapshot), repo)
-    typer.echo(f"Model: {snapshot.metadata.model}")
-    allowed = snapshot.runtime_state.capabilities or snapshot.metadata.capabilities
-    typer.echo(
-        "Allowed tools: "
-        + (
-            ", ".join(sorted(allowed.allowed_tools))
-            if allowed.allowed_tools is not None
-            else "all registered tools"
-        )
-    )
-    typer.echo(f"Plan: {snapshot.runtime_state.plan_path or '-'}")
-    requirements = snapshot.metadata.completion_requirements
-    if snapshot.runtime_state.completion_requirements is not None:
-        requirements = requirements.tighten(
-            snapshot.runtime_state.completion_requirements
-        )
-    typer.echo(
-        "Completion evidence required: "
-        + (
-            ", ".join(sorted(requirements.required_evidence))
-            or "none"
-        )
-    )
-    grant_tools = sorted(
-        {grant.tool_name for grant in snapshot.runtime_state.permission_grants}
-    )
-    typer.echo(
-        f"Session permissions: {len(snapshot.runtime_state.permission_grants)}"
-        + (f" ({', '.join(grant_tools)})" if grant_tools else "")
-    )
-    if messages:
-        typer.echo("Recent messages:")
-        for message in snapshot.messages[-messages:]:
-            typer.echo(f"  {message.role}: {_message_preview(message)}")
-
-
-def _message_preview(message: RuntimeMessage) -> str:
-    parts: list[str] = []
-    for block in message.content:
-        if isinstance(block, TextBlock):
-            text = " ".join(block.text.split())
-            parts.append(text[:500] + ("…" if len(text) > 500 else ""))
-        elif isinstance(block, ToolUseBlock):
-            parts.append(f"[tool_use {block.name}]")
-        elif isinstance(block, ToolResultBlock):
-            parts.append(
-                f"[tool_result {block.tool_use_id} "
-                f"{'error' if block.is_error else 'ok'}]"
-            )
-    return " ".join(parts)
+    render_session(repo, session_id, messages=messages)
 
 
 if __name__ == "__main__":

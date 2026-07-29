@@ -10,7 +10,14 @@ from pydantic import Field
 
 from osc_agent.workspaces.git_worktree import GitWorktreeManager
 from osc_agent.contracts import ContractModel
-from osc_agent.runtime.tool_models import ContextUpdate, ToolResult, ToolUseContext, ValidationFailure, ValidationResult, ValidationSuccess
+from osc_agent.runtime.state import (
+    FilesObserved,
+    InstructionsActivated,
+    ToolContext,
+    WorktreeEntered,
+    WorktreeExited,
+)
+from osc_agent.runtime.tool_models import ToolResult, ValidationFailure, ValidationResult, ValidationSuccess
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.workspaces.instructions import RepositoryInstructionResolver
 
@@ -48,7 +55,7 @@ class EnterWorktreeTool(BaseTool[EnterWorktreeInput, WorktreeOutput]):
     def permission_preview(
         self,
         input: EnterWorktreeInput,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> dict[str, object]:
         return {
             "action": "create",
@@ -56,8 +63,8 @@ class EnterWorktreeTool(BaseTool[EnterWorktreeInput, WorktreeOutput]):
             "branch": f"osc-agent/{input.name}",
         }
 
-    async def validate_input(self, input: EnterWorktreeInput, context: ToolUseContext) -> ValidationResult:
-        if context.worktree is not None:
+    async def validate_input(self, input: EnterWorktreeInput, context: ToolContext) -> ValidationResult:
+        if context.workspace.worktree is not None:
             return ValidationFailure(reason="session is already inside a worktree")
         try:
             self.manager.validate_name(input.name)
@@ -65,17 +72,17 @@ class EnterWorktreeTool(BaseTool[EnterWorktreeInput, WorktreeOutput]):
             return ValidationFailure(reason=str(exc))
         return ValidationSuccess()
 
-    async def call(self, input: EnterWorktreeInput, context: ToolUseContext) -> ToolResult:
-        session = await asyncio.to_thread(self.manager.create, Path(context.working_directory), input.name)
+    async def call(self, input: EnterWorktreeInput, context: ToolContext) -> ToolResult:
+        session = await asyncio.to_thread(
+            self.manager.create, Path(context.workspace.working_directory), input.name
+        )
         instruction_state = self.instructions.activate_root(Path(session.path))
         return ToolResult(
             data={"path": session.path, "branch": session.branch, "action": "entered"},
-            context_update=ContextUpdate(
-                working_directory=session.path,
-                worktree=session,
-                instruction_state=instruction_state,
-                replace_instruction_state=True,
-                replace_file_observations=True,
+            state_changes=(
+                WorktreeEntered(session=session),
+                InstructionsActivated(state=instruction_state, replace=True),
+                FilesObserved(replace=True),
             ),
         )
 
@@ -107,33 +114,34 @@ class ExitWorktreeTool(BaseTool[ExitWorktreeInput, WorktreeOutput]):
     def permission_preview(
         self,
         input: ExitWorktreeInput,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> dict[str, object]:
         return {
             "action": input.action,
-            "path": context.worktree.path if context.worktree else None,
-            "branch": context.worktree.branch if context.worktree else None,
+            "path": context.workspace.worktree.path if context.workspace.worktree else None,
+            "branch": context.workspace.worktree.branch if context.workspace.worktree else None,
         }
 
-    async def validate_input(self, input: ExitWorktreeInput, context: ToolUseContext) -> ValidationResult:
-        if context.worktree is None:
+    async def validate_input(self, input: ExitWorktreeInput, context: ToolContext) -> ValidationResult:
+        if context.workspace.worktree is None:
             return ValidationFailure(reason="session is not inside a worktree")
         return ValidationSuccess()
 
-    async def call(self, input: ExitWorktreeInput, context: ToolUseContext) -> ToolResult:
-        session = context.worktree
+    async def call(self, input: ExitWorktreeInput, context: ToolContext) -> ToolResult:
+        session = context.workspace.worktree
         assert session is not None
         if input.action in {"remove", "discard"}:
             await asyncio.to_thread(self.manager.remove, session, discard=input.action == "discard")
         return ToolResult(
             data={"path": session.path, "branch": session.branch, "action": "removed" if input.action != "keep" else "kept"},
-            context_update=ContextUpdate(
-                working_directory=session.original_working_directory,
-                clear_worktree=True,
-                instruction_state=self.instructions.activate_root(
-                    Path(session.original_working_directory)
+            state_changes=(
+                WorktreeExited(working_directory=session.original_working_directory),
+                InstructionsActivated(
+                    state=self.instructions.activate_root(
+                        Path(session.original_working_directory)
+                    ),
+                    replace=True,
                 ),
-                replace_instruction_state=True,
-                replace_file_observations=True,
+                FilesObserved(replace=True),
             ),
         )

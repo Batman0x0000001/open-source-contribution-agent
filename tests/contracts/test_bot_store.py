@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from osc_agent.runtime.state import CapabilityScope
+
 from pathlib import Path
 import sqlite3
 from uuid import uuid4
@@ -13,8 +15,9 @@ from osc_agent.bot.domain.jobs import BotJob
 from osc_agent.bot.persistence.session_store import SqliteSessionStore
 from osc_agent.bot.persistence.store import BotStore
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
-from osc_agent.runtime.session import SessionMetadata, SessionRuntimeState
-from osc_agent.runtime.tool_models import CapabilityScope
+from osc_agent.runtime.session import SessionMetadata
+from tests.runtime_factories import agent_run_state
+
 
 
 def _job() -> BotJob:
@@ -95,23 +98,21 @@ def test_sqlite_session_store_replays_strict_event_chain(tmp_path: Path) -> None
     sessions = SqliteSessionStore(database)
     session_id = str(uuid4())
     metadata = SessionMetadata(
-        schema_version=4,
+        schema_version=5,
         session_id=session_id,
-        repository_root=str(tmp_path),
-        initial_working_directory=str(tmp_path),
+        workspace_root=str(tmp_path),
         model="model",
-        capabilities=CapabilityScope(allowed_tools=frozenset({"read_file"})),
     )
-    sessions.create(metadata)
+    sessions.create(metadata, agent_run_state(str(tmp_path), capabilities=CapabilityScope(allowed_tools=frozenset({"read_file"}))))
     sessions.append_message(
         session_id,
         RuntimeMessage(role="user", content=[TextBlock(text="goal")]),
     )
-    sessions.save_state(session_id, SessionRuntimeState(last_status="completed"))
+    sessions.save_state(session_id, agent_run_state(str(tmp_path), status="completed"))
     snapshot = sessions.load(session_id)
     assert snapshot is not None
     assert snapshot.messages[0].content[0].text == "goal"
-    assert snapshot.runtime_state.last_status == "completed"
+    assert snapshot.state.last_status == "completed"
     with sessions.lease(session_id):
         with pytest.raises(ValueError, match="SESSION_IN_USE"):
             with sessions.lease(session_id):
@@ -148,11 +149,18 @@ def test_plan_reply_is_exactly_once_and_atomically_appended(tmp_path: Path) -> N
     store.initialize()
     sessions = SqliteSessionStore(store)
     session_id = str(uuid4())
-    sessions.create(SessionMetadata(
-        schema_version=4, session_id=session_id, repository_root=str(tmp_path),
-        initial_working_directory=str(tmp_path), model="model",
-        capabilities=CapabilityScope(allowed_tools=frozenset({"read_file"})),
-    ))
+    sessions.create(
+        SessionMetadata(
+            schema_version=5,
+            session_id=session_id,
+            workspace_root=str(tmp_path),
+            model="model",
+        ),
+        agent_run_state(
+            str(tmp_path),
+            capabilities=CapabilityScope(allowed_tools=frozenset({"read_file"})),
+        ),
+    )
     job = _job().model_copy(update={"plan_session_id": session_id, "plan_workspace_ready": True})
     store.create_job(job)
     running = store.transition(job_id=job.job_id, expected_version=job.version, status="running_plan")

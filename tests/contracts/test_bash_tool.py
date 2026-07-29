@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import tool_context
+
 import asyncio
 from pathlib import Path
 
 from osc_agent.runtime.messages import ToolUseBlock
-from osc_agent.runtime.tool_models import ToolUseContext
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
 from osc_agent.tools.bash import BashTool, is_read_only_command
 from osc_agent.processes.contracts import CommandResult
 
 
-def context(root: Path) -> ToolUseContext:
-    return ToolUseContext(
+def context(root: Path) -> tool_context:
+    return tool_context(
         session_id="bash", working_directory=str(root),
         state_directory=str(root / "state"),
     )
@@ -23,7 +24,7 @@ def context(root: Path) -> ToolUseContext:
 class Runner:
     request = None
 
-    async def run(self, request, _context):
+    async def run(self, request):
         self.request = request
         return CommandResult(command=request.command, exit_code=0, stdout="ok\n", duration_ms=1)
 
@@ -60,7 +61,7 @@ def test_bash_hard_deny_precedes_execution(tmp_path: Path) -> None:
 
 def test_bash_timeout_is_typed(tmp_path: Path) -> None:
     class TimeoutRunner:
-        async def run(self, request, _context):
+        async def run(self, request):
             return CommandResult(
                 command=request.command, exit_code=-1, stderr="timeout", duration_ms=1,
                 termination_reason="timeout",

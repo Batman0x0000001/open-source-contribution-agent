@@ -113,4 +113,22 @@ def load_repository_catalog(path: Path) -> RepositoryBotCatalog:
         if unknown:
             raise ValueError(f"unknown production config sections: {', '.join(sorted(unknown))}")
         raw = {"repositories": raw.get("repositories")}
-    return RepositoryBotCatalog.model_validate(raw)
+    catalog = RepositoryBotCatalog.model_validate(raw)
+    _validate_execution_policy(catalog)
+    return catalog
+
+
+def _validate_execution_policy(catalog: RepositoryBotCatalog) -> None:
+    """在配置加载边界验证命令策略，避免 Domain 反向依赖进程实现。"""
+
+    from osc_agent.processes.contracts import CommandKind
+    from osc_agent.processes.policy import classify_command
+
+    for name, repository in catalog.repositories.items():
+        if not any(
+            classify_command(command) == CommandKind.TEST
+            for command in repository.validation_commands
+        ):
+            raise ValueError(
+                f"repository {name} validation commands must include a recognized test command"
+            )

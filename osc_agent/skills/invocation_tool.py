@@ -8,7 +8,12 @@ from pydantic import Field, JsonValue
 
 from osc_agent.contracts import ContractModel
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
-from osc_agent.runtime.tool_models import ContextUpdate, ToolResult, ToolUseContext
+from osc_agent.runtime.state import (
+    CapabilitiesRestricted,
+    CompletionTightened,
+    ToolContext,
+)
+from osc_agent.runtime.tool_models import ToolResult
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.skills.models import PreparedSkill, SkillRequest
 from osc_agent.skills.preparer import SkillPreparer
@@ -44,7 +49,7 @@ class SkillTool(BaseTool[SkillToolInput, SkillToolOutput]):
         suffix = "; ".join(available) if available else "none"
         return f"Invoke one model-available Skill in the current conversation. Available: {suffix}"
 
-    async def call(self, input: SkillToolInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: SkillToolInput, context: ToolContext) -> ToolResult:
         result = await self.preparer.prepare(
             SkillRequest(
                 name=input.skill,
@@ -72,8 +77,8 @@ class SkillTool(BaseTool[SkillToolInput, SkillToolOutput]):
             new_messages=[
                 RuntimeMessage(role="user", content=[TextBlock(text=result.prompt)])
             ],
-            context_update=ContextUpdate(
-                capabilities=result.capabilities,
-                completion_requirements=result.completion_requirements,
+            state_changes=(
+                CapabilitiesRestricted(capabilities=result.capabilities),
+                CompletionTightened(requirements=result.completion_requirements),
             ),
         )

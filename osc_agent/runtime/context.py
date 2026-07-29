@@ -13,7 +13,7 @@ from osc_agent.runtime.gateway import ModelCompleted, ModelGateway, ModelRequest
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock
 from osc_agent.runtime.query_models import QueryConfig
 from osc_agent.runtime.session_store import MemoryToolResultStore, ToolResultStore
-from osc_agent.runtime.tool_models import ToolUseContext
+from osc_agent.runtime.state import ToolContext
 from osc_agent.workspaces.instructions import RepositoryInstructionResolver
 
 
@@ -125,7 +125,7 @@ class ContextPipeline:
         *,
         config: QueryConfig,
         working_directory: str,
-        runtime_context: ToolUseContext | None = None,
+        runtime_context: ToolContext | None = None,
         instruction_resolver: RepositoryInstructionResolver | None = None,
         force_reason: str | None = None,
     ) -> ContextProjection:
@@ -223,32 +223,32 @@ class ContextPipeline:
 
 
 def _runtime_reminder(
-    context: ToolUseContext | None,
+    context: ToolContext | None,
     instruction_resolver: RepositoryInstructionResolver | None = None,
 ) -> str:
     if context is None:
         return ""
     lines = [
         "<session_runtime>",
-        f"permission_mode: {context.permission_mode}",
-        f"working_directory: {context.working_directory}",
+        f"permission_mode: {context.permissions.mode}",
+        f"working_directory: {context.workspace.working_directory}",
     ]
-    if context.plan_path:
-        plan = (Path(context.state_directory) / "plans" / context.plan_path).resolve()
+    if context.permissions.plan_path:
+        plan = (Path(context.state_directory) / "plans" / context.permissions.plan_path).resolve()
         plans_root = (Path(context.state_directory) / "plans").resolve()
         if plan.parent == plans_root and plan.is_file():
             lines.extend(["current_plan:", plan.read_text(encoding="utf-8")])
-    if context.worktree is not None:
+    if context.workspace.worktree is not None:
         lines.extend(
             [
-                f"worktree_path: {context.worktree.path}",
-                f"worktree_branch: {context.worktree.branch}",
-                f"worktree_base_commit: {context.worktree.base_commit}",
+                f"worktree_path: {context.workspace.worktree.path}",
+                f"worktree_branch: {context.workspace.worktree.branch}",
+                f"worktree_base_commit: {context.workspace.worktree.base_commit}",
             ]
         )
     documents = (instruction_resolver or RepositoryInstructionResolver()).load(
-        Path(context.working_directory),
-        context.instruction_state,
+        Path(context.workspace.working_directory),
+        context.workspace.instruction_state,
     )
     if documents:
         lines.append("<repository_instructions>")

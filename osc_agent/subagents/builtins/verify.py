@@ -9,7 +9,7 @@ from pydantic import Field, field_validator, model_validator
 
 from osc_agent.contracts import ContractModel, FrozenContractModel
 from osc_agent.runtime.query_models import QueryConfig
-from osc_agent.runtime.tool_models import CapabilityScope
+from osc_agent.runtime.state import CapabilityScope
 from osc_agent.subagents.models import SubagentDefinition
 from osc_agent.subagents.registry import SubagentContract, SubagentRegistration
 

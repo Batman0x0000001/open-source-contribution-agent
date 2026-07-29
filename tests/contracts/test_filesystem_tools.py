@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import apply_tool_result, tool_context
+
 import asyncio
 from pathlib import Path
 
 from osc_agent.runtime.messages import ToolUseBlock
-from osc_agent.runtime.tool_models import ApprovalResponse, Ask, ToolUseContext
+from osc_agent.runtime.tool_models import ApprovalResponse, Ask
 from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
 from tests.contracts.registry_factory import build_test_tool_registry
 from osc_agent.tools.filesystem import (
@@ -18,8 +20,8 @@ from osc_agent.tools.filesystem import (
 )
 
 
-def context(root: Path) -> ToolUseContext:
-    return ToolUseContext(session_id="session-1", working_directory=str(root), state_directory=str(root / "state"))
+def context(root: Path) -> tool_context:
+    return tool_context(session_id="session-1", working_directory=str(root), state_directory=str(root / "state"))
 
 
 def test_core_registry_has_one_authoritative_definition_per_migrated_tool() -> None:
@@ -157,12 +159,7 @@ def test_edit_file_requires_approval_and_replaces_once(tmp_path: Path) -> None:
             context(tmp_path),
         )
     )
-    edit_context = context(tmp_path).model_copy(
-        update={
-            "file_observations": read.context_update.file_observations,
-            "instruction_state": read.context_update.instruction_state,
-        }
-    )
+    edit_context = apply_tool_result(context(tmp_path), read)
     result = asyncio.run(
         executor.execute(
             ToolUseBlock(
@@ -219,9 +216,7 @@ def test_partial_read_cannot_authorize_an_existing_file_edit(tmp_path: Path) -> 
             context(tmp_path),
         )
     )
-    edit_context = context(tmp_path).model_copy(
-        update={"file_observations": read.context_update.file_observations}
-    )
+    edit_context = apply_tool_result(context(tmp_path), read)
     edited = asyncio.run(
         executor.execute(
             ToolUseBlock(
@@ -255,9 +250,7 @@ def test_external_change_after_read_is_rejected(tmp_path: Path) -> None:
         )
     )
     target.write_text("changed externally", encoding="utf-8")
-    edit_context = context(tmp_path).model_copy(
-        update={"file_observations": read.context_update.file_observations}
-    )
+    edit_context = apply_tool_result(context(tmp_path), read)
     edited = asyncio.run(
         executor.execute(
             ToolUseBlock(
@@ -299,5 +292,6 @@ def test_new_nested_instruction_blocks_first_write_and_activates_context(
     )
 
     assert result.error and result.error.code == "REPOSITORY_INSTRUCTIONS_DISCOVERED"
-    assert result.context_update.instruction_state.active_paths == ["src/AGENTS.md"]
+    updated = apply_tool_result(context(tmp_path), result)
+    assert updated.workspace.instruction_state.active_paths == ["src/AGENTS.md"]
     assert not (nested / "new.py").exists()

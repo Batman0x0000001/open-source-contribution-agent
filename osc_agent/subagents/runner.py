@@ -14,7 +14,7 @@ from osc_agent.runtime.events import (
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
 from osc_agent.runtime.query_models import StartQueryParams
 from osc_agent.runtime.query import AgentRuntime
-from osc_agent.runtime.tool_models import CapabilityScope
+from osc_agent.runtime.state import CapabilityScope
 from osc_agent.subagents.models import SubagentDefinition, SubagentRequest, SubagentRunResult
 from osc_agent.subagents.registry import SubagentRegistry
 

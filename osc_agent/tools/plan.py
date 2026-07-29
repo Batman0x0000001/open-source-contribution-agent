@@ -7,10 +7,14 @@ from pathlib import Path
 from pydantic import Field
 
 from osc_agent.contracts import ContractModel
+from osc_agent.runtime.state import (
+    PlanModeEntered,
+    PlanModeExited,
+    PlanSaved,
+    ToolContext,
+)
 from osc_agent.runtime.tool_models import (
-    ContextUpdate,
     ToolResult,
-    ToolUseContext,
     ValidationFailure,
     ValidationResult,
     ValidationSuccess,
@@ -41,20 +45,20 @@ class EnterPlanModeTool(BaseTool[EmptyInput, ModeOutput]):
         return True
 
     async def validate_input(
-        self, input: EmptyInput, context: ToolUseContext
+        self, input: EmptyInput, context: ToolContext
     ) -> ValidationResult:
-        if context.permission_mode == "plan":
+        if context.permissions.mode == "plan":
             return ValidationFailure(reason="session is already in plan mode")
         return ValidationSuccess()
 
-    async def call(self, input: EmptyInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: EmptyInput, context: ToolContext) -> ToolResult:
         return ToolResult(
             data={
                 "mode": "plan",
                 "message": "Entered plan mode",
-                "plan_path": context.plan_path,
+                "plan_path": context.permissions.plan_path,
             },
-            context_update=ContextUpdate(permission_mode="plan"),
+            state_changes=(PlanModeEntered(),),
         )
 
 
@@ -78,20 +82,20 @@ class WritePlanTool(BaseTool[WritePlanInput, WritePlanOutput]):
         return False
 
     async def validate_input(
-        self, input: WritePlanInput, context: ToolUseContext
+        self, input: WritePlanInput, context: ToolContext
     ) -> ValidationResult:
-        if context.permission_mode != "plan":
+        if context.permissions.mode != "plan":
             return ValidationFailure(reason="write_plan is only available in plan mode")
         return ValidationSuccess()
 
-    async def call(self, input: WritePlanInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: WritePlanInput, context: ToolContext) -> ToolResult:
         root = Path(context.state_directory) / "plans"
         path = root / f"{_safe_session_id(context.session_id)}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(input.content, encoding="utf-8")
         return ToolResult(
             data={"path": path.name, "chars_written": len(input.content)},
-            context_update=ContextUpdate(plan_path=path.name),
+            state_changes=(PlanSaved(path=path.name),),
         )
 
 
@@ -110,9 +114,9 @@ class ReadPlanTool(BaseTool[EmptyInput, ReadPlanOutput]):
         return True
 
     async def validate_input(
-        self, input: EmptyInput, context: ToolUseContext
+        self, input: EmptyInput, context: ToolContext
     ) -> ValidationResult:
-        if not context.plan_path:
+        if not context.permissions.plan_path:
             return ValidationFailure(reason="this session has no saved plan")
         try:
             path = _plan_path(context)
@@ -122,7 +126,7 @@ class ReadPlanTool(BaseTool[EmptyInput, ReadPlanOutput]):
             return ValidationFailure(reason="saved plan file does not exist")
         return ValidationSuccess()
 
-    async def call(self, input: EmptyInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: EmptyInput, context: ToolContext) -> ToolResult:
         path = _plan_path(context)
         return ToolResult(
             data={"path": path.name, "content": path.read_text(encoding="utf-8")}
@@ -142,11 +146,11 @@ class ExitPlanModeTool(BaseTool[EmptyInput, ModeOutput]):
         return True
 
     async def validate_input(
-        self, input: EmptyInput, context: ToolUseContext
+        self, input: EmptyInput, context: ToolContext
     ) -> ValidationResult:
-        if context.permission_mode != "plan":
+        if context.permissions.mode != "plan":
             return ValidationFailure(reason="session is not in plan mode")
-        if not context.plan_path:
+        if not context.permissions.plan_path:
             return ValidationFailure(reason="write a plan before exiting plan mode")
         try:
             path = _plan_path(context)
@@ -156,25 +160,25 @@ class ExitPlanModeTool(BaseTool[EmptyInput, ModeOutput]):
             return ValidationFailure(reason="saved plan file does not exist")
         return ValidationSuccess()
 
-    async def call(self, input: EmptyInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: EmptyInput, context: ToolContext) -> ToolResult:
         return ToolResult(
             data={
                 "mode": "default",
                 "message": "Plan approved",
-                "plan_path": context.plan_path,
+                "plan_path": context.permissions.plan_path,
             },
-            context_update=ContextUpdate(permission_mode="default"),
+            state_changes=(PlanModeExited(),),
         )
 
 
-def _plan_path(context: ToolUseContext) -> Path:
-    if not context.plan_path:
+def _plan_path(context: ToolContext) -> Path:
+    if not context.permissions.plan_path:
         raise ValueError("session has no plan")
     root = (Path(context.state_directory) / "plans").resolve()
     expected_name = f"{_safe_session_id(context.session_id)}.md"
-    if context.plan_path != expected_name:
+    if context.permissions.plan_path != expected_name:
         raise ValueError("plan does not belong to the current session")
-    path = (root / context.plan_path).resolve()
+    path = (root / context.permissions.plan_path).resolve()
     if path.parent != root:
         raise ValueError("invalid plan path")
     return path

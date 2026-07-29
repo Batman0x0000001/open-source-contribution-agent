@@ -14,11 +14,10 @@ from osc_agent.workspaces.path_policy import (
 )
 from osc_agent.workspaces.path_policy import safe_repo_path
 from osc_agent.contracts import ContractModel
+from osc_agent.runtime.state import FilesObserved, InstructionsActivated, ToolContext
 from osc_agent.runtime.tool_models import (
-    ContextUpdate,
     ToolError,
     ToolResult,
-    ToolUseContext,
     ValidationFailure,
     ValidationResult,
     ValidationSuccess,
@@ -60,18 +59,18 @@ class ReadFileTool(BaseTool[ReadFileInput, ReadFileOutput]):
     async def validate_input(
         self,
         input: ReadFileInput,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> ValidationResult:
         return _validate_path(input.path)
 
-    async def call(self, input: ReadFileInput, context: ToolUseContext) -> ToolResult:
-        root = Path(context.working_directory)
+    async def call(self, input: ReadFileInput, context: ToolContext) -> ToolResult:
+        root = Path(context.workspace.working_directory)
         try:
             target = safe_repo_path(root, input.path)
             text = await asyncio.to_thread(target.read_text, encoding="utf-8")
             stat = await asyncio.to_thread(target.stat)
             instruction_state = self.instructions.activate_for_path(
-                root, input.path, context.instruction_state
+                root, input.path, context.workspace.instruction_state
             )
         except (OSError, UnicodeDecodeError, ValueError) as exc:
             return ToolResult(error=ToolError(code="FILE_OPERATION_FAILED", message=str(exc)))
@@ -90,9 +89,9 @@ class ReadFileTool(BaseTool[ReadFileInput, ReadFileOutput]):
                 "offset": input.offset,
                 "complete": complete,
             },
-            context_update=ContextUpdate(
-                instruction_state=instruction_state,
-                file_observations={input.path: observation},
+            state_changes=(
+                InstructionsActivated(state=instruction_state),
+                FilesObserved(observations={input.path: observation}),
             ),
         )
 
@@ -126,10 +125,10 @@ class WriteFileTool(BaseTool[WriteFileInput, WriteFileOutput]):
     def permission_preview(
         self,
         input: WriteFileInput,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> dict[str, object]:
         try:
-            target = safe_repo_path(Path(context.working_directory), input.path)
+            target = safe_repo_path(Path(context.workspace.working_directory), input.path)
             operation = "replace" if target.exists() else "create"
         except ValueError:
             operation = "invalid"
@@ -142,23 +141,23 @@ class WriteFileTool(BaseTool[WriteFileInput, WriteFileOutput]):
     async def validate_input(
         self,
         input: WriteFileInput,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> ValidationResult:
         return _validate_path(input.path)
 
-    async def call(self, input: WriteFileInput, context: ToolUseContext) -> ToolResult:
-        root = Path(context.working_directory)
+    async def call(self, input: WriteFileInput, context: ToolContext) -> ToolResult:
+        root = Path(context.workspace.working_directory)
         instruction_state = self.instructions.activate_for_path(
-            root, input.path, context.instruction_state
+            root, input.path, context.workspace.instruction_state
         )
-        if instruction_state != context.instruction_state:
+        if instruction_state != context.workspace.instruction_state:
             return ToolResult(
                 error=ToolError(
                     code="REPOSITORY_INSTRUCTIONS_DISCOVERED",
                     message="new repository instructions were activated; review them and retry the write",
                     retryable=True,
                 ),
-                context_update=ContextUpdate(instruction_state=instruction_state),
+                state_changes=(InstructionsActivated(state=instruction_state),),
             )
         stale = await asyncio.to_thread(_existing_file_guard, root, input.path, context)
         if stale is not None:
@@ -175,7 +174,7 @@ class WriteFileTool(BaseTool[WriteFileInput, WriteFileOutput]):
             return _file_error(exc)
         return ToolResult(
             data={"path": input.path, "chars_written": chars_written},
-            context_update=ContextUpdate(file_observations={input.path: observation}),
+            state_changes=(FilesObserved(observations={input.path: observation}),),
         )
 
 
@@ -208,7 +207,7 @@ class EditFileTool(BaseTool[EditFileInput, EditFileOutput]):
     def permission_preview(
         self,
         input: EditFileInput,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> dict[str, object]:
         return {
             "path": input.path,
@@ -219,23 +218,23 @@ class EditFileTool(BaseTool[EditFileInput, EditFileOutput]):
     async def validate_input(
         self,
         input: EditFileInput,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> ValidationResult:
         return _validate_path(input.path)
 
-    async def call(self, input: EditFileInput, context: ToolUseContext) -> ToolResult:
-        root = Path(context.working_directory)
+    async def call(self, input: EditFileInput, context: ToolContext) -> ToolResult:
+        root = Path(context.workspace.working_directory)
         instruction_state = self.instructions.activate_for_path(
-            root, input.path, context.instruction_state
+            root, input.path, context.workspace.instruction_state
         )
-        if instruction_state != context.instruction_state:
+        if instruction_state != context.workspace.instruction_state:
             return ToolResult(
                 error=ToolError(
                     code="REPOSITORY_INSTRUCTIONS_DISCOVERED",
                     message="new repository instructions were activated; review them and retry the edit",
                     retryable=True,
                 ),
-                context_update=ContextUpdate(instruction_state=instruction_state),
+                state_changes=(InstructionsActivated(state=instruction_state),),
             )
         stale = await asyncio.to_thread(_existing_file_guard, root, input.path, context)
         if stale is not None:
@@ -253,7 +252,7 @@ class EditFileTool(BaseTool[EditFileInput, EditFileOutput]):
             return _file_error(exc)
         return ToolResult(
             data={"path": input.path, "replacements": replacements},
-            context_update=ContextUpdate(file_observations={input.path: observation}),
+            state_changes=(FilesObserved(observations={input.path: observation}),),
         )
 
 
@@ -280,7 +279,7 @@ class GlobTool(BaseTool[GlobInput, GlobOutput]):
     async def validate_input(
         self,
         input: GlobInput,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> ValidationResult:
         try:
             normalize_repo_relative_pattern(input.pattern)
@@ -288,11 +287,11 @@ class GlobTool(BaseTool[GlobInput, GlobOutput]):
             return ValidationFailure(reason=str(exc))
         return ValidationSuccess()
 
-    async def call(self, input: GlobInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: GlobInput, context: ToolContext) -> ToolResult:
         try:
             paths = await asyncio.to_thread(
                 glob_files,
-                repo_root=Path(context.working_directory),
+                repo_root=Path(context.workspace.working_directory),
                 pattern=input.pattern,
             )
         except (OSError, ValueError) as exc:
@@ -315,12 +314,12 @@ def _file_error(error: Exception) -> ToolResult:
 def _existing_file_guard(
     root: Path,
     path: str,
-    context: ToolUseContext,
+    context: ToolContext,
 ) -> ToolResult | None:
     target = safe_repo_path(root, path)
     if not target.exists():
         return None
-    observation = context.file_observations.get(path)
+    observation = context.workspace.file_observations.get(path)
     if observation is None or not observation.complete:
         return ToolResult(
             error=ToolError(

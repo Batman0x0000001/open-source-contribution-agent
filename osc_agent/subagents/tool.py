@@ -13,8 +13,8 @@ from osc_agent.contracts import ContractModel
 from osc_agent.runtime.tool_models import (
     ToolError,
     ToolResult,
-    ToolUseContext,
 )
+from osc_agent.runtime.state import ToolContext
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.subagents.models import SubagentRequest, SubagentRunResult
 from osc_agent.subagents.registry import (
@@ -87,7 +87,7 @@ class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
         registration = self.registry.get(input.agent)
         return bool(registration and not registration.read_only)
 
-    async def call(self, input: AgentToolInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: AgentToolInput, context: ToolContext) -> ToolResult:
         registration = self.registry.get(input.agent)
         if registration is None:
             return _error("AGENT_NOT_FOUND", f"unknown agent: {input.agent}")
@@ -117,12 +117,12 @@ class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
     def _validate_arguments(
         registration: SubagentRegistration,
         input: AgentToolInput,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> SubagentContract | ToolResult:
         try:
             return registration.input_model.model_validate(
                 input.arguments,
-                context={"repository_root": context.working_directory},
+                context={"repository_root": context.workspace.working_directory},
             )
         except ValidationError as exc:
             return _error("AGENT_INPUT_INVALID", str(exc))
@@ -132,7 +132,7 @@ class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
         name: str,
         registration: SubagentRegistration,
         prompt: str,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> tuple[SubagentRunResult | ToolResult, str | None]:
         semaphore = self._semaphores.setdefault(
             name,
@@ -150,7 +150,7 @@ class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
                     name,
                     SubagentRequest(
                         prompt=prompt,
-                        working_directory=context.working_directory,
+                        working_directory=context.workspace.working_directory,
                         caller_capabilities=context.capabilities,
                         parent_messages=tuple(context.transcript_messages),
                     ),
@@ -179,7 +179,7 @@ class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
         registration: SubagentRegistration,
         run: SubagentRunResult,
         workspace_fingerprint: str | None,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> ToolResult:
         if run.status != "completed":
             return ToolResult(
@@ -198,7 +198,7 @@ class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
             raw_output = _parse_agent_output(run.output)
             output = registration.output_model.model_validate(
                 raw_output,
-                context={"repository_root": context.working_directory},
+                context={"repository_root": context.workspace.working_directory},
             )
         except (json.JSONDecodeError, ValidationError) as exc:
             return _error("AGENT_OUTPUT_INVALID", str(exc))
