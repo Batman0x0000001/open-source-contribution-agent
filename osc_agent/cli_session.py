@@ -9,8 +9,7 @@ from pathlib import Path
 
 import typer
 
-from osc_agent.composition import ApplicationServices
-from osc_agent.agent_service import AgentApplicationService, AgentRunSpec, InboundMessage
+from osc_agent.application import AgentConversation, AgentInput, UserPrompt
 from osc_agent.runtime.models import (
     AssistantDelta,
     ContextCompacted,
@@ -26,23 +25,21 @@ from osc_agent.runtime.session_summary import SessionSummary, build_session_summ
 
 def run_conversation(
     *,
-    services: ApplicationServices,
-    session_id: str,
+    conversation: AgentConversation,
     repository_root: Path,
-    initial_events: AsyncIterator[RuntimeEvent],
+    initial_input: AgentInput | None,
     once: bool,
     quiet: bool,
-    agent_application: AgentApplicationService,
 ) -> None:
     interactive = not once and sys.stdin.isatty()
-    events = initial_events
+    events = conversation.submit(initial_input)
     while True:
         stopped = False
         try:
             stopped = asyncio.run(_render(events, quiet=quiet))
         except KeyboardInterrupt:
             typer.echo("\nCancelled current turn.", err=True)
-        _render_summary(services, session_id, repository_root)
+        _render_summary(conversation, repository_root)
         if not interactive:
             if stopped:
                 raise typer.Exit(1)
@@ -57,13 +54,7 @@ def run_conversation(
             return
         if not prompt:
             continue
-        events = agent_application.run(
-            AgentRunSpec(
-                profile="local_debug", session_id=session_id,
-                repository_root=str(repository_root),
-                inbound_message=InboundMessage(source="cli", source_id=f"cli:{session_id}:{len(prompt)}", text=prompt),
-            )
-        )
+        events = conversation.submit(UserPrompt(text=prompt))
 
 
 async def _render(
@@ -130,11 +121,10 @@ def _bounded(value: str, limit: int) -> str:
 
 
 def _render_summary(
-    services: ApplicationServices,
-    session_id: str,
+    conversation: AgentConversation,
     repository_root: Path,
 ) -> None:
-    snapshot = services.session_store.load(session_id)
+    snapshot = conversation.snapshot()
     if snapshot is None:
         return
     summary = build_session_summary(snapshot)

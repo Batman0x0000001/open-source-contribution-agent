@@ -10,7 +10,8 @@ import pytest
 from typer.testing import CliRunner
 
 import osc_agent.config as config_module
-from osc_agent.composition import build_application
+from osc_agent.application import AgentApplicationConfig, AgentProfile
+from osc_agent.application.composition import build_discovery_prompt, compose_application
 from osc_agent.cli import app
 from osc_agent.config import Settings
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
@@ -45,10 +46,13 @@ def test_model_id_is_explicit_and_dotenv_does_not_override_environment(
     assert settings.model_id is None
     assert calls == [False]
     with pytest.raises(ValueError, match="MODEL_ID"):
-        build_application(
-            settings=settings,
-            repo_root=tmp_path,
-            model_gateway=CompletingGateway(),
+        compose_application(
+            AgentApplicationConfig(
+                settings=settings,
+                repository_root=tmp_path,
+                profile=AgentProfile(profile_id="test", system_prompt="test"),
+                model_gateway=CompletingGateway(),
+            )
         )
 
 
@@ -67,44 +71,45 @@ def test_subprocess_environment_allowlist_uses_strict_json_array(monkeypatch) ->
 
 
 def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -> None:
-    services = build_application(
-        settings=Settings(model_id="test-model"),
-        repo_root=tmp_path,
-        model_gateway=CompletingGateway(),
+    graph = compose_application(
+        AgentApplicationConfig(
+            settings=Settings(model_id="test-model"),
+            repository_root=tmp_path,
+            profile=AgentProfile(profile_id="test", system_prompt="test"),
+            model_gateway=CompletingGateway(),
+        )
     )
 
-    assert services.runtime.dependencies.tool_executor is services.tool_executor
-    assert services.runtime.dependencies.tool_registry is services.tool_registry
-    assert services.agent_runner.runtime is services.runtime
-    assert services.skill_executor.agent_runner is services.agent_runner
-    assert services.skill_command_runner.executor is services.skill_executor
-    assert services.skill_command_runner.runtime is services.runtime
-    assert services.tool_registry.get("skill").executor is services.skill_executor
-    assert services.tool_registry.get("agent").runner is services.agent_runner
-    assert services.tool_registry.get("agent").registry is services.agent_registry
-    assert [item.definition.name for item in services.agent_registry.list()] == ["explore", "verify"]
-    assert services.agent_registry.get("verify").definition.config.max_rounds == 16
-    assert services.agent_registry.get("explore").definition.config.max_rounds == 8
-    assert services.query_config.max_rounds == 30
-    assert "agent" in services.general_capabilities.allowed_tools
-    assert "<available_skills>" in services.discovery_prompt
-    assert "open-source-contribution" in services.discovery_prompt
-    assert "<available_agents>" in services.discovery_prompt
-    assert "- explore:" in services.discovery_prompt
-    assert "- verify:" in services.discovery_prompt
-    assert "<external_content_policy>" in services.discovery_prompt
-    assert "not user authorization" in services.discovery_prompt
-    assert [item.manifest.name for item in services.skill_catalog.list()] == [
+    assert graph.runtime.dependencies.tool_executor is graph.tool_executor
+    assert graph.runtime.dependencies.tool_registry is graph.tool_registry
+    assert graph.agent_runner.runtime is graph.runtime
+    assert graph.skill_executor.agent_runner is graph.agent_runner
+    assert graph.tool_registry.get("skill").executor is graph.skill_executor
+    assert graph.tool_registry.get("agent").runner is graph.agent_runner
+    assert graph.tool_registry.get("agent").registry is graph.agent_registry
+    assert [item.definition.name for item in graph.agent_registry.list()] == ["explore", "verify"]
+    assert graph.agent_registry.get("verify").definition.config.max_rounds == 16
+    assert graph.agent_registry.get("explore").definition.config.max_rounds == 8
+    assert graph.query_config.max_rounds == 30
+    assert "agent" in graph.general_capabilities.allowed_tools
+    assert "<available_skills>" in graph.discovery_prompt
+    assert "open-source-contribution" in graph.discovery_prompt
+    assert "<available_agents>" in graph.discovery_prompt
+    assert "- explore:" in graph.discovery_prompt
+    assert "- verify:" in graph.discovery_prompt
+    assert "<external_content_policy>" in graph.discovery_prompt
+    assert "not user authorization" in graph.discovery_prompt
+    assert [item.manifest.name for item in graph.skill_catalog.list()] == [
         "issue-planning",
         "open-source-contribution",
     ]
 
-    contribution = services.skill_catalog.get("open-source-contribution")
+    contribution = graph.skill_catalog.get("open-source-contribution")
     contribution_capabilities = CapabilityScope(
         allowed_tools=contribution.manifest.allowed_tools
     )
-    skill_discovery = services.skill_command_runner.discovery_prompt(
-        contribution_capabilities
+    skill_discovery = build_discovery_prompt(
+        graph.skill_catalog, graph.agent_registry, contribution_capabilities
     )
     assert "- explore:" in skill_discovery
     assert "- verify:" in skill_discovery
@@ -114,16 +119,16 @@ def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -
         working_directory=str(tmp_path),
         repository_root=str(tmp_path),
         state_directory=str(tmp_path / ".state"),
-        capabilities=services.general_capabilities,
+        capabilities=graph.general_capabilities,
     )
     contribution_context = general_context.model_copy(
         update={"capabilities": contribution_capabilities}
     )
     assert "agent" in {
-        schema["name"] for schema in services.tool_registry.schemas(general_context)
+        schema["name"] for schema in graph.tool_registry.schemas(general_context)
     }
     assert "agent" in {
-        schema["name"] for schema in services.tool_registry.schemas(contribution_context)
+        schema["name"] for schema in graph.tool_registry.schemas(contribution_context)
     }
 
 
@@ -160,7 +165,7 @@ def test_cli_does_not_import_legacy_runtime_or_stage_functions() -> None:
         assert old_name not in source
 
 
-def test_product_entrypoints_use_agent_application_service_only() -> None:
+def test_product_entrypoints_use_agent_application_only() -> None:
     for relative in ("osc_agent/cli.py", "osc_agent/bot/worker.py"):
         source = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -171,6 +176,8 @@ def test_product_entrypoints_use_agent_application_service_only() -> None:
         }
         assert "build_agent_application" in called_names
         assert "build_application" not in called_names
+        assert "AgentRunSpec" not in source
+        assert "RunEnvironment" not in source
         assert "StartQueryParams" not in source
         assert "ResumeQueryParams" not in source
         assert ".runtime.query(" not in source

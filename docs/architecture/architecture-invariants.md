@@ -11,12 +11,13 @@
 | C1 | Transcript 与模型 Projection 分离 | `SessionTranscript`、`ContextPipeline` | compact 不改变权威历史和 Tool 配对 |
 | R1 | Transcript 驱动恢复 | `FileSessionStore` | JSONL 新建、追加、损坏拒绝、状态恢复 |
 | S1 | Catalog 只发现 manifest，正文和资源延迟加载 | `SkillLoader`、`ReadSkillResourceTool` | 调用时读取与路径逃逸测试 |
-| S2 | CLI、SkillTool 共用执行器 | `SkillCommandRunner`、`SkillTool`、`SkillExecutor` | composition 对象同一性测试 |
+| S2 | 产品 Skill、SkillTool 共用执行器 | `AgentConversation`、`SkillTool`、`SkillExecutor` | composition 对象同一性测试 |
 | P1 | Plan Mode 是 Permission 状态，不是 Workflow Gate | interaction tools、`DefaultPermissionPolicy` | 禁止普通写、固定计划路径、批准退出 |
 | A1 | 子 Agent 递归复用 Query | `AgentRunner`、`AgentTool` | Runtime 同一性与隔离测试 |
 | W1 | Git worktree 是执行隔离 | `WorktreeManager`、enter/exit tools | 创建、上下文切换、脏状态保护 |
 | D1 | 无第二套执行架构 | `runtime/`、`agents/`、`skills/`、`isolation/` | 禁止 `support`、`workflows`、Todo、Task、Mock MCP 依赖 |
-| B1 | 所有产品入口共享 Agent 启动协议 | `AgentApplicationService` | CLI/Worker 不直接构造 Query 参数 |
+| B1 | 所有产品入口共享 Agent 生命周期 | `AgentApplication`、`AgentConversation` | CLI/Worker 不直接构造 Query 参数 |
+| B3 | 仓库与 Profile 只在构建时绑定 | `AgentApplicationConfig` | 单轮输入不能覆盖仓库路径或 Profile |
 | B2 | 服务状态机不侵入 Agent Runtime | `BotJobStateMachine` | Runtime 不 import Bot，状态图自动校验 |
 
 新增 Runtime 抽象必须对应当前消费者和可验证机制；无法映射到核心机制的预留框架不进入 Runtime。

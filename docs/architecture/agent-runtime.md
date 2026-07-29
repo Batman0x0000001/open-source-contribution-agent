@@ -7,6 +7,15 @@
 ## 核心数据流
 
 ```text
+AgentApplicationConfig
+          │
+          ▼
+AgentApplication.open_session(session_id)
+          │
+          ▼
+AgentConversation.submit(UserPrompt | SkillInput | None)
+          │
+          ▼
 QueryConfig + QueryDependencies + QueryState
                     │
                     ▼
@@ -44,6 +53,10 @@ Query 内部必须分离：
 
 Query 是唯一允许推进 QueryState 的组件。CLI、Skill 和 Tool 都不能直接修改它。
 
+`repository_root`、Profile 和 Runtime 依赖只在构建 `AgentApplication` 时绑定。产品入口只持有
+`AgentConversation`：新 Session 必须提交 Prompt 或 Skill，恢复 Session 可提交新 Prompt 或
+`None`。`StartQueryParams` 与 `ResumeQueryParams` 是 application 包到 Runtime 的内部协议。
+
 ## Tool
 
 Tool 是完整行为对象，同时包含：
@@ -72,7 +85,9 @@ Tool 是完整行为对象，同时包含：
 
 Skill 是延迟加载的 Prompt Command。Catalog 默认只读取发现元数据，正文在调用时加载。
 
-Skill 通过统一 `SkillExecutor` 执行，支持 inline 与 fork。模型侧的 `SkillTool` 和用户侧的 `SkillCommandRunner` 共用该执行器。Skill 只能收窄调用者 capability。Manifest 声明的资源由 `read_skill_resource` 在调用时读取，并受根目录边界保护。
+Skill 通过统一 `SkillExecutor` 执行，支持 inline 与 fork。模型侧的 `SkillTool` 和产品侧的
+`AgentConversation.submit(SkillInput)` 共用该执行器。Skill 只能收窄调用者 capability。
+Manifest 声明的资源由 `read_skill_resource` 在调用时读取，并受根目录边界保护。
 
 ## Agent
 
@@ -91,10 +106,11 @@ Skill 通过统一 `SkillExecutor` 执行，支持 inline 与 fork。模型侧�
 
 ## 扩展边界
 
-后续扩展只依赖三个稳定入口：
+后续扩展只依赖四个稳定入口：
 
 - 注册 Tool 增加原子能力。
 - 注册 Skill 增加知识和任务方法。
-- 通过 Session、Skill 与 Tool 组合新的用户任务入口。
+- 通过 `AgentApplicationConfig` 绑定产品配置。
+- 通过 `AgentConversation`、Skill 与 Tool 组合新的用户任务入口。
 
 在出现真实分发需求前，不引入额外 Plugin 框架。

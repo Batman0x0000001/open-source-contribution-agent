@@ -14,11 +14,13 @@ Docker 仓库命令分成独立边界；该能力不会改变本地 CLI，也不
 ## 架构
 
 ```text
-Typer CLI / SkillTool
+Typer CLI / Bot Worker
         ↓
-SkillCommandRunner → SkillExecutor
+AgentApplicationConfig → AgentApplication.open_session
         ↓
-AgentRuntime.query
+AgentConversation.submit(UserPrompt | SkillInput | None)
+        ↓
+AgentRuntime.query ← SkillExecutor ← SkillTool
         ├── AgentTool → code-only AgentRegistry → AgentRunner
         ↓
 ToolExecutor → Permission / Plan Mode → Hooks → Tool
@@ -91,7 +93,7 @@ CLI 默认把模型轮次、Tool、Agent、重试和 compact 状态以紧凑行�
 
 ## 扩展
 
-- 新 Tool：实现 `Tool` Protocol 并注册到 composition root。
+- 新 Tool：实现 `Tool` Protocol 并通过 `AgentApplicationConfig` 注册到 composition root。
 - 新 Skill：添加严格 frontmatter；正文和声明的资源均延迟读取。
 - 新内置 Agent：在代码中注册 `AgentRegistration`，并递归复用同一个 Runtime。
 - 普通 `run` 与 Contribution 都可发现 AgentTool；当前代码注册的 Agent 是最多两个并行

@@ -10,12 +10,16 @@ import subprocess
 
 import pytest
 
-from osc_agent.composition import build_application
+from osc_agent.application import (
+    AgentApplicationConfig,
+    AgentProfile,
+    SkillInput,
+    build_agent_application,
+)
 from osc_agent.config import Settings
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
 from osc_agent.runtime.models import (
     ApprovalResponse,
-    ResumeQueryParams,
     RunCompleted,
     RuntimeMessage,
     TextBlock,
@@ -200,23 +204,33 @@ def test_contribution_skill_runs_through_plan_worktree_draft_and_resume(monkeypa
     async def answer(questions):
         return {questions[0]["id"]: "small_fix"}
 
-    services = build_application(
-        settings=Settings(model_id="test-model"),
-        repo_root=repo,
-        approval_handler=approve,
-        question_handler=answer,
-        model_gateway=gateway,
+    application = build_agent_application(
+        AgentApplicationConfig(
+            settings=Settings(model_id="test-model"),
+            repository_root=repo,
+            profile=AgentProfile(
+                profile_id="test",
+                system_prompt="Follow the invoked Skill instructions and use repository evidence.",
+            ),
+            approval_handler=approve,
+            question_handler=answer,
+            model_gateway=gateway,
+        )
     )
     session_id = "contribution-session"
+    conversation = application.open_session(session_id)
 
     async def run_contribution():
         return [
             event
-            async for event in services.skill_command_runner.run(
-                name="open-source-contribution",
-                arguments={"repo_url": "https://github.com/example/project", "goal": "small fixture"},
-                session_id=session_id,
-                working_directory=str(repo),
+            async for event in conversation.submit(
+                SkillInput(
+                    name="open-source-contribution",
+                    arguments={
+                        "repo_url": "https://github.com/example/project",
+                        "goal": "small fixture",
+                    },
+                )
             )
         ]
 
@@ -271,18 +285,20 @@ def test_contribution_skill_runs_through_plan_worktree_draft_and_resume(monkeypa
     resumed_gateway = ScriptedGateway(
         [RuntimeMessage(role="assistant", content=[TextBlock(text="Resumed successfully.")])]
     )
-    resumed_services = build_application(
-        settings=Settings(model_id="different-current-model"),
-        repo_root=repo,
-        model_gateway=resumed_gateway,
+    resumed_application = build_agent_application(
+        AgentApplicationConfig(
+            settings=Settings(model_id="different-current-model"),
+            repository_root=repo,
+            profile=AgentProfile(profile_id="test", system_prompt="ignored on resume"),
+            model_gateway=resumed_gateway,
+        )
     )
+    resumed_conversation = resumed_application.open_session(session_id)
 
     async def resume():
         return [
             event
-            async for event in resumed_services.runtime.query(
-                ResumeQueryParams(session_id=session_id, repository_root=str(repo))
-            )
+            async for event in resumed_conversation.submit(None)
         ]
 
     resumed_events = asyncio.run(resume())

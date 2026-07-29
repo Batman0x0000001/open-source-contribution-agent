@@ -16,12 +16,15 @@ from uuid import uuid4
 import typer
 from pydantic import JsonValue
 
-from osc_agent.composition import (
+from osc_agent.application import (
+    AgentApplicationConfig,
+    AgentProfile,
+    SkillInput,
+    UserPrompt,
+    build_agent_application,
     build_session_store,
     build_skill_catalog,
 )
-from osc_agent.agent_service import AgentRunProfile, AgentRunSpec, InboundMessage, build_agent_application
-from osc_agent.agent_service import RunEnvironment
 from osc_agent.cli_session import render_session_summary, run_conversation
 from osc_agent.config import load_settings
 from osc_agent.doctor import run_doctor
@@ -67,25 +70,27 @@ def run_agent(
         task = typer.prompt("Task")
     session_id = str(uuid4())
     settings = load_settings()
-    agent_application = build_agent_application(environment=RunEnvironment(
-        settings=settings, repository_root=repo,
-        approval_handler=_approve, question_handler=_ask_questions,
-    ), profile=AgentRunProfile(
-        name="local_debug", system_prompt="Use repository evidence and the smallest safe change that satisfies the task."
-    ))
-    services = agent_application.services
+    agent_application = build_agent_application(
+        AgentApplicationConfig(
+            settings=settings,
+            repository_root=repo,
+            profile=AgentProfile(
+                profile_id="local_debug",
+                system_prompt="Use repository evidence and the smallest safe change that satisfies the task.",
+            ),
+            approval_handler=_approve,
+            question_handler=_ask_questions,
+        )
+    )
+    conversation = agent_application.open_session(session_id)
 
     typer.echo(f"Session: {session_id}")
     run_conversation(
-        services=services,
-        session_id=session_id,
+        conversation=conversation,
         repository_root=repo,
-        initial_events=agent_application.run(AgentRunSpec(
-            profile="local_debug", session_id=session_id, repository_root=str(repo), user_message=task,
-        )),
+        initial_input=UserPrompt(text=task),
         once=once,
         quiet=quiet,
-        agent_application=agent_application,
     )
 
 
@@ -108,25 +113,26 @@ def resume_session(
             raise typer.BadParameter("no valid Session exists for this repository")
     assert session_id is not None
     settings = load_settings()
-    agent_application = build_agent_application(environment=RunEnvironment(
-        settings=settings, repository_root=repo,
-        approval_handler=_approve, question_handler=_ask_questions,
-    ), profile=AgentRunProfile(
-        name="local_debug", system_prompt="Continue the existing repository task from its authoritative transcript."
-    ))
-    services = agent_application.services
+    agent_application = build_agent_application(
+        AgentApplicationConfig(
+            settings=settings,
+            repository_root=repo,
+            profile=AgentProfile(
+                profile_id="local_debug",
+                system_prompt="Continue the existing repository task from its authoritative transcript.",
+            ),
+            approval_handler=_approve,
+            question_handler=_ask_questions,
+        )
+    )
+    conversation = agent_application.open_session(session_id)
     typer.echo(f"Session: {session_id}")
     run_conversation(
-        services=services,
-        session_id=session_id,
+        conversation=conversation,
         repository_root=repo,
-        initial_events=agent_application.run(AgentRunSpec(
-            profile="local_debug", session_id=session_id, repository_root=str(repo),
-            inbound_message=(InboundMessage(source="cli", source_id=f"cli-resume:{session_id}", text=prompt) if prompt else None),
-        )),
+        initial_input=UserPrompt(text=prompt) if prompt else None,
         once=once,
         quiet=quiet,
-        agent_application=agent_application,
     )
 
 
@@ -219,32 +225,29 @@ def _run_inline_skill(
     quiet: bool,
 ) -> None:
     settings = load_settings()
-    agent_application = build_agent_application(
-        environment=RunEnvironment(
-            settings=settings, repository_root=repo,
-            approval_handler=_approve, question_handler=_ask_questions,
-        ),
-        profile=AgentRunProfile(
-            name="local_debug",
-            system_prompt="Use repository evidence and follow the explicitly invoked Skill.",
-        ),
-    )
-    services = agent_application.services
     session_id = str(uuid4())
+    agent_application = build_agent_application(
+        AgentApplicationConfig(
+            settings=settings,
+            repository_root=repo,
+            profile=AgentProfile(
+                profile_id="local_debug",
+                system_prompt="Use repository evidence and follow the explicitly invoked Skill.",
+            ),
+            approval_handler=_approve,
+            question_handler=_ask_questions,
+        )
+    )
+    conversation = agent_application.open_session(session_id)
     typer.echo(f"Session: {session_id}")
 
     try:
         run_conversation(
-            services=services,
-            session_id=session_id,
+            conversation=conversation,
             repository_root=repo,
-            initial_events=agent_application.run(AgentRunSpec(
-                profile="local_debug", session_id=session_id, repository_root=str(repo),
-                skill_name=name, skill_arguments=arguments,
-            )),
+            initial_input=SkillInput(name=name, arguments=arguments),
             once=once,
             quiet=quiet,
-            agent_application=agent_application,
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc

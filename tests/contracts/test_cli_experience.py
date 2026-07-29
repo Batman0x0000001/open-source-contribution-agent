@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
-from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
@@ -12,7 +11,6 @@ from osc_agent.cli import app
 from osc_agent.cli_session import run_conversation
 from osc_agent.runtime.models import (
     Complete,
-    QueryConfig,
     RunCompleted,
     RuntimeEvent,
     RuntimeMessage,
@@ -109,36 +107,31 @@ def test_conversation_driver_reuses_session_for_follow_up(
         "osc_agent.cli_session.typer.prompt",
         lambda *_args, **_kwargs: next(prompts),
     )
-    resumed = []
+    submitted = []
 
-    class AgentApplication:
-        def run(self, spec):
-            resumed.append(spec)
+    class Conversation:
+        def submit(self, input=None):
+            submitted.append(input)
+
             async def events() -> AsyncIterator[RuntimeEvent]:
                 yield RunCompleted(transition=Complete(reason="end_turn"))
+
             return events()
 
-    async def initial() -> AsyncIterator[RuntimeEvent]:
-        yield RunCompleted(transition=Complete(reason="end_turn"))
-
-    services = SimpleNamespace(
-        session_store=store,
-        query_config=QueryConfig(),
-    )
+        def snapshot(self):
+            return store.load("session-1")
 
     run_conversation(
-        services=services,
-        session_id="session-1",
+        conversation=Conversation(),  # type: ignore[arg-type]
         repository_root=tmp_path,
-        initial_events=initial(),
+        initial_input=None,
         once=False,
         quiet=True,
-        agent_application=AgentApplication(),  # type: ignore[arg-type]
     )
 
-    assert len(resumed) == 1
-    assert resumed[0].session_id == "session-1"
-    assert resumed[0].inbound_message.text == "follow up"
+    assert len(submitted) == 2
+    assert submitted[0] is None
+    assert submitted[1].text == "follow up"
 
 
 def test_resume_latest_resolves_repository_scoped_session(
@@ -147,7 +140,7 @@ def test_resume_latest_resolves_repository_scoped_session(
 ) -> None:
     state = tmp_path / "state"
     monkeypatch.setenv("OSC_AGENT_STATE_DIR", str(state))
-    from osc_agent.composition import build_session_store
+    from osc_agent.application import build_session_store
 
     store = build_session_store(tmp_path)
     store.create(
@@ -162,17 +155,12 @@ def test_resume_latest_resolves_repository_scoped_session(
     captured = {}
 
     class AgentApplication:
-        services = SimpleNamespace(query_config=QueryConfig())
-
-        def run(self, spec):
-            captured["spec"] = spec
-            async def events():
-                if False:
-                    yield None
-            return events()
+        def open_session(self, session_id):
+            captured["opened_session_id"] = session_id
+            return object()
 
     monkeypatch.setattr(
-        "osc_agent.cli.build_agent_application", lambda **_kwargs: AgentApplication()
+        "osc_agent.cli.build_agent_application", lambda _config: AgentApplication()
     )
     monkeypatch.setattr(
         "osc_agent.cli.run_conversation",
@@ -185,4 +173,5 @@ def test_resume_latest_resolves_repository_scoped_session(
     )
 
     assert result.exit_code == 0
-    assert captured["session_id"] == "latest-session"
+    assert captured["opened_session_id"] == "latest-session"
+    assert captured["initial_input"] is None

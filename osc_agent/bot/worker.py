@@ -9,7 +9,12 @@ from typing import Literal
 from uuid import uuid4
 
 from osc_agent.agents.explore import build_explore_registration
-from osc_agent.agent_service import AgentRunProfile, AgentRunSpec, RunEnvironment, build_agent_application
+from osc_agent.application import (
+    AgentApplicationConfig,
+    AgentProfile,
+    SkillInput,
+    build_agent_application,
+)
 from osc_agent.bot.config import BotWorkerSettings
 from osc_agent.bot.models import (
     OutboxEvent,
@@ -104,29 +109,39 @@ class BotWorker:
             await self._finish_plan(job.job_id, *existing_artifact)
             return
         session_id = job.plan_session_id or str(uuid4())
-        app = build_agent_application(environment=RunEnvironment(
-            settings=self.settings,
-            repository_root=workspace,
-            model_gateway=self.model_gateway,
-            session_store=self.sessions,
-            state_root=self.bot_settings.workspace_root.parent / "runtime-state",
-            process_runner=DisabledProcessRunner(),
-            permission_policy=BotPermissionPolicy(implementation_approved=False),
-            extra_tools=(SubmitIssuePlanTool(self.store, job_id=job.job_id, base_sha=job.base_sha,
-                                             execution_contract_hash=job.execution_contract_hash),),
-            pre_tool_hooks=(BotRepositoryPolicyHook(config),),
-            agent_registrations=(
-                build_explore_registration(
-                    model=self.settings.model_id or "",
-                    config=self.settings.runtime.agents.explore.to_query_config(),
+        app = build_agent_application(
+            AgentApplicationConfig(
+                settings=self.settings,
+                repository_root=workspace,
+                profile=AgentProfile(
+                    profile_id="bot_plan",
+                    system_prompt="You are the read-only planning component of an authenticated GitHub App job.",
+                    allowed_tools=contract.plan_allowed_tools,
+                    required_evidence=frozenset({"issue_plan"}),
                 ),
-            ),
-        ), profile=AgentRunProfile(
-            name="bot_plan",
-            system_prompt="You are the read-only planning component of an authenticated GitHub App job.",
-            allowed_tools=contract.plan_allowed_tools,
-            required_evidence=frozenset({"issue_plan"}),
-        ))
+                model_gateway=self.model_gateway,
+                session_store=self.sessions,
+                state_root=self.bot_settings.workspace_root.parent / "runtime-state",
+                process_runner=DisabledProcessRunner(),
+                permission_policy=BotPermissionPolicy(implementation_approved=False),
+                extra_tools=(
+                    SubmitIssuePlanTool(
+                        self.store,
+                        job_id=job.job_id,
+                        base_sha=job.base_sha,
+                        execution_contract_hash=job.execution_contract_hash,
+                    ),
+                ),
+                pre_tool_hooks=(BotRepositoryPolicyHook(config),),
+                agent_registrations=(
+                    build_explore_registration(
+                        model=self.settings.model_id or "",
+                        config=self.settings.runtime.agents.explore.to_query_config(),
+                    ),
+                ),
+            )
+        )
+        conversation = app.open_session(session_id)
         if job.plan_session_id is None:
             current = self.store.get_job(job.job_id)
             assert current is not None
@@ -137,13 +152,17 @@ class BotWorker:
             self.store.append_external_message_once(
                 source_id=pending_reply[0], session_id=session_id, text=pending_reply[1]
             )
-        query = app.run(AgentRunSpec(
-            profile="bot_plan", session_id=session_id, repository_root=str(workspace),
-            skill_name="issue-planning",
-            skill_arguments={"issue_evidence": evidence, "base_sha": job.base_sha,
-                             "execution_contract_hash": job.execution_contract_hash},
-            execution_contract_hash=job.execution_contract_hash,
-        ))
+        initial_input = None
+        if conversation.snapshot() is None:
+            initial_input = SkillInput(
+                name="issue-planning",
+                arguments={
+                    "issue_evidence": evidence,
+                    "base_sha": job.base_sha,
+                    "execution_contract_hash": job.execution_contract_hash,
+                },
+            )
+        query = conversation.submit(initial_input)
         completed = await self._consume(query, job.job_id, phase="plan")
         artifact = self.store.latest_plan_artifact(job.job_id)
         if not completed or artifact is None:
@@ -205,51 +224,70 @@ class BotWorker:
             "after the final modification:\n- "
             + "\n- ".join(config.validation_commands)
         )
-        app = build_agent_application(environment=RunEnvironment(
-            settings=self.settings,
-            repository_root=workspace,
-            model_gateway=self.model_gateway,
-            session_store=self.sessions,
-            state_root=self.bot_settings.workspace_root.parent / "runtime-state",
-            process_runner=runner,
-            permission_policy=BotPermissionPolicy(implementation_approved=True),
-            extra_tools=(
-                SubmitDeliveryDraftTool(
-                    self.store,
-                    job_id=job.job_id,
-                    issue_number=job.issue_number,
-                    base_sha=job.base_sha,
-                    execution_contract_hash=job.execution_contract_hash,
+        app = build_agent_application(
+            AgentApplicationConfig(
+                settings=self.settings,
+                repository_root=workspace,
+                profile=AgentProfile(
+                    profile_id="bot_implementation",
+                    system_prompt=system,
+                    allowed_tools=contract.implementation_allowed_tools,
+                    required_evidence=frozenset(
+                        {
+                            "successful_test",
+                            "independent_verification",
+                            "git_change_snapshot",
+                            "delivery_draft",
+                        }
+                    ),
                 ),
-            ),
-            pre_tool_hooks=(BotRepositoryPolicyHook(
-                config,
-                on_violation=lambda reason: self._terminate_repository_policy(job.job_id, reason),
-            ),),
-            stop_hooks=(ConfiguredValidationStopHook(config.validation_commands),),
-        ), profile=AgentRunProfile(
-            name="bot_implementation", system_prompt=system,
-            allowed_tools=contract.implementation_allowed_tools,
-            required_evidence=frozenset(
-                {"successful_test", "independent_verification", "git_change_snapshot", "delivery_draft"}
-            ),
-        ))
+                model_gateway=self.model_gateway,
+                session_store=self.sessions,
+                state_root=self.bot_settings.workspace_root.parent / "runtime-state",
+                process_runner=runner,
+                permission_policy=BotPermissionPolicy(implementation_approved=True),
+                extra_tools=(
+                    SubmitDeliveryDraftTool(
+                        self.store,
+                        job_id=job.job_id,
+                        issue_number=job.issue_number,
+                        base_sha=job.base_sha,
+                        execution_contract_hash=job.execution_contract_hash,
+                    ),
+                ),
+                pre_tool_hooks=(
+                    BotRepositoryPolicyHook(
+                        config,
+                        on_violation=lambda reason: self._terminate_repository_policy(
+                            job.job_id, reason
+                        ),
+                    ),
+                ),
+                stop_hooks=(ConfiguredValidationStopHook(config.validation_commands),),
+            )
+        )
+        conversation = app.open_session(session_id)
         if job.implementation_session_id is None:
             current = self.store.get_job(job.job_id)
             assert current is not None
             self.store.update_job_fields(current.job_id, expected_version=current.version, implementation_session_id=session_id)
-        query = app.run(AgentRunSpec(
-            profile="bot_implementation", session_id=session_id, repository_root=str(workspace),
-            skill_name="open-source-contribution", execution_contract_hash=job.execution_contract_hash,
-            skill_arguments={
-                "repo_url": f"https://github.com/{job.repository_full_name}",
-                "goal": f"Implement approved plan for issue #{job.issue_number}",
-                "mode": "approved_implementation",
-                "automation": {"issue_number": job.issue_number, "base_sha": job.base_sha,
-                               "approved_plan": plan.plan_markdown,
-                               "execution_contract_hash": job.execution_contract_hash},
-            },
-        ))
+        initial_input = None
+        if conversation.snapshot() is None:
+            initial_input = SkillInput(
+                name="open-source-contribution",
+                arguments={
+                    "repo_url": f"https://github.com/{job.repository_full_name}",
+                    "goal": f"Implement approved plan for issue #{job.issue_number}",
+                    "mode": "approved_implementation",
+                    "automation": {
+                        "issue_number": job.issue_number,
+                        "base_sha": job.base_sha,
+                        "approved_plan": plan.plan_markdown,
+                        "execution_contract_hash": job.execution_contract_hash,
+                    },
+                },
+            )
+        query = conversation.submit(initial_input)
         completed = await self._consume(query, job.job_id, phase="implementation")
         if not completed or self.store.get_delivery_draft(job.job_id) is None:
             raise ValueError("implementation Session did not satisfy the delivery contract")

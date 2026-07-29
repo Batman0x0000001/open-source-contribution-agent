@@ -2,14 +2,14 @@
 
 本文描述 Open Source Contribution Agent `0.2.4` 的生产架构。
 
-The GitHub App is the production product. The local CLI is a debugging adapter. Both enter the
-same `AgentApplicationService`, which wraps the existing `build_application` composition factory
-and is the only production caller of `AgentRuntime.query`.
+The GitHub App is the production product. The local CLI is a debugging adapter. Both build an
+`AgentApplication`, open an `AgentConversation`, and submit typed input. The conversation facade
+is the only product-facing caller of `AgentRuntime.query`.
 
 ```text
-GitHub → Control → SQLite/Outbox → Worker → AgentApplicationService → AgentRuntime
-                                              ↑
-Local debug CLI ───────────────────────────────┘
+GitHub → Control → SQLite/Outbox → Worker ─┐
+                                           ├→ AgentApplication → AgentConversation → AgentRuntime
+Local debug CLI ───────────────────────────┘
 ```
 
 Plan and implementation are deliberately separate Sessions. Plan uses `issue-planning`, only

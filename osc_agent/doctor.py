@@ -16,7 +16,7 @@ from pydantic import Field
 from osc_agent.agents.explore import build_explore_registration
 from osc_agent.agents.registry import AgentRegistry
 from osc_agent.agents.verify import build_verify_registration
-from osc_agent.composition import build_model_gateway, build_skill_catalog
+from osc_agent.application import build_model_gateway, build_skill_catalog
 from osc_agent.config import Settings
 from osc_agent.runtime.gateway import ModelCompleted, ModelRequest
 from osc_agent.runtime.models import FrozenContractModel, RuntimeMessage, TextBlock
