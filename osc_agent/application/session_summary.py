@@ -4,12 +4,9 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from osc_agent.runtime.models import (
-    FrozenContractModel,
-    SessionSnapshot,
-    ToolResultBlock,
-    ToolUseBlock,
-)
+from osc_agent.contracts import FrozenContractModel
+from osc_agent.runtime.messages import ToolResultBlock, ToolUseBlock
+from osc_agent.runtime.session import SessionSnapshot
 
 
 class SessionSummary(FrozenContractModel):

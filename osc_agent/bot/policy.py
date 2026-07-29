@@ -10,7 +10,9 @@ from pydantic import JsonValue
 
 from osc_agent.bot.models import RepositoryBotConfig
 from osc_agent.runtime.hooks import HookBlock, HookContinue, PreToolUsePayload, StopHookPayload, StopHookResult
-from osc_agent.runtime.models import Allow, ContractModel, Deny, PermissionDecision, ToolResultBlock, ToolUseBlock, ToolUseContext
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.messages import ToolResultBlock, ToolUseBlock
+from osc_agent.runtime.tool_models import Allow, Deny, PermissionDecision, ToolUseContext
 from osc_agent.workspaces.git_state import git_snapshot, git_workspace_fingerprint
 from osc_agent.runtime.permissions import PermissionPolicy
 from osc_agent.runtime.tool import Tool

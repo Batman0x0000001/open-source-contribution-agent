@@ -6,11 +6,9 @@ from typing import Literal, TypeAlias
 
 from pydantic import Field, JsonValue
 
-from osc_agent.runtime.models import (
-    CapabilityScope,
-    CompletionRequirements,
-    FrozenContractModel,
-)
+from osc_agent.completion.models import CompletionRequirements
+from osc_agent.contracts import FrozenContractModel
+from osc_agent.runtime.tool_models import CapabilityScope
 
 
 SkillSource: TypeAlias = Literal["builtin", "user", "project"]

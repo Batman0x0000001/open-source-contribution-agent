@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from osc_agent.runtime.models import CapabilityScope, ToolUseBlock, ToolUseContext
+from osc_agent.runtime.messages import ToolUseBlock
+from osc_agent.runtime.tool_models import CapabilityScope, ToolUseContext
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
 from osc_agent.runtime.tool_orchestration import run_tools
@@ -40,7 +41,6 @@ def test_skill_tool_delegates_to_preparer_and_updates_context(tmp_path: Path) ->
     context = ToolUseContext(
         session_id="session-1",
         working_directory=str(tmp_path),
-        repository_root=str(tmp_path),
         state_directory=str(tmp_path / "state"),
         capabilities=CapabilityScope(allowed_tools=frozenset({"skill", "read_file", "grep"})),
     )
@@ -65,7 +65,6 @@ def test_skill_tool_delegates_to_preparer_and_updates_context(tmp_path: Path) ->
             update
             async for update in run_tools(
                 [ToolUseBlock(id="skill-call", name="skill", input={"skill": "review"})],
-                registry=registry,
                 executor=ToolExecutor(registry),
                 context=context,
             )

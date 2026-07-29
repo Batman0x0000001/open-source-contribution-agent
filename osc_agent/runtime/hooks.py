@@ -6,7 +6,9 @@ from typing import Awaitable, Callable, Literal
 
 from pydantic import Field, JsonValue
 
-from osc_agent.runtime.models import ContractModel, RuntimeMessage, ToolResult, ToolUseContext
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.messages import RuntimeMessage
+from osc_agent.runtime.tool_models import ToolResult, ToolUseContext
 
 
 class PreToolUsePayload(ContractModel):

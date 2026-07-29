@@ -10,7 +10,7 @@ from typing import Literal, TypeAlias
 
 from pydantic import Field, HttpUrl, field_serializer, field_validator, model_validator
 
-from osc_agent.runtime.models import ContractModel, FrozenContractModel
+from osc_agent.contracts import ContractModel, FrozenContractModel
 
 
 JobStatus: TypeAlias = Literal[

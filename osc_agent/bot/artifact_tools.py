@@ -9,7 +9,8 @@ from pydantic import Field
 
 from osc_agent.bot.models import DeliveryDraft, IssuePlanArtifact
 from osc_agent.bot.store import BotStore
-from osc_agent.runtime.models import ContractModel, ToolError, ToolResult, ToolUseContext
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.tool_models import ToolError, ToolResult, ToolUseContext
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.workspaces.git_state import git_workspace_fingerprint
 

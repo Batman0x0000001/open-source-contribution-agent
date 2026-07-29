@@ -20,9 +20,8 @@ from osc_agent.bot.models import (
     ExecutionContract,
     utc_now,
 )
-from osc_agent.runtime.models import (
-    RuntimeMessage,
-    TextBlock,
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock
+from osc_agent.runtime.session import (
     SessionMetadata,
     SessionOverview,
     SessionRuntimeState,

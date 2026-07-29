@@ -10,18 +10,10 @@ from pydantic import Field
 
 from osc_agent.runtime.dependencies import QueryDependencies
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
-from osc_agent.runtime.models import (
-    ApprovalResponse,
-    Ask,
-    ContractModel,
-    ResumeQueryParams,
-    RuntimeMessage,
-    StartQueryParams,
-    TextBlock,
-    ToolResult,
-    ToolUseBlock,
-    ToolUseContext,
-)
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolUseBlock
+from osc_agent.runtime.query_models import ResumeQueryParams, StartQueryParams
+from osc_agent.runtime.tool_models import ApprovalResponse, Ask, ToolResult, ToolUseContext
 from osc_agent.runtime.query import AgentRuntime
 from osc_agent.runtime.session_store import FileSessionStore
 from osc_agent.runtime.tool import BaseTool, ToolRegistry
@@ -72,13 +64,13 @@ def _runtime(gateway, store, approval_handler) -> AgentRuntime:
     return AgentRuntime(
         QueryDependencies(
             model_gateway=gateway,
-            tool_registry=registry,
             tool_executor=ToolExecutor(
                 registry,
                 dependencies=ToolExecutionDependencies(
                     approval_handler=approval_handler,
                 ),
             ),
+            state_directory=str(store.root.parent / "state"),
             session_store=store,
         )
     )
@@ -109,7 +101,7 @@ def test_exact_permission_grant_persists_across_resume(tmp_path: Path) -> None:
             StartQueryParams(
                 session_id="session-1",
                 model="test",
-                repository_root=str(tmp_path),
+                workspace_root=str(tmp_path),
                 messages=[
                     RuntimeMessage(
                         role="user",
@@ -136,7 +128,7 @@ def test_exact_permission_grant_persists_across_resume(tmp_path: Path) -> None:
             second,
             ResumeQueryParams(
                 session_id="session-1",
-                repository_root=str(tmp_path),
+                workspace_root=str(tmp_path),
             ),
         )
     )

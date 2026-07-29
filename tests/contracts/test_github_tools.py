@@ -7,7 +7,8 @@ from pathlib import Path
 import subprocess
 
 import osc_agent.tools.github as github_module
-from osc_agent.runtime.models import RuntimeMessage, ToolResultBlock, ToolUseBlock, ToolUseContext
+from osc_agent.runtime.messages import RuntimeMessage, ToolResultBlock, ToolUseBlock
+from osc_agent.runtime.tool_models import ToolUseContext
 from osc_agent.runtime.tool_execution import ToolExecutor
 from tests.contracts.registry_factory import build_test_tool_registry
 from osc_agent.tools.github import GitHubGetIssueInput, GitHubListIssuesInput
@@ -25,7 +26,7 @@ ISSUE = {
 
 
 def context(tmp_path: Path) -> ToolUseContext:
-    return ToolUseContext(session_id="session-1", working_directory=str(tmp_path), repository_root=str(tmp_path), state_directory=str(tmp_path / "state"))
+    return ToolUseContext(session_id="session-1", working_directory=str(tmp_path), state_directory=str(tmp_path / "state"))
 
 
 def test_github_tools_are_read_only_and_concurrency_safe() -> None:

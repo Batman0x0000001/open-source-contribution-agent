@@ -11,13 +11,9 @@ from pydantic import BaseModel
 
 from osc_agent.runtime.dependencies import QueryDependencies
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
-from osc_agent.runtime.models import (
-    CapabilityScope,
-    ContractModel,
-    FrozenContractModel,
-    RuntimeMessage,
-    TextBlock,
-)
+from osc_agent.contracts import ContractModel, FrozenContractModel
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock
+from osc_agent.runtime.tool_models import CapabilityScope
 from osc_agent.runtime.query import AgentRuntime
 from osc_agent.runtime.session_store import FileSessionStore
 from osc_agent.runtime.tool import ToolRegistry
@@ -92,13 +88,21 @@ def make_runner(
     runtime = AgentRuntime(
         QueryDependencies(
             model_gateway=gateway,
-            tool_registry=tools,
             tool_executor=ToolExecutor(tools),
-            new_id=lambda: next(generated_ids),
+            state_directory=(
+                str(session_store.root.parent / "state")
+                if session_store is not None
+                else "C:/state"
+            ),
             session_store=session_store,
         )
     )
-    return SubagentRunner(runtime, registry, default_model="test-model")
+    return SubagentRunner(
+        runtime,
+        registry,
+        default_model="test-model",
+        session_id_factory=lambda: next(generated_ids),
+    )
 
 
 def test_subagent_registry_is_sorted_strict_and_bounded() -> None:

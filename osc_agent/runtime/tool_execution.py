@@ -12,16 +12,16 @@ from typing import Awaitable, Callable
 from pydantic import JsonValue, ValidationError
 
 from osc_agent.runtime.hooks import HookRegistry, PostToolUsePayload, PreToolUsePayload
-from osc_agent.runtime.models import (
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.messages import ToolUseBlock
+from osc_agent.runtime.tool_models import (
     Allow,
     ApprovalResponse,
     Ask,
-    ContractModel,
     Deny,
     PermissionGrant,
     ToolError,
     ToolResult,
-    ToolUseBlock,
     ToolUseContext,
     ValidationFailure,
 )

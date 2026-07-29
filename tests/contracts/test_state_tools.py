@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from osc_agent.runtime.models import ToolUseBlock, ToolUseContext
+from osc_agent.runtime.messages import ToolUseBlock
+from osc_agent.runtime.tool_models import ToolUseContext
 from osc_agent.runtime.session_store import FileToolResultStore
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
@@ -16,7 +17,6 @@ def context(root: Path, session_id: str) -> ToolUseContext:
     return ToolUseContext(
         session_id=session_id,
         working_directory=str(root),
-        repository_root=str(root),
         state_directory=str(root / "state"),
     )
 

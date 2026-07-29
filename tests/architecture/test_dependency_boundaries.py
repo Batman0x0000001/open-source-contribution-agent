@@ -10,6 +10,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_ROOT = PROJECT_ROOT / "osc_agent" / "runtime"
 FORBIDDEN_RUNTIME_IMPORTS = (
+    "osc_agent.application",
+    "osc_agent.bot",
+    "osc_agent.completion.evidence",
+    "osc_agent.skills",
+    "osc_agent.subagents",
+    "osc_agent.tools",
     "osc_agent.workflows",
     "osc_agent.providers.anthropic",
 )
@@ -26,7 +32,7 @@ def _imports(path: Path) -> set[str]:
     return imports
 
 
-def test_runtime_does_not_depend_on_workflows_or_provider_implementation() -> None:
+def test_runtime_depends_only_on_core_contracts_and_shared_capabilities() -> None:
     violations: list[str] = []
     for path in sorted(RUNTIME_ROOT.rglob("*.py")):
         for module in _imports(path):
@@ -45,6 +51,17 @@ def test_runtime_does_not_depend_on_subagents() -> None:
     ]
 
     assert not violations, "Runtime must not depend on subagents:\n" + "\n".join(violations)
+
+
+def test_runtime_legacy_aggregate_modules_are_absent() -> None:
+    for name in (
+        "models.py",
+        "completion.py",
+        "instructions.py",
+        "session_summary.py",
+        "state_paths.py",
+    ):
+        assert not (RUNTIME_ROOT / name).exists()
 
 
 def test_agent_runtime_query_is_the_async_generator_entrypoint() -> None:

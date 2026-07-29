@@ -6,14 +6,9 @@ from typing import Literal
 
 from pydantic import Field, JsonValue
 
-from osc_agent.runtime.models import (
-    ContextUpdate,
-    ContractModel,
-    RuntimeMessage,
-    TextBlock,
-    ToolResult,
-    ToolUseContext,
-)
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock
+from osc_agent.runtime.tool_models import ContextUpdate, ToolResult, ToolUseContext
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.skills.models import PreparedSkill, SkillRequest
 from osc_agent.skills.preparer import SkillPreparer

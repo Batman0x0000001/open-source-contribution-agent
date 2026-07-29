@@ -12,7 +12,7 @@ from time import monotonic
 from typing import Callable
 
 from osc_agent.bot.models import RepositoryBotConfig
-from osc_agent.runtime.models import ToolUseContext
+from osc_agent.runtime.tool_models import ToolUseContext
 from osc_agent.processes.contracts import CommandResult, ProcessRequest, ProcessRunner
 from osc_agent.processes.policy import build_subprocess_environment
 from osc_agent.workspaces.git_state import git_snapshot, git_workspace_fingerprint

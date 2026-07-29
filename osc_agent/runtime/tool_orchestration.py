@@ -6,14 +6,13 @@ import asyncio
 from dataclasses import dataclass
 from typing import AsyncIterator
 
-from osc_agent.runtime.models import (
+from osc_agent.runtime.messages import ToolUseBlock
+from osc_agent.runtime.tool_models import (
     ContextUpdate,
     ToolExecutionUpdate,
     ToolResult,
-    ToolUseBlock,
     ToolUseContext,
 )
-from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
 
 
@@ -25,11 +24,11 @@ class ToolBatch:
 
 def partition_tool_calls(
     calls: list[ToolUseBlock],
-    registry: ToolRegistry,
+    executor: ToolExecutor,
 ) -> list[ToolBatch]:
     batches: list[ToolBatch] = []
     for call in calls:
-        concurrency_safe = _is_concurrency_safe(call, registry)
+        concurrency_safe = _is_concurrency_safe(call, executor)
         if concurrency_safe and batches and batches[-1].concurrency_safe:
             previous = batches[-1]
             batches[-1] = ToolBatch(True, (*previous.calls, call))
@@ -41,12 +40,11 @@ def partition_tool_calls(
 async def run_tools(
     calls: list[ToolUseBlock],
     *,
-    registry: ToolRegistry,
     executor: ToolExecutor,
     context: ToolUseContext,
 ) -> AsyncIterator[ToolExecutionUpdate]:
     current_context = context.model_copy(deep=True)
-    for batch in partition_tool_calls(calls, registry):
+    for batch in partition_tool_calls(calls, executor):
         if batch.concurrency_safe:
             results: dict[int, ToolResult] = {}
 
@@ -88,8 +86,8 @@ async def run_tools(
         )
 
 
-def _is_concurrency_safe(call: ToolUseBlock, registry: ToolRegistry) -> bool:
-    tool = registry.get(call.name)
+def _is_concurrency_safe(call: ToolUseBlock, executor: ToolExecutor) -> bool:
+    tool = executor.registry.get(call.name)
     if tool is None:
         return False
     try:

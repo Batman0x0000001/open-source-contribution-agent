@@ -12,18 +12,11 @@ from pydantic import ValidationError
 
 from osc_agent.runtime.dependencies import QueryDependencies
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
-from osc_agent.runtime.models import (
-    CapabilityScope,
-    ContractModel,
-    FrozenContractModel,
-    RuntimeMessage,
-    RunStopped,
-    StartQueryParams,
-    TextBlock,
-    ToolResultBlock,
-    ToolUseBlock,
-    ToolUseContext,
-)
+from osc_agent.contracts import ContractModel, FrozenContractModel
+from osc_agent.runtime.events import RunStopped
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
+from osc_agent.runtime.query_models import StartQueryParams
+from osc_agent.runtime.tool_models import CapabilityScope, ToolUseContext
 from osc_agent.runtime.query import AgentRuntime
 from osc_agent.runtime_config import default_runtime_config_path, load_runtime_config
 from osc_agent.runtime.session_store import FileSessionStore
@@ -75,7 +68,6 @@ def context(repo: Path) -> ToolUseContext:
     return ToolUseContext(
         session_id="parent-1",
         working_directory=str(repo),
-        repository_root=str(repo),
         state_directory=str(repo / ".state"),
         capabilities=CapabilityScope(allowed_tools=frozenset({"agent", "read_file"})),
         transcript_messages=[
@@ -332,8 +324,8 @@ def test_parent_cancellation_stops_explore_and_persists_tool_pair(tmp_path: Path
     runtime = AgentRuntime(
         QueryDependencies(
             model_gateway=BlockingGateway(),
-            tool_registry=tools,
             tool_executor=executor,
+            state_directory=str(tmp_path / "state"),
             session_store=store,
         )
     )
@@ -356,7 +348,7 @@ def test_parent_cancellation_stops_explore_and_persists_tool_pair(tmp_path: Path
                                 content=[TextBlock(text="start")],
                             )
                         ],
-                        repository_root=str(tmp_path),
+                        workspace_root=str(tmp_path),
                         capabilities=CapabilityScope(
                             allowed_tools=frozenset({"agent", "read"})
                         ),

@@ -12,7 +12,7 @@ from osc_agent.bot.config import BotSettings, BotWorkerSettings, load_repository
 from osc_agent.bot.sandbox import resolve_image_id
 from osc_agent.bot.store import BotStore
 from osc_agent.config import Settings
-from osc_agent.runtime.models import FrozenContractModel
+from osc_agent.contracts import FrozenContractModel
 
 
 class BotDoctorResult(FrozenContractModel):

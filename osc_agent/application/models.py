@@ -11,14 +11,10 @@ from pydantic import Field, JsonValue
 from osc_agent.config import Settings
 from osc_agent.runtime.gateway import ModelGateway
 from osc_agent.runtime.hooks import PreToolHook, StopHook
-from osc_agent.runtime.models import (
-    ApprovalResponse,
-    Ask,
-    CapabilityScope,
-    CompletionRequirements,
-    FrozenContractModel,
-    RuntimeMessage,
-)
+from osc_agent.completion.models import CompletionRequirements
+from osc_agent.contracts import FrozenContractModel
+from osc_agent.runtime.messages import RuntimeMessage
+from osc_agent.runtime.tool_models import ApprovalResponse, Ask, CapabilityScope
 from osc_agent.runtime.permissions import PermissionPolicy
 from osc_agent.runtime.session_store import SessionStore
 from osc_agent.runtime.tool import Tool

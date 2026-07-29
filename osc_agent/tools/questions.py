@@ -9,8 +9,8 @@ from typing import Literal
 
 from pydantic import Field, JsonValue, model_validator
 
-from osc_agent.runtime.models import (
-    ContractModel,
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.tool_models import (
     ToolError,
     ToolResult,
     ToolUseContext,
@@ -198,4 +198,3 @@ class AskUserQuestionTool(BaseTool[AskUserQuestionInput, AskUserQuestionOutput])
 
 def _error(code: str, message: str) -> ToolResult:
     return ToolResult(error=ToolError(code=code, message=message))
-

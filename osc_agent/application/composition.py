@@ -9,16 +9,16 @@ from osc_agent.application.models import AgentApplicationConfig
 from osc_agent.config import Settings
 from osc_agent.workspaces.git_worktree import GitWorktreeManager
 from osc_agent.providers.anthropic import AnthropicModelGateway
-from osc_agent.runtime.completion import CompletionEvidenceStopHook
+from osc_agent.completion.evidence import CompletionEvidenceStopHook
 from osc_agent.runtime.context import ContextPipeline, GatewayContextSummarizer
 from osc_agent.runtime.dependencies import QueryDependencies
 from osc_agent.runtime.gateway import ModelGateway, RetryingModelGateway
 from osc_agent.runtime.hooks import HookRegistry
-from osc_agent.runtime.instructions import RepositoryInstructionResolver
-from osc_agent.runtime.models import CapabilityScope, QueryConfig
+from osc_agent.runtime.query_models import QueryConfig
+from osc_agent.runtime.tool_models import CapabilityScope
 from osc_agent.runtime.query import AgentRuntime
 from osc_agent.runtime.session_store import FileSessionStore, FileToolResultStore, SessionStore
-from osc_agent.runtime.state_paths import ApplicationStatePaths
+from osc_agent.application.state_paths import ApplicationStatePaths
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
 from osc_agent.skills.catalog import SkillCatalog
@@ -31,6 +31,7 @@ from osc_agent.subagents.registry import SubagentRegistry
 from osc_agent.subagents.runner import SubagentRunner
 from osc_agent.subagents.tool import AgentTool
 from osc_agent.tools.registry import build_core_tool_registry
+from osc_agent.workspaces.instructions import RepositoryInstructionResolver
 
 
 @dataclass(frozen=True)
@@ -127,16 +128,14 @@ def compose_application(config: AgentApplicationConfig) -> ApplicationGraph:
     runtime = AgentRuntime(
         QueryDependencies(
             model_gateway=gateway,
-            tool_registry=registry,
             tool_executor=executor,
-            session_store=session_store,
             state_directory=str(state_paths.repository),
-            worktree_manager=worktree_manager,
+            session_store=session_store,
+            workspace_validator=worktree_manager,
             instruction_resolver=instruction_resolver,
             context_pipeline=ContextPipeline(
                 tool_result_store=tool_result_store,
                 summarizer=GatewayContextSummarizer(gateway, model=model_id),
-                instruction_resolver=instruction_resolver,
             ),
         )
     )

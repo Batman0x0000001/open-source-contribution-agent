@@ -13,9 +13,9 @@ from typing import Annotated, ContextManager, Iterator, Literal, Protocol, TypeA
 import portalocker
 from pydantic import Field
 
-from osc_agent.runtime.models import (
-    ContractModel,
-    RuntimeMessage,
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.messages import RuntimeMessage
+from osc_agent.runtime.session import (
     SessionMetadata,
     SessionOverview,
     SessionRuntimeState,
@@ -33,6 +33,24 @@ class ToolResultStore(Protocol):
     ) -> str: ...
 
     def read(self, *, session_id: str, result_id: str) -> str: ...
+
+
+class MemoryToolResultStore:
+    """测试和未配置持久层时的进程内保底实现。"""
+
+    def __init__(self) -> None:
+        self._values: dict[tuple[str, str], str] = {}
+
+    def persist(self, *, session_id: str, tool_use_id: str, content: str) -> str:
+        result_id = tool_use_id
+        self._values[(session_id, result_id)] = content
+        return result_id
+
+    def read(self, *, session_id: str, result_id: str) -> str:
+        try:
+            return self._values[(session_id, result_id)]
+        except KeyError as exc:
+            raise ValueError("unknown tool result for this session") from exc
 
 
 class SessionStore(Protocol):

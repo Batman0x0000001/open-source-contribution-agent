@@ -9,15 +9,9 @@ from typer.testing import CliRunner
 
 from osc_agent.cli import app
 from osc_agent.cli_session import run_conversation
-from osc_agent.runtime.models import (
-    Complete,
-    RunCompleted,
-    RuntimeEvent,
-    RuntimeMessage,
-    SessionMetadata,
-    SessionRuntimeState,
-    TextBlock,
-)
+from osc_agent.runtime.events import Complete, RunCompleted, RuntimeEvent
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock
+from osc_agent.runtime.session import SessionMetadata, SessionRuntimeState
 from osc_agent.runtime.session_store import FileSessionStore
 
 
@@ -46,7 +40,7 @@ def _store_with_session(root: Path, *, session_id: str = "session-1") -> FileSes
 def test_session_cli_hides_messages_by_default(monkeypatch, tmp_path: Path) -> None:
     state = tmp_path / "state"
     monkeypatch.setenv("OSC_AGENT_STATE_DIR", str(state))
-    from osc_agent.runtime.state_paths import ApplicationStatePaths
+    from osc_agent.application.state_paths import ApplicationStatePaths
 
     store = FileSessionStore(ApplicationStatePaths.for_repository(tmp_path).sessions)
     store.create(

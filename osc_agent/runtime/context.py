@@ -8,35 +8,13 @@ from typing import Protocol
 
 from pydantic import Field
 
-from osc_agent.runtime.models import (
-    ContractModel,
-    QueryConfig,
-    RuntimeMessage,
-    TextBlock,
-    ToolResultBlock,
-    ToolUseContext,
-)
+from osc_agent.contracts import ContractModel
 from osc_agent.runtime.gateway import ModelCompleted, ModelGateway, ModelRequest
-from osc_agent.runtime.instructions import RepositoryInstructionResolver
-from osc_agent.runtime.session_store import ToolResultStore
-
-
-class MemoryToolResultStore:
-    """测试和未配置持久层时的进程内保底实现。"""
-
-    def __init__(self) -> None:
-        self._values: dict[tuple[str, str], str] = {}
-
-    def persist(self, *, session_id: str, tool_use_id: str, content: str) -> str:
-        result_id = tool_use_id
-        self._values[(session_id, result_id)] = content
-        return result_id
-
-    def read(self, *, session_id: str, result_id: str) -> str:
-        try:
-            return self._values[(session_id, result_id)]
-        except KeyError as exc:
-            raise ValueError("unknown tool result for this session") from exc
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock
+from osc_agent.runtime.query_models import QueryConfig
+from osc_agent.runtime.session_store import MemoryToolResultStore, ToolResultStore
+from osc_agent.runtime.tool_models import ToolUseContext
+from osc_agent.workspaces.instructions import RepositoryInstructionResolver
 
 
 class SessionTranscript(ContractModel):
@@ -137,11 +115,9 @@ class ContextPipeline:
         *,
         summarizer: ContextSummarizer | None = None,
         tool_result_store: ToolResultStore | None = None,
-        instruction_resolver: RepositoryInstructionResolver | None = None,
     ) -> None:
         self.summarizer = summarizer or DeterministicContextSummarizer()
         self.tool_result_store = tool_result_store or MemoryToolResultStore()
-        self.instruction_resolver = instruction_resolver or RepositoryInstructionResolver()
 
     async def project(
         self,
@@ -150,6 +126,7 @@ class ContextPipeline:
         config: QueryConfig,
         working_directory: str,
         runtime_context: ToolUseContext | None = None,
+        instruction_resolver: RepositoryInstructionResolver | None = None,
         force_reason: str | None = None,
     ) -> ContextProjection:
         messages = transcript.snapshot()
@@ -172,7 +149,7 @@ class ContextPipeline:
         else:
             summary = ContextSummary(text="No summary generated")
 
-        reminder = _runtime_reminder(runtime_context, self.instruction_resolver)
+        reminder = _runtime_reminder(runtime_context, instruction_resolver)
 
         return ContextProjection(
             messages=messages,

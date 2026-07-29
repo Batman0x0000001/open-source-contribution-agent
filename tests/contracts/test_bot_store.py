@@ -10,13 +10,9 @@ import pytest
 
 from osc_agent.bot.models import BotJob, OutboxEvent
 from osc_agent.bot.store import BotStore, SqliteSessionStore
-from osc_agent.runtime.models import (
-    CapabilityScope,
-    RuntimeMessage,
-    SessionMetadata,
-    SessionRuntimeState,
-    TextBlock,
-)
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock
+from osc_agent.runtime.session import SessionMetadata, SessionRuntimeState
+from osc_agent.runtime.tool_models import CapabilityScope
 
 
 def _job() -> BotJob:

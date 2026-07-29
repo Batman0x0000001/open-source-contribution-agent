@@ -6,15 +6,11 @@ import asyncio
 from pathlib import Path
 import subprocess
 
-from osc_agent.runtime.completion import CompletionEvidenceStopHook
+from osc_agent.completion.evidence import CompletionEvidenceStopHook
+from osc_agent.completion.models import CompletionRequirements
 from osc_agent.runtime.hooks import StopHookPayload
-from osc_agent.runtime.models import (
-    CompletionRequirements,
-    RuntimeMessage,
-    ToolResultBlock,
-    ToolUseBlock,
-    ToolUseContext,
-)
+from osc_agent.runtime.messages import RuntimeMessage, ToolResultBlock, ToolUseBlock
+from osc_agent.runtime.tool_models import ToolUseContext
 from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
@@ -44,7 +40,6 @@ def context(root: Path) -> ToolUseContext:
     return ToolUseContext(
         session_id="completion",
         working_directory=str(root),
-        repository_root=str(root),
         state_directory=str(root / "state"),
         completion_requirements=CompletionRequirements(
             required_evidence=frozenset(

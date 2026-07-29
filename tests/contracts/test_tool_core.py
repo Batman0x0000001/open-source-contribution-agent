@@ -7,14 +7,14 @@ import asyncio
 from pydantic import Field
 
 from osc_agent.runtime.hooks import HookBlock, HookContinue, HookRegistry
-from osc_agent.runtime.models import (
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.messages import ToolUseBlock
+from osc_agent.runtime.tool_models import (
     Ask,
     ApprovalResponse,
     CapabilityScope,
-    ContractModel,
     Deny,
     ToolResult,
-    ToolUseBlock,
     ToolUseContext,
     ValidationFailure,
 )
@@ -91,7 +91,6 @@ def context(*, allowed_tools: frozenset[str] | None = None) -> ToolUseContext:
     return ToolUseContext(
         session_id="session-1",
         working_directory="C:/repo",
-        repository_root="C:/repo",
         state_directory="C:/state",
         capabilities=CapabilityScope(allowed_tools=allowed_tools),
     )

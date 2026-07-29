@@ -13,11 +13,9 @@ from osc_agent.workspaces.path_policy import (
     normalize_repo_relative_pattern,
 )
 from osc_agent.workspaces.path_policy import safe_repo_path
-from osc_agent.runtime.instructions import RepositoryInstructionResolver
-from osc_agent.runtime.models import (
-    ContractModel,
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.tool_models import (
     ContextUpdate,
-    FileObservation,
     ToolError,
     ToolResult,
     ToolUseContext,
@@ -27,6 +25,8 @@ from osc_agent.runtime.models import (
 )
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.workspaces.files import edit_file, glob_files, write_file
+from osc_agent.workspaces.instructions import RepositoryInstructionResolver
+from osc_agent.workspaces.models import FileObservation
 
 
 class ReadFileInput(ContractModel):

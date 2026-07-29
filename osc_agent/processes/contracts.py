@@ -7,7 +7,8 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
 
-from osc_agent.runtime.models import FrozenContractModel, ToolUseContext
+from osc_agent.contracts import FrozenContractModel
+from osc_agent.runtime.tool_models import ToolUseContext
 
 
 class CommandKind(str, Enum):
@@ -46,4 +47,3 @@ class ProcessRunner(Protocol):
         request: ProcessRequest,
         context: ToolUseContext | None,
     ) -> CommandResult: ...
-

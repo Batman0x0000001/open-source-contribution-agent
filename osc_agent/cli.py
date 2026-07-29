@@ -28,15 +28,9 @@ from osc_agent.application import (
 from osc_agent.cli_session import render_session_summary, run_conversation
 from osc_agent.config import load_settings
 from osc_agent.doctor import run_doctor
-from osc_agent.runtime.models import (
-    ApprovalResponse,
-    Ask,
-    RuntimeMessage,
-    TextBlock,
-    ToolResultBlock,
-    ToolUseBlock,
-)
-from osc_agent.runtime.session_summary import build_session_summary
+from osc_agent.application.session_summary import build_session_summary
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
+from osc_agent.runtime.tool_models import ApprovalResponse, Ask
 
 
 app = typer.Typer(help="Extensible coding agent for open-source contribution workflows.")

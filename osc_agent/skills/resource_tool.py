@@ -7,7 +7,8 @@ from pathlib import Path
 
 from pydantic import Field
 
-from osc_agent.runtime.models import ContractModel, ToolResult, ToolUseContext, ValidationFailure, ValidationResult, ValidationSuccess
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.tool_models import ToolResult, ToolUseContext, ValidationFailure, ValidationResult, ValidationSuccess
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.skills.catalog import SkillCatalog
 

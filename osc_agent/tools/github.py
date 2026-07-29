@@ -16,12 +16,12 @@ from urllib.request import Request, urlopen
 
 from pydantic import Field
 
-from osc_agent.runtime.models import (
-    ContractModel,
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.messages import ToolResultBlock
+from osc_agent.runtime.tool_models import (
     ToolError,
     ToolResult,
     ToolUseContext,
-    ToolResultBlock,
     ValidationFailure,
     ValidationResult,
     ValidationSuccess,

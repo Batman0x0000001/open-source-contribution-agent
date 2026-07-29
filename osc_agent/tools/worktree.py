@@ -9,9 +9,10 @@ from typing import Literal
 from pydantic import Field
 
 from osc_agent.workspaces.git_worktree import GitWorktreeManager
-from osc_agent.runtime.models import ContextUpdate, ContractModel, ToolResult, ToolUseContext, ValidationFailure, ValidationResult, ValidationSuccess
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.tool_models import ContextUpdate, ToolResult, ToolUseContext, ValidationFailure, ValidationResult, ValidationSuccess
 from osc_agent.runtime.tool import BaseTool
-from osc_agent.runtime.instructions import RepositoryInstructionResolver
+from osc_agent.workspaces.instructions import RepositoryInstructionResolver
 
 
 class EnterWorktreeInput(ContractModel):

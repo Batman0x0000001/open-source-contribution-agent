@@ -17,7 +17,7 @@ from osc_agent.subagents.builtins.verify import (
 from osc_agent.subagents.models import SubagentRequest, SubagentRunResult
 from osc_agent.subagents.registry import SubagentRegistry
 from osc_agent.subagents.tool import AgentTool, AgentToolInput
-from osc_agent.runtime.models import CapabilityScope, ToolUseContext
+from osc_agent.runtime.tool_models import CapabilityScope, ToolUseContext
 from osc_agent.runtime_config import default_runtime_config_path, load_runtime_config
 
 
@@ -35,7 +35,6 @@ def context(root: Path) -> ToolUseContext:
     return ToolUseContext(
         session_id="parent",
         working_directory=str(root),
-        repository_root=str(root),
         state_directory=str(root.parent / "state"),
         capabilities=CapabilityScope(allowed_tools=frozenset({"agent", *VERIFY_TOOLS})),
     )

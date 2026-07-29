@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from osc_agent.runtime.models import ApprovalResponse, Ask, ToolUseBlock, ToolUseContext
+from osc_agent.runtime.messages import ToolUseBlock
+from osc_agent.runtime.tool_models import ApprovalResponse, Ask, ToolUseContext
 from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
 from tests.contracts.registry_factory import build_test_tool_registry
 from osc_agent.tools.filesystem import (
@@ -18,7 +19,7 @@ from osc_agent.tools.filesystem import (
 
 
 def context(root: Path) -> ToolUseContext:
-    return ToolUseContext(session_id="session-1", working_directory=str(root), repository_root=str(root), state_directory=str(root / "state"))
+    return ToolUseContext(session_id="session-1", working_directory=str(root), state_directory=str(root / "state"))
 
 
 def test_core_registry_has_one_authoritative_definition_per_migrated_tool() -> None:

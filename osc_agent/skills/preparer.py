@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from osc_agent.runtime.models import CapabilityScope
+from osc_agent.runtime.tool_models import CapabilityScope
 from osc_agent.skills.catalog import SkillCatalog
 from osc_agent.skills.loader import SkillLoader
 from osc_agent.skills.models import (

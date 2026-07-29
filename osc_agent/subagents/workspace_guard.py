@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from osc_agent.runtime.models import ToolError, ToolResult, ToolUseContext
+from osc_agent.runtime.tool_models import ToolError, ToolResult, ToolUseContext
 from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 

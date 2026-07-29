@@ -8,7 +8,8 @@ from pathlib import Path
 
 from pydantic import Field
 
-from osc_agent.runtime.models import ContractModel, ToolError, ToolResult, ToolUseContext
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.tool_models import ToolError, ToolResult, ToolUseContext
 from osc_agent.runtime.session_store import ToolResultStore
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.workspaces.git_state import (

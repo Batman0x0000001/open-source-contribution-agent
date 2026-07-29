@@ -20,9 +20,10 @@ from osc_agent.processes.policy import build_subprocess_environment
 from osc_agent.workspaces.git_state import git_snapshot, git_workspace_fingerprint
 from osc_agent.bot.policy import ConfiguredValidationStopHook
 from osc_agent.bot.store import SqliteSessionStore
-from osc_agent.runtime.completion import CompletionEvidenceStopHook
+from osc_agent.completion.evidence import CompletionEvidenceStopHook
+from osc_agent.completion.models import CompletionRequirements
 from osc_agent.runtime.hooks import StopHookPayload
-from osc_agent.runtime.models import CompletionRequirements, ToolUseContext
+from osc_agent.runtime.tool_models import ToolUseContext
 
 
 class TrustedPublisher:
@@ -282,7 +283,6 @@ class TrustedPublisher:
         context = ToolUseContext(
             session_id=job.implementation_session_id,
             working_directory=str(workspace),
-            repository_root=str(workspace),
             state_directory=str(workspace),
             capabilities=snapshot.metadata.capabilities,
             completion_requirements=requirements,

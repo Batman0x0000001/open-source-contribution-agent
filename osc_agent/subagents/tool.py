@@ -9,8 +9,8 @@ from typing import Literal
 
 from pydantic import Field, JsonValue, ValidationError
 
-from osc_agent.runtime.models import (
-    ContractModel,
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.tool_models import (
     ToolError,
     ToolResult,
     ToolUseContext,

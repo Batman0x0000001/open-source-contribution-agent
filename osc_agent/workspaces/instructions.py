@@ -5,7 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 from pathlib import Path
 
-from osc_agent.runtime.models import InstructionDocument, RepositoryInstructionState
+from osc_agent.workspaces.models import InstructionDocument, RepositoryInstructionState
 from osc_agent.workspaces.path_policy import safe_repo_path
 
 

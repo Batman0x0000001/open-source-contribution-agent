@@ -12,7 +12,7 @@ import subprocess
 import time
 
 from osc_agent.processes.contracts import CommandResult, ProcessRequest
-from osc_agent.runtime.models import ToolUseContext
+from osc_agent.runtime.tool_models import ToolUseContext
 
 
 class DisabledProcessRunner:
@@ -167,4 +167,3 @@ async def _terminate_process_tree(
     except TimeoutError:
         cleanup_error = cleanup_error or "process did not exit after termination"
     return cleanup_error
-

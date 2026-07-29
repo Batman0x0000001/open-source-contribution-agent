@@ -29,7 +29,7 @@ from osc_agent.bot.store import BotStore, SqliteSessionStore
 from osc_agent.bot.artifact_tools import SubmitDeliveryDraftTool, SubmitIssuePlanTool
 from osc_agent.config import Settings
 from osc_agent.runtime.gateway import ModelGateway
-from osc_agent.runtime.models import (
+from osc_agent.runtime.events import (
     RunCompleted,
     RunStopped,
 )

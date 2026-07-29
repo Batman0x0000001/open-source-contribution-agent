@@ -11,9 +11,9 @@ from typing import Literal
 
 from pydantic import Field
 
-from osc_agent.runtime.models import (
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.tool_models import (
     Allow,
-    ContractModel,
     PermissionDecision,
     ToolError,
     ToolResult,

@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from uuid import uuid4
 
-from osc_agent.runtime.models import (
+from osc_agent.runtime.events import (
     AssistantMessageCompleted,
     Cancelled,
-    CapabilityScope,
     RunStopped,
-    RuntimeMessage,
-    StartQueryParams,
-    TextBlock,
 )
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock
+from osc_agent.runtime.query_models import StartQueryParams
 from osc_agent.runtime.query import AgentRuntime
+from osc_agent.runtime.tool_models import CapabilityScope
 from osc_agent.subagents.models import SubagentDefinition, SubagentRequest, SubagentRunResult
 from osc_agent.subagents.registry import SubagentRegistry
 
@@ -27,12 +28,14 @@ class SubagentRunner:
         registry: SubagentRegistry,
         *,
         default_model: str,
+        session_id_factory: Callable[[], str] | None = None,
     ) -> None:
         if not default_model:
             raise ValueError("default_model must not be empty")
         self.runtime = runtime
         self.registry = registry
         self.default_model = default_model
+        self.session_id_factory = session_id_factory or (lambda: str(uuid4()))
 
     async def run(self, name: str, request: SubagentRequest) -> SubagentRunResult:
         registration = self.registry.get(name)
@@ -45,7 +48,7 @@ class SubagentRunner:
         definition: SubagentDefinition,
         request: SubagentRequest,
     ) -> SubagentRunResult:
-        session_id = self.runtime.dependencies.new_id()
+        session_id = self.session_id_factory()
         return await self._execute(session_id, definition, request)
 
     async def _execute(
@@ -64,7 +67,7 @@ class SubagentRunner:
                     model=definition.model or self.default_model,
                     system_prompt=definition.system_prompt,
                     messages=messages,
-                    repository_root=request.working_directory,
+                    workspace_root=request.working_directory,
                     capabilities=capabilities,
                     config=definition.config,
                 )

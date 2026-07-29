@@ -13,7 +13,7 @@ from osc_agent.tools.worktree import EnterWorktreeTool, ExitWorktreeTool
 from osc_agent.tools.state import ReadToolResultTool
 from osc_agent.tools.search import GrepTool
 from osc_agent.workspaces.git_worktree import GitWorktreeManager
-from osc_agent.runtime.instructions import RepositoryInstructionResolver
+from osc_agent.workspaces.instructions import RepositoryInstructionResolver
 from osc_agent.runtime.session_store import ToolResultStore
 from osc_agent.processes.contracts import ProcessRunner
 

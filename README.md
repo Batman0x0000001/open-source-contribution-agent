@@ -20,7 +20,7 @@ AgentApplicationConfig → AgentApplication.open_session
         ↓
 AgentConversation.submit(UserPrompt | SkillInput | None)
         ↓
-AgentRuntime.query ← SkillExecutor ← SkillTool
+AgentRuntime.query ← SkillPreparer ← SkillTool
         ├── AgentTool → code-only AgentRegistry → AgentRunner
         ↓
 ToolExecutor → Permission / Plan Mode → Hooks → Tool
@@ -95,7 +95,7 @@ CLI 默认把模型轮次、Tool、Agent、重试和 compact 状态以紧凑行�
 
 - 新 Tool：实现 `Tool` Protocol 并通过 `AgentApplicationConfig` 注册到 composition root。
 - 新 Skill：添加严格 frontmatter；正文和声明的资源均延迟读取。
-- 新内置 Agent：在代码中注册 `AgentRegistration`，并递归复用同一个 Runtime。
+- 新内置子 Agent：在代码中注册 `SubagentRegistration`，并递归复用同一个 Runtime。
 - 普通 `run` 与 Contribution 都可发现 AgentTool；当前代码注册的 Agent 是最多两个并行
   Explore 和一个串行 Verify。Agent 的 Tool、并发、预算和只读边界仍由 Registration 固定。
 - Agent Registry 不扫描项目、用户、Plugin 或 Markdown Agent 文件。

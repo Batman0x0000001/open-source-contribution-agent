@@ -14,16 +14,12 @@ from osc_agent.application.models import (
     SkillInput,
     UserPrompt,
 )
-from osc_agent.runtime.models import (
-    CapabilityScope,
-    CompletionRequirements,
-    ResumeQueryParams,
-    RuntimeEvent,
-    RuntimeMessage,
-    SessionSnapshot,
-    StartQueryParams,
-    TextBlock,
-)
+from osc_agent.completion.models import CompletionRequirements
+from osc_agent.runtime.events import RuntimeEvent
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock
+from osc_agent.runtime.query_models import ResumeQueryParams, StartQueryParams
+from osc_agent.runtime.session import SessionSnapshot
+from osc_agent.runtime.tool_models import CapabilityScope
 from osc_agent.skills.models import PreparedSkill, SkillRequest
 
 
@@ -77,7 +73,7 @@ class AgentConversation:
                 model=app._model,
                 system_prompt=app._profile.system_prompt + "\n\n" + graph.discovery_prompt,
                 messages=list(resolved.messages),
-                repository_root=str(app._repository_root),
+                workspace_root=str(app._repository_root),
                 capabilities=resolved.capabilities,
                 completion_requirements=resolved.completion_requirements,
                 config=graph.query_config,
@@ -91,7 +87,7 @@ class AgentConversation:
         async for event in app._graph.runtime.query(
             ResumeQueryParams(
                 session_id=self.session_id,
-                repository_root=str(app._repository_root),
+                workspace_root=str(app._repository_root),
                 messages=messages,
                 config=app._graph.query_config,
             )

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from osc_agent.runtime.models import ContractModel, FrozenContractModel
+from osc_agent.contracts import ContractModel, FrozenContractModel
 from osc_agent.subagents.models import SubagentDefinition
 
 

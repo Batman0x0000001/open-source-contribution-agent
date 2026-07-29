@@ -18,14 +18,10 @@ from osc_agent.application import (
 )
 from osc_agent.config import Settings
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
-from osc_agent.runtime.models import (
-    ApprovalResponse,
-    RunCompleted,
-    RuntimeMessage,
-    TextBlock,
-    ToolUseBlock,
-)
-from osc_agent.runtime.state_paths import ApplicationStatePaths
+from osc_agent.application.state_paths import ApplicationStatePaths
+from osc_agent.runtime.events import RunCompleted
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolUseBlock
+from osc_agent.runtime.tool_models import ApprovalResponse
 
 
 class ScriptedGateway:

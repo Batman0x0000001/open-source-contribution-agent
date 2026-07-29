@@ -9,7 +9,8 @@ import yaml
 from pydantic import ConfigDict, Field, model_validator
 
 from osc_agent.runtime.gateway import RetryPolicy
-from osc_agent.runtime.models import FrozenContractModel, QueryConfig
+from osc_agent.contracts import FrozenContractModel
+from osc_agent.runtime.query_models import QueryConfig
 
 
 class AgentExecutionConfig(FrozenContractModel):

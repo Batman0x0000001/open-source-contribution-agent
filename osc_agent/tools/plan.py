@@ -6,9 +6,9 @@ from pathlib import Path
 
 from pydantic import Field
 
-from osc_agent.runtime.models import (
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.tool_models import (
     ContextUpdate,
-    ContractModel,
     ToolResult,
     ToolUseContext,
     ValidationFailure,

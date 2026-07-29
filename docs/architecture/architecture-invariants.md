@@ -5,7 +5,7 @@
 | 编号 | 最小机制 | Python 对应 | 硬验证 |
 |---|---|---|---|
 | Q1 | Query 是唯一 AsyncGenerator 循环 | `AgentRuntime.query` | 事件序列与单一入口测试 |
-| Q2 | 配置、依赖、状态、Tool 上下文分离 | `QueryConfig`、`QueryDependencies`、`QueryState`、`ToolUseContext` | Pydantic / frozen dataclass |
+| Q2 | 配置、依赖、状态、Tool 上下文分离 | `QueryConfig`、`QueryDependencies`、私有 `_QueryState`、`ToolUseContext` | Pydantic / frozen dataclass |
 | T1 | Tool 是输入敏感的完整行为对象 | `Tool`、`ToolExecutor` | validation → permission → hooks → call 测试 |
 | T2 | 并发完成可乱序，ContextUpdate 按调用顺序应用 | `tool_orchestration.py` | 并发与串行测试 |
 | T3 | Tool 只适配模型协议，共享文件、Git 和进程能力位于 Tool 外部 | `tools/`、`workspaces/`、`processes/` | AST 依赖边界与核心注册表测试 |

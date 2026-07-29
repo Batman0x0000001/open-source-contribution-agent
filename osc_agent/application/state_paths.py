@@ -6,7 +6,7 @@ import hashlib
 import os
 from pathlib import Path
 
-from osc_agent.runtime.models import FrozenContractModel
+from osc_agent.contracts import FrozenContractModel
 
 
 class ApplicationStatePaths(FrozenContractModel):

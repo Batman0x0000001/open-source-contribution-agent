@@ -17,26 +17,14 @@ from osc_agent.runtime.gateway import (
     ModelRequest,
     ModelTextDelta,
 )
-from osc_agent.runtime.models import (
-    CapabilityScope,
-    CompletionRequirements,
-    ContractModel,
-    ContextUpdate,
-    QueryConfig,
-    QueryParams,
-    ResumeQueryParams,
-    StartQueryParams,
-    RunCompleted,
-    RunStopped,
-    RuntimeMessage,
-    SessionMetadata,
-    TextBlock,
-    ToolResult,
-    ToolResultBlock,
-    ToolUseBlock,
-    ToolUseContext,
-)
-from osc_agent.runtime.completion import CompletionEvidenceStopHook
+from osc_agent.completion.evidence import CompletionEvidenceStopHook
+from osc_agent.completion.models import CompletionRequirements
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.events import RunCompleted, RunStopped
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
+from osc_agent.runtime.query_models import QueryConfig, QueryParams, ResumeQueryParams, StartQueryParams
+from osc_agent.runtime.session import SessionMetadata
+from osc_agent.runtime.tool_models import CapabilityScope, ContextUpdate, ToolResult, ToolUseContext
 from osc_agent.runtime.hooks import HookRegistry
 from osc_agent.runtime.query import AgentRuntime
 from osc_agent.runtime.tool import BaseTool, ToolRegistry
@@ -89,7 +77,7 @@ def params(*, max_rounds: int = 30) -> QueryParams:
         session_id="session-1",
         model="test-model",
         messages=[RuntimeMessage(role="user", content=[TextBlock(text="hello")])],
-        repository_root="C:/repo",
+        workspace_root="C:/repo",
         config=QueryConfig(max_rounds=max_rounds),
     )
 
@@ -103,8 +91,8 @@ def runtime(gateway: FakeGateway, tools=None, session_store=None, hooks=None) ->
     return AgentRuntime(
         QueryDependencies(
             model_gateway=gateway,
-            tool_registry=registry,
             tool_executor=ToolExecutor(registry, hooks=hooks),
+            state_directory="C:/state",
             session_store=session_store,
         )
     )
@@ -153,7 +141,7 @@ def test_completion_gate_blocks_three_identical_stop_attempts() -> None:
         session_id="completion-gate",
         model="test-model",
         messages=[RuntimeMessage(role="user", content=[TextBlock(text="implement")])],
-        repository_root="C:/repo",
+        workspace_root="C:/repo",
         completion_requirements=CompletionRequirements(
             required_evidence=frozenset(
                 {"successful_test", "git_change_snapshot"}
@@ -218,8 +206,8 @@ def test_model_exception_becomes_structured_terminal_event() -> None:
     agent_runtime = AgentRuntime(
         QueryDependencies(
             model_gateway=FailingGateway(),
-            tool_registry=registry,
             tool_executor=ToolExecutor(registry),
+            state_directory="C:/state",
         )
     )
 
@@ -318,7 +306,7 @@ def test_resume_replays_complete_tool_pairs_and_appends_new_user_message(tmp_pat
         system_prompt="saved system prompt",
         capabilities=CapabilityScope(allowed_tools=frozenset({"echo"})),
         messages=[RuntimeMessage(role="user", content=[TextBlock(text="initial")])],
-        repository_root=str(tmp_path),
+        workspace_root=str(tmp_path),
     )
     asyncio.run(collect(runtime(first_gateway, [EchoTool()], store), initial))
 
@@ -328,7 +316,7 @@ def test_resume_replays_complete_tool_pairs_and_appends_new_user_message(tmp_pat
     resumed = ResumeQueryParams(
         session_id="resume-1",
         messages=[RuntimeMessage(role="user", content=[TextBlock(text="continue")])],
-        repository_root=str(tmp_path),
+        workspace_root=str(tmp_path),
     )
     asyncio.run(collect(runtime(resumed_gateway, [EchoTool()], store), resumed))
 
@@ -376,7 +364,7 @@ def test_resume_repairs_interrupted_tool_use_before_new_user_message(
             runtime(gateway, [EchoTool()], store),
             ResumeQueryParams(
                 session_id="interrupted",
-                repository_root=str(tmp_path),
+                workspace_root=str(tmp_path),
                 messages=[RuntimeMessage(role="user", content=[TextBlock(text="continue")])],
             ),
         )
@@ -406,7 +394,7 @@ def test_resume_rejects_a_different_repository(tmp_path: Path) -> None:
                 session_id="repo-bound",
                 model="saved",
                 messages=[RuntimeMessage(role="user", content=[TextBlock(text="start")])],
-                repository_root=str(tmp_path / "repo-a"),
+                workspace_root=str(tmp_path / "repo-a"),
             ),
         )
     )
@@ -415,11 +403,11 @@ def test_resume_rejects_a_different_repository(tmp_path: Path) -> None:
         asyncio.run(
             collect(
                 runtime(resume_gateway, session_store=store),
-                ResumeQueryParams(session_id="repo-bound", repository_root=str(tmp_path / "repo-b")),
+                ResumeQueryParams(session_id="repo-bound", workspace_root=str(tmp_path / "repo-b")),
             )
         )
     except ValueError as exc:
-        assert "repository does not match" in str(exc)
+        assert "workspace does not match" in str(exc)
     else:
         raise AssertionError("cross-repository resume should fail")
 
@@ -436,7 +424,7 @@ def test_resume_keeps_runtime_capability_narrowing(tmp_path: Path) -> None:
         session_id="narrowed",
         model="saved",
         messages=[RuntimeMessage(role="user", content=[TextBlock(text="start")])],
-        repository_root=str(tmp_path),
+        workspace_root=str(tmp_path),
     )
     asyncio.run(collect(runtime(first, [EchoTool(), NarrowTool()], store), start))
 
@@ -446,7 +434,7 @@ def test_resume_keeps_runtime_capability_narrowing(tmp_path: Path) -> None:
     asyncio.run(
         collect(
             runtime(resumed, [EchoTool(), NarrowTool()], store),
-            ResumeQueryParams(session_id="narrowed", repository_root=str(tmp_path)),
+            ResumeQueryParams(session_id="narrowed", workspace_root=str(tmp_path)),
         )
     )
     assert [tool["name"] for tool in resumed.requests[0].tools] == ["echo"]
@@ -476,7 +464,7 @@ def test_cancelled_tool_gets_a_persisted_result_pair(tmp_path: Path) -> None:
                     session_id="cancelled",
                     model="test",
                     messages=[RuntimeMessage(role="user", content=[TextBlock(text="start")])],
-                    repository_root=str(tmp_path),
+                    workspace_root=str(tmp_path),
                 ),
             )
         )
@@ -521,7 +509,7 @@ def test_cancelled_model_request_marks_session_without_partial_message(
                 StartQueryParams(
                     session_id="model-cancelled",
                     model="test",
-                    repository_root=str(tmp_path),
+                    workspace_root=str(tmp_path),
                     messages=[
                         RuntimeMessage(
                             role="user",

@@ -6,7 +6,8 @@ from typing import Protocol
 
 from pydantic import JsonValue
 
-from osc_agent.runtime.models import Allow, Ask, ContractModel, Deny, PermissionDecision, ToolUseContext
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.tool_models import Allow, Ask, Deny, PermissionDecision, ToolUseContext
 from osc_agent.runtime.tool import Tool
 
 

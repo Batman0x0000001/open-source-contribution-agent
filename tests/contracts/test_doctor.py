@@ -11,7 +11,7 @@ import subprocess
 from osc_agent.config import Settings
 from osc_agent.doctor import run_doctor
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
-from osc_agent.runtime.models import RuntimeMessage, TextBlock
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock
 
 
 def _git_repo(root: Path) -> None:

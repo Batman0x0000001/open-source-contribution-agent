@@ -15,7 +15,8 @@ from osc_agent.application.composition import build_discovery_prompt, compose_ap
 from osc_agent.cli import app
 from osc_agent.config import Settings
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
-from osc_agent.runtime.models import CapabilityScope, RuntimeMessage, TextBlock, ToolUseContext
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock
+from osc_agent.runtime.tool_models import CapabilityScope, ToolUseContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -81,7 +82,7 @@ def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -
     )
 
     assert graph.runtime.dependencies.tool_executor is graph.tool_executor
-    assert graph.runtime.dependencies.tool_registry is graph.tool_registry
+    assert graph.runtime.dependencies.tool_executor.registry is graph.tool_registry
     assert graph.subagent_runner.runtime is graph.runtime
     assert graph.tool_registry.get("skill").preparer is graph.skill_preparer
     assert graph.tool_registry.get("agent").runner is graph.subagent_runner
@@ -117,7 +118,6 @@ def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -
     general_context = ToolUseContext(
         session_id="general",
         working_directory=str(tmp_path),
-        repository_root=str(tmp_path),
         state_directory=str(tmp_path / ".state"),
         capabilities=graph.general_capabilities,
     )

@@ -8,7 +8,8 @@ import subprocess
 
 from osc_agent.bot.policy import ConfiguredValidationStopHook
 from osc_agent.runtime.hooks import StopHookPayload
-from osc_agent.runtime.models import CompletionRequirements, ToolUseContext
+from osc_agent.completion.models import CompletionRequirements
+from osc_agent.runtime.tool_models import ToolUseContext
 
 
 def initialize_repository(root: Path) -> None:
@@ -23,7 +24,6 @@ def context(root: Path, *, requires_successful_test: bool) -> ToolUseContext:
     return ToolUseContext(
         session_id="validation-hook",
         working_directory=str(root),
-        repository_root=str(root),
         state_directory=str(root / "state"),
         completion_requirements=CompletionRequirements(required_evidence=required),
     )

@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 from osc_agent.workspaces.git_worktree import GitWorktreeManager
-from osc_agent.runtime.models import WorktreeSession
+from osc_agent.workspaces.models import WorktreeSession
 
 
 def git(cwd: Path, *args: str) -> None:

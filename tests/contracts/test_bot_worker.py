@@ -10,7 +10,7 @@ from uuid import uuid4
 from osc_agent.bot.models import BotJob
 from osc_agent.bot.store import BotStore
 from osc_agent.bot.worker import BotWorker
-from osc_agent.runtime.models import (
+from osc_agent.runtime.events import (
     AssistantDelta,
     Complete,
     ModelRequestStarted,

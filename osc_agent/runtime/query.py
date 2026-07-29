@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Literal
 
+from osc_agent.completion.models import CompletionRequirements
 from osc_agent.runtime.context import SessionTranscript
 from osc_agent.runtime.dependencies import QueryDependencies
 from osc_agent.runtime.gateway import ModelCompleted, ModelGatewayError, ModelRequest, ModelTextDelta
-from osc_agent.runtime.models import (
+from osc_agent.runtime.events import (
     AssistantDelta,
     AssistantMessageCompleted,
     Blocked,
@@ -20,28 +22,84 @@ from osc_agent.runtime.models import (
     Failed,
     ModelRequestStarted,
     ModelRetryScheduled,
+    RunCompleted,
+    RunStopped,
+    RuntimeEvent,
+    ToolCompleted,
+    ToolRequested,
+)
+from osc_agent.runtime.hooks import StopHookPayload
+from osc_agent.runtime.messages import (
+    RuntimeMessage,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
+from osc_agent.runtime.query_models import (
     QueryConfig,
     QueryParams,
     ResumeQueryParams,
     StartQueryParams,
-    QueryState,
-    RunCompleted,
-    RunStopped,
-    RuntimeEvent,
-    RuntimeMessage,
-    TextBlock,
-    ToolCompleted,
-    ToolError,
-    ToolRequested,
-    ToolResultBlock,
-    ToolResult,
-    ToolUseBlock,
-    ToolUseContext,
-    SessionMetadata,
-    SessionRuntimeState,
 )
-from osc_agent.runtime.hooks import StopHookPayload
+from osc_agent.runtime.session import SessionMetadata, SessionRuntimeState
+from osc_agent.runtime.session_store import SessionStore
+from osc_agent.runtime.tool_models import CapabilityScope, ToolError, ToolResult, ToolUseContext
 from osc_agent.runtime.tool_orchestration import run_tools
+
+
+@dataclass
+class _QueryState:
+    session_id: str
+    round_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reactive_compaction_count: int = 0
+    no_progress_rounds: int = 0
+    last_tool_signature: str | None = None
+    stop_block_count: int = 0
+    last_stop_reasons: tuple[str, ...] = ()
+    status: Literal["running", "completed", "blocked", "failed", "cancelled"] = "running"
+    stop_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class _OpenedSession:
+    messages: list[RuntimeMessage]
+    model: str
+    system_prompt: str
+    runtime_state: SessionRuntimeState
+    capabilities: CapabilityScope
+    completion_requirements: CompletionRequirements
+
+
+@dataclass
+class _ActiveQuery:
+    params: QueryParams
+    state: _QueryState
+    transcript: SessionTranscript
+    tool_context: ToolUseContext
+    model: str
+    system_prompt: str
+    store: SessionStore | None
+    started_at: float
+
+    def append(self, message: RuntimeMessage) -> None:
+        self.transcript.append(message)
+        if self.store is not None:
+            self.store.append_message(self.params.session_id, message)
+
+    def persist(
+        self,
+        status: Literal["running", "completed", "blocked", "failed", "cancelled"],
+        reason: str | None = None,
+    ) -> None:
+        self.state.status = status
+        self.state.stop_reason = reason
+        if self.store is not None:
+            self.store.save_state(
+                self.params.session_id,
+                _session_state(self.tool_context, status=status, reason=reason),
+            )
 
 
 class AgentRuntime:
@@ -74,108 +132,19 @@ class AgentRuntime:
                 raise
 
     async def _query_locked(self, params: QueryParams) -> AsyncIterator[RuntimeEvent]:
-        state = QueryState(session_id=params.session_id)
-        runtime_state = SessionRuntimeState()
-        messages = list(params.messages)
-        store = self.dependencies.session_store
-        repository_root = str(Path(params.repository_root).resolve())
-        if isinstance(params, ResumeQueryParams):
-            if store is None:
-                raise ValueError("resume requires a SessionStore")
-            snapshot = store.load(params.session_id)
-            if snapshot is None:
-                raise ValueError(f"unknown session: {params.session_id}")
-            if str(Path(snapshot.metadata.repository_root).resolve()) != repository_root:
-                raise ValueError("resume repository does not match the saved session")
-            messages = [*snapshot.messages, *messages]
-            model = snapshot.metadata.model
-            system_prompt = snapshot.metadata.system_prompt
-            capabilities = snapshot.metadata.capabilities
-            completion_requirements = snapshot.metadata.completion_requirements
-            runtime_state = snapshot.runtime_state
-            if runtime_state.capabilities is not None:
-                capabilities = capabilities.intersect(runtime_state.capabilities)
-            if runtime_state.completion_requirements is not None:
-                completion_requirements = completion_requirements.tighten(
-                    runtime_state.completion_requirements
-                )
-            if runtime_state.worktree is not None:
-                if self.dependencies.worktree_manager is None:
-                    raise ValueError("resume of a worktree session requires GitWorktreeManager")
-                self.dependencies.worktree_manager.validate_session(runtime_state.worktree)
-            interrupted = _repair_interrupted_tool_uses(snapshot.messages)
-            if interrupted is not None:
-                messages = [*snapshot.messages, interrupted, *params.messages]
-                store.append_message(params.session_id, interrupted)
-            for message in params.messages:
-                store.append_message(params.session_id, message)
-        else:
-            assert isinstance(params, StartQueryParams)
-            model = params.model
-            system_prompt = params.system_prompt
-            capabilities = params.capabilities
-            completion_requirements = params.completion_requirements
-            if store is not None:
-                store.create(
-                    SessionMetadata(
-                        schema_version=4,
-                        session_id=params.session_id,
-                        repository_root=repository_root,
-                        initial_working_directory=repository_root,
-                        model=params.model,
-                        system_prompt=params.system_prompt,
-                        capabilities=params.capabilities,
-                        completion_requirements=params.completion_requirements,
-                    )
-                )
-                for message in messages:
-                    store.append_message(params.session_id, message)
-        transcript = SessionTranscript(session_id=params.session_id, messages=messages)
-        working_directory = (
-            runtime_state.worktree.path if runtime_state.worktree is not None else repository_root
-        )
-        runtime_state.instruction_state = self.dependencies.instruction_resolver.activate_for_path(
-            Path(working_directory),
-            ".",
-            runtime_state.instruction_state,
-        )
-        tool_context = ToolUseContext(
-            session_id=params.session_id,
-            working_directory=working_directory,
-            repository_root=repository_root,
-            state_directory=self.dependencies.state_directory or repository_root,
-            capabilities=capabilities,
-            permission_mode=runtime_state.permission_mode,
-            plan_path=runtime_state.plan_path,
-            worktree=runtime_state.worktree,
-            instruction_state=runtime_state.instruction_state,
-            file_observations=runtime_state.file_observations,
-            completion_requirements=completion_requirements,
-            permission_grants=runtime_state.permission_grants,
-        )
-        if store is not None:
-            store.save_state(
-                params.session_id,
-                _session_state(tool_context, status="running"),
-            )
-        started_at = self.dependencies.monotonic()
+        run = self._open_run(params)
+        state = run.state
+        transcript = run.transcript
+        tool_context = run.tool_context
+        model = run.model
+        system_prompt = run.system_prompt
+        started_at = run.started_at
         force_compact_reason: str | None = None
 
         while True:
             failure = _budget_failure(state, params.config, started_at, self.dependencies.monotonic())
             if failure is not None:
-                state.status = "failed"
-                state.stop_reason = failure.reason
-                if store is not None:
-                    store.save_state(
-                        params.session_id,
-                        _session_state(
-                            tool_context,
-                            status="failed",
-                            reason=failure.reason,
-                        ),
-                    )
-                yield RunStopped(transition=failure)
+                yield _stopped(run, failure)
                 return
 
             state.round_count += 1
@@ -184,6 +153,7 @@ class AgentRuntime:
                 config=params.config,
                 working_directory=tool_context.working_directory,
                 runtime_context=tool_context,
+                instruction_resolver=self.dependencies.instruction_resolver,
                 force_reason=force_compact_reason,
             )
             state.input_tokens += projection.summary_input_tokens
@@ -208,7 +178,7 @@ class AgentRuntime:
                     else system_prompt
                 ),
                 messages=projection.messages,
-                tools=self.dependencies.tool_registry.schemas(tool_context),
+                tools=self.dependencies.tool_executor.registry.schemas(tool_context),
                 max_output_tokens=params.config.max_output_tokens,
             )
             completed: ModelCompleted | None = None
@@ -227,36 +197,16 @@ class AgentRuntime:
                         else:
                             completed = event
             except TimeoutError:
-                failure = Failed(
-                    error_code="DEADLINE_EXCEEDED",
-                    reason=f"query exceeded {params.config.deadline_seconds} seconds",
-                    retryable=False,
+                yield _stopped(
+                    run,
+                    Failed(
+                        error_code="DEADLINE_EXCEEDED",
+                        reason=f"query exceeded {params.config.deadline_seconds} seconds",
+                        retryable=False,
+                    ),
                 )
-                state.status = "failed"
-                state.stop_reason = failure.reason
-                if store is not None:
-                    store.save_state(
-                        params.session_id,
-                        _session_state(
-                            tool_context,
-                            status="failed",
-                            reason=failure.reason,
-                        ),
-                    )
-                yield RunStopped(transition=failure)
                 return
             except asyncio.CancelledError:
-                state.status = "cancelled"
-                state.stop_reason = "model request was cancelled"
-                if store is not None:
-                    store.save_state(
-                        params.session_id,
-                        _session_state(
-                            tool_context,
-                            status="cancelled",
-                            reason=state.stop_reason,
-                        ),
-                    )
                 raise
             except ModelGatewayError as exc:
                 if (
@@ -266,67 +216,34 @@ class AgentRuntime:
                     state.reactive_compaction_count += 1
                     force_compact_reason = "reactive_compact"
                     continue
-                failure = Failed(
-                    error_code=exc.code,
-                    reason=str(exc),
-                    retryable=exc.retryable,
+                yield _stopped(
+                    run,
+                    Failed(error_code=exc.code, reason=str(exc), retryable=exc.retryable),
                 )
-                state.status = "failed"
-                state.stop_reason = failure.reason
-                if store is not None:
-                    store.save_state(
-                        params.session_id,
-                        _session_state(
-                            tool_context,
-                            status="failed",
-                            reason=failure.reason,
-                        ),
-                    )
-                yield RunStopped(transition=failure)
                 return
             except Exception as exc:  # noqa: BLE001 - 未知 Provider 错误在 Runtime 边界结构化。
-                failure = Failed(
-                    error_code="MODEL_REQUEST_FAILED",
-                    reason=str(exc) or type(exc).__name__,
-                    retryable=False,
+                yield _stopped(
+                    run,
+                    Failed(
+                        error_code="MODEL_REQUEST_FAILED",
+                        reason=str(exc) or type(exc).__name__,
+                        retryable=False,
+                    ),
                 )
-                state.status = "failed"
-                state.stop_reason = failure.reason
-                if store is not None:
-                    store.save_state(
-                        params.session_id,
-                        _session_state(
-                            tool_context,
-                            status="failed",
-                            reason=failure.reason,
-                        ),
-                    )
-                yield RunStopped(transition=failure)
                 return
 
             if completed is None:
-                failure = Failed(
-                    error_code="MODEL_STREAM_INCOMPLETE",
-                    reason="model stream ended without a completed message",
-                    retryable=True,
+                yield _stopped(
+                    run,
+                    Failed(
+                        error_code="MODEL_STREAM_INCOMPLETE",
+                        reason="model stream ended without a completed message",
+                        retryable=True,
+                    ),
                 )
-                state.status = "failed"
-                state.stop_reason = failure.reason
-                if store is not None:
-                    store.save_state(
-                        params.session_id,
-                        _session_state(
-                            tool_context,
-                            status="failed",
-                            reason=failure.reason,
-                        ),
-                    )
-                yield RunStopped(transition=failure)
                 return
 
-            transcript.append(completed.message)
-            if store is not None:
-                store.append_message(params.session_id, completed.message)
+            run.append(completed.message)
             yield AssistantMessageCompleted(message=completed.message)
             state.input_tokens += completed.input_tokens
             state.output_tokens += completed.output_tokens
@@ -338,23 +255,14 @@ class AgentRuntime:
             ]
             if not tool_calls:
                 if completed.stop_reason == "max_tokens":
-                    failure = Failed(
-                        error_code="MODEL_MAX_TOKENS",
-                        reason="model output reached max_tokens",
-                        retryable=True,
+                    yield _stopped(
+                        run,
+                        Failed(
+                            error_code="MODEL_MAX_TOKENS",
+                            reason="model output reached max_tokens",
+                            retryable=True,
+                        ),
                     )
-                    state.status = "failed"
-                    state.stop_reason = failure.reason
-                    if store is not None:
-                        store.save_state(
-                            params.session_id,
-                            _session_state(
-                                tool_context,
-                                status="failed",
-                                reason=failure.reason,
-                            ),
-                        )
-                    yield RunStopped(transition=failure)
                     return
                 tool_context.transcript_messages = transcript.snapshot()
                 stop_result = await self.dependencies.tool_executor.hooks.run_stop(
@@ -369,52 +277,17 @@ class AgentRuntime:
                         else 1
                     )
                     state.last_stop_reasons = reasons
-                    blocking_message = RuntimeMessage(
-                        role="user",
-                        content=[
-                            TextBlock(
-                                text=(
-                                    "<completion-gate>\n"
-                                    + "\n".join(f"- {reason}" for reason in reasons)
-                                    + "\nContinue working and satisfy these evidence requirements before finishing."
-                                    "\n</completion-gate>"
-                                )
-                            )
-                        ],
-                    )
-                    transcript.append(blocking_message)
-                    if store is not None:
-                        store.append_message(params.session_id, blocking_message)
+                    run.append(_completion_gate_message(reasons))
                     if state.stop_block_count >= 3:
-                        transition = Blocked(
-                            reason="completion requirements remained unmet after three stop attempts"
+                        yield _stopped(
+                            run,
+                            Blocked(
+                                reason="completion requirements remained unmet after three stop attempts"
+                            ),
                         )
-                        state.status = "blocked"
-                        state.stop_reason = transition.reason
-                        if store is not None:
-                            store.save_state(
-                                params.session_id,
-                                _session_state(
-                                    tool_context,
-                                    status="blocked",
-                                    reason=transition.reason,
-                                ),
-                            )
-                        yield RunStopped(transition=transition)
                         return
                     continue
-                state.status = "completed"
-                state.stop_reason = completed.stop_reason
-                if store is not None:
-                    store.save_state(
-                        params.session_id,
-                        _session_state(
-                            tool_context,
-                            status="completed",
-                            reason=completed.stop_reason,
-                        ),
-                    )
-                yield RunCompleted(transition=Complete(reason=completed.stop_reason))
+                yield _completed(run, completed.stop_reason)
                 return
 
             signature = json.dumps(
@@ -432,30 +305,16 @@ class AgentRuntime:
                 yield ToolRequested(call=call)
 
             tool_context.transcript_messages = transcript.snapshot()
-            results = {}
+            results: dict[str, ToolResult] = {}
             try:
                 async for update in run_tools(
                     tool_calls,
-                    registry=self.dependencies.tool_registry,
                     executor=self.dependencies.tool_executor,
                     context=tool_context,
                 ):
                     tool_context = update.context
-                    if store is not None:
-                        store.save_state(
-                            params.session_id,
-                            SessionRuntimeState(
-                                permission_mode=tool_context.permission_mode,
-                                plan_path=tool_context.plan_path,
-                                worktree=tool_context.worktree,
-                                capabilities=tool_context.capabilities,
-                                instruction_state=tool_context.instruction_state,
-                                file_observations=tool_context.file_observations,
-                                completion_requirements=tool_context.completion_requirements,
-                                permission_grants=tool_context.permission_grants,
-                                last_status="running",
-                            ),
-                        )
+                    run.tool_context = tool_context
+                    run.persist("running")
                     if update.result is not None and update.tool_use_id is not None:
                         results[update.tool_use_id] = update.result
                         yield ToolCompleted(
@@ -474,33 +333,158 @@ class AgentRuntime:
                             )
                         ),
                     )
-                result_message = _tool_result_message(tool_calls, results)
-                transcript.append(result_message)
-                if store is not None:
-                    store.append_message(params.session_id, result_message)
-                state.status = "cancelled"
-                state.stop_reason = "tool execution was cancelled"
-                if store is not None:
-                    store.save_state(
-                        params.session_id,
-                        _session_state(
-                            tool_context,
-                            status="cancelled",
-                            reason=state.stop_reason,
-                        ),
-                    )
-                yield RunStopped(transition=Cancelled(reason=state.stop_reason))
+                run.append(_tool_result_message(tool_calls, results))
+                yield _stopped(run, Cancelled(reason="tool execution was cancelled"))
                 return
 
-            result_message = _tool_result_message(tool_calls, results)
-            transcript.append(result_message)
-            if store is not None:
-                store.append_message(params.session_id, result_message)
+            run.append(_tool_result_message(tool_calls, results))
             for call in tool_calls:
                 for message in results[call.id].new_messages:
-                    transcript.append(message)
-                    if store is not None:
-                        store.append_message(params.session_id, message)
+                    run.append(message)
+
+    def _open_run(self, params: QueryParams) -> _ActiveQuery:
+        store = self.dependencies.session_store
+        workspace_root = str(Path(params.workspace_root).resolve())
+        if isinstance(params, ResumeQueryParams):
+            opened = self._resume(params, workspace_root)
+        else:
+            assert isinstance(params, StartQueryParams)
+            opened = self._start(params, workspace_root)
+        runtime_state = opened.runtime_state
+        working_directory = (
+            runtime_state.worktree.path if runtime_state.worktree is not None else workspace_root
+        )
+        runtime_state.instruction_state = self.dependencies.instruction_resolver.activate_for_path(
+            Path(working_directory),
+            ".",
+            runtime_state.instruction_state,
+        )
+        tool_context = ToolUseContext(
+            session_id=params.session_id,
+            working_directory=working_directory,
+            state_directory=self.dependencies.state_directory,
+            capabilities=opened.capabilities,
+            permission_mode=runtime_state.permission_mode,
+            plan_path=runtime_state.plan_path,
+            worktree=runtime_state.worktree,
+            instruction_state=runtime_state.instruction_state,
+            file_observations=runtime_state.file_observations,
+            completion_requirements=opened.completion_requirements,
+            permission_grants=runtime_state.permission_grants,
+        )
+        run = _ActiveQuery(
+            params=params,
+            state=_QueryState(session_id=params.session_id),
+            transcript=SessionTranscript(session_id=params.session_id, messages=opened.messages),
+            tool_context=tool_context,
+            model=opened.model,
+            system_prompt=opened.system_prompt,
+            store=store,
+            started_at=self.dependencies.monotonic(),
+        )
+        run.persist("running")
+        return run
+
+    def _start(self, params: StartQueryParams, workspace_root: str) -> _OpenedSession:
+        store = self.dependencies.session_store
+        messages = list(params.messages)
+        if store is not None:
+            store.create(
+                SessionMetadata(
+                    schema_version=4,
+                    session_id=params.session_id,
+                    repository_root=workspace_root,
+                    initial_working_directory=workspace_root,
+                    model=params.model,
+                    system_prompt=params.system_prompt,
+                    capabilities=params.capabilities,
+                    completion_requirements=params.completion_requirements,
+                )
+            )
+            for message in messages:
+                store.append_message(params.session_id, message)
+        return _OpenedSession(
+            messages=messages,
+            model=params.model,
+            system_prompt=params.system_prompt,
+            runtime_state=SessionRuntimeState(),
+            capabilities=params.capabilities,
+            completion_requirements=params.completion_requirements,
+        )
+
+    def _resume(self, params: ResumeQueryParams, workspace_root: str) -> _OpenedSession:
+        store = self.dependencies.session_store
+        if store is None:
+            raise ValueError("resume requires a SessionStore")
+        snapshot = store.load(params.session_id)
+        if snapshot is None:
+            raise ValueError(f"unknown session: {params.session_id}")
+        if str(Path(snapshot.metadata.repository_root).resolve()) != workspace_root:
+            raise ValueError("resume workspace does not match the saved session")
+
+        runtime_state = snapshot.runtime_state
+        capabilities = snapshot.metadata.capabilities
+        requirements = snapshot.metadata.completion_requirements
+        if runtime_state.capabilities is not None:
+            capabilities = capabilities.intersect(runtime_state.capabilities)
+        if runtime_state.completion_requirements is not None:
+            requirements = requirements.tighten(runtime_state.completion_requirements)
+        if runtime_state.worktree is not None:
+            if self.dependencies.workspace_validator is None:
+                raise ValueError("resume of a worktree session requires a workspace validator")
+            self.dependencies.workspace_validator.validate_session(runtime_state.worktree)
+
+        messages = [*snapshot.messages, *params.messages]
+        interrupted = _repair_interrupted_tool_uses(snapshot.messages)
+        if interrupted is not None:
+            messages = [*snapshot.messages, interrupted, *params.messages]
+            store.append_message(params.session_id, interrupted)
+        for message in params.messages:
+            store.append_message(params.session_id, message)
+        return _OpenedSession(
+            messages=messages,
+            model=snapshot.metadata.model,
+            system_prompt=snapshot.metadata.system_prompt,
+            runtime_state=runtime_state,
+            capabilities=capabilities,
+            completion_requirements=requirements,
+        )
+
+
+def _stopped(
+    run: _ActiveQuery,
+    transition: Blocked | Failed | Cancelled,
+) -> RunStopped:
+    status: Literal["blocked", "failed", "cancelled"]
+    if isinstance(transition, Blocked):
+        status = "blocked"
+    elif isinstance(transition, Failed):
+        status = "failed"
+    else:
+        status = "cancelled"
+    run.persist(status, transition.reason)
+    return RunStopped(transition=transition)
+
+
+def _completed(run: _ActiveQuery, reason: str) -> RunCompleted:
+    run.persist("completed", reason)
+    return RunCompleted(transition=Complete(reason=reason))
+
+
+def _completion_gate_message(reasons: tuple[str, ...]) -> RuntimeMessage:
+    return RuntimeMessage(
+        role="user",
+        content=[
+            TextBlock(
+                text=(
+                    "<completion-gate>\n"
+                    + "\n".join(f"- {reason}" for reason in reasons)
+                    + "\nContinue working and satisfy these evidence requirements before finishing."
+                    "\n</completion-gate>"
+                )
+            )
+        ],
+    )
 
 
 def _tool_result_message(calls: list[ToolUseBlock], results: dict[str, ToolResult]) -> RuntimeMessage:
@@ -582,7 +566,7 @@ def _repair_interrupted_tool_uses(messages: list[RuntimeMessage]) -> RuntimeMess
 
 
 def _budget_failure(
-    state: QueryState,
+    state: _QueryState,
     config: QueryConfig,
     started_at: float,
     now: float,

@@ -6,16 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from osc_agent.runtime.models import (
-    CapabilityScope,
-    CompletionRequirements,
-    FileObservation,
-    RepositoryInstructionState,
-    RuntimeMessage,
-    SessionMetadata,
-    SessionRuntimeState,
-    TextBlock,
-)
+from osc_agent.completion.models import CompletionRequirements
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock
+from osc_agent.runtime.session import SessionMetadata, SessionRuntimeState
+from osc_agent.runtime.tool_models import CapabilityScope
+from osc_agent.workspaces.models import FileObservation, RepositoryInstructionState
 from osc_agent.runtime.session_store import FileSessionStore
 
 

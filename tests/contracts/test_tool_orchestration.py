@@ -4,13 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
-from osc_agent.runtime.models import (
-    ContextUpdate,
-    ContractModel,
-    ToolResult,
-    ToolUseBlock,
-    ToolUseContext,
-)
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.messages import ToolUseBlock
+from osc_agent.runtime.tool_models import ContextUpdate, ToolResult, ToolUseContext
 from osc_agent.runtime.tool import BaseTool, ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
 from osc_agent.runtime.tool_orchestration import partition_tool_calls, run_tools
@@ -58,7 +54,11 @@ def call(id: str, name: str, delay: float, *, safe: bool = True) -> ToolUseBlock
 
 
 def context() -> ToolUseContext:
-    return ToolUseContext(session_id="session-1", working_directory="C:/repo", repository_root="C:/repo", state_directory="C:/state")
+    return ToolUseContext(
+        session_id="session-1",
+        working_directory="C:/repo",
+        state_directory="C:/state",
+    )
 
 
 def test_partition_groups_only_consecutive_safe_calls() -> None:
@@ -66,7 +66,7 @@ def test_partition_groups_only_consecutive_safe_calls() -> None:
 
     batches = partition_tool_calls(
         [call("1", "a", 0), call("2", "b", 0), call("3", "w", 0, safe=False), call("4", "c", 0)],
-        registry,
+        ToolExecutor(registry),
     )
 
     assert [(batch.concurrency_safe, len(batch.calls)) for batch in batches] == [
@@ -85,7 +85,6 @@ def test_concurrent_completion_is_streamed_but_context_updates_follow_call_order
             update
             async for update in run_tools(
             [call("1", "first", 0.02), call("2", "second", 0)],
-            registry=registry,
             executor=executor,
             context=context(),
         )
@@ -111,7 +110,6 @@ def test_non_safe_calls_execute_serially() -> None:
             update
             async for update in run_tools(
             [call("1", "first", 0.01, safe=False), call("2", "second", 0, safe=False)],
-            registry=registry,
             executor=executor,
             context=context(),
         )

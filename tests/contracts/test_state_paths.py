@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from osc_agent.runtime.state_paths import ApplicationStatePaths, default_state_root
+from osc_agent.application.state_paths import ApplicationStatePaths, default_state_root
 
 
 def test_repository_state_is_deterministic_and_isolated(tmp_path: Path) -> None:

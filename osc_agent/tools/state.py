@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from osc_agent.runtime.models import ContractModel, ToolResult, ToolUseContext
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.tool_models import ToolResult, ToolUseContext
 from osc_agent.runtime.session_store import ToolResultStore
 from osc_agent.runtime.tool import BaseTool
 

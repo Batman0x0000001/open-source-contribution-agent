@@ -16,7 +16,7 @@ AgentApplication.open_session(session_id)
 AgentConversation.submit(UserPrompt | SkillInput | None)
           │
           ▼
-QueryConfig + QueryDependencies + QueryState
+QueryConfig + QueryDependencies + _QueryState
                     │
                     ▼
              AgentRuntime.query
@@ -37,7 +37,7 @@ QueryConfig + QueryDependencies + QueryState
          ▼
  ToolResult + ContextUpdate + RuntimeEvent
          │
-         └──────────────► 下一轮 QueryState
+         └──────────────► 下一轮 _QueryState
 ```
 
 ## Query
@@ -48,14 +48,15 @@ Query 内部必须分离：
 
 - 不可变的 `QueryConfig`。
 - 可注入的 `QueryDependencies`。
-- 跨轮变化的 `QueryState`。
+- 仅在 Query 内部跨轮变化的 `_QueryState` dataclass。
 - 受控的 `ToolUseContext`。
 
-Query 是唯一允许推进 QueryState 的组件。CLI、Skill 和 Tool 都不能直接修改它。
+Query 是唯一允许推进 `_QueryState` 的组件。CLI、Skill 和 Tool 都不能直接修改它。
 
-`repository_root`、Profile 和 Runtime 依赖只在构建 `AgentApplication` 时绑定。产品入口只持有
-`AgentConversation`：新 Session 必须提交 Prompt 或 Skill，恢复 Session 可提交新 Prompt 或
-`None`。`StartQueryParams` 与 `ResumeQueryParams` 是 application 包到 Runtime 的内部协议。
+Application 的仓库根、Profile 和 Runtime 依赖只在构建 `AgentApplication` 时绑定。内部
+`StartQueryParams/ResumeQueryParams.workspace_root` 表示 Session 的初始执行边界；Session V4
+仍以历史字段名 `repository_root` 保存同一个值。产品入口只持有 `AgentConversation`：新
+Session 必须提交 Prompt 或 Skill，恢复 Session 可提交新 Prompt 或 `None`。
 
 ## Tool
 
@@ -97,7 +98,7 @@ invocation_tool → resource_tool → builtins`。
 
 ## Agent
 
-`AgentTool` 委派给 `SubagentRunner`，后者通过隔离的 `StartQueryParams` 和 QueryState
+`AgentTool` 委派给 `SubagentRunner`，后者通过隔离的 `StartQueryParams` 和私有 Query state
 递归调用同一个 `AgentRuntime.query()`。子 Agent 的 capability 必须显式枚举，并在运行前
 移除 `agent` 工具以禁止递归。main agent 和 minimal/fork subagent 不允许拥有第二套模型
 循环。后台 Agent 在最小稳定版中不提供。
@@ -127,3 +128,24 @@ PermissionPolicy 表达。
 - 通过 `AgentConversation`、Skill 与 Tool 组合新的用户任务入口。
 
 在出现真实分发需求前，不引入额外 Plugin 框架。
+
+## Runtime 阅读顺序
+
+建议按依赖方向阅读，而不是从主循环直接向下追踪：
+
+```text
+contracts
+  → runtime/messages
+  → runtime/tool_models
+  → runtime/query_models + runtime/events
+  → runtime/context
+  → runtime/tool_execution + runtime/tool_orchestration
+  → runtime/session + runtime/session_store
+  → runtime/query
+  → application/composition
+```
+
+Runtime 之外的职责也按边界放置：Contribution 完成要求和证据评估位于
+`completion/`，CLI 会话摘要和应用状态路径位于 `application/`，工作区数据与仓库指令
+位于 `workspaces/`。Runtime 可以依赖这些通用数据契约，但不能反向依赖 Application、
+Bot、Skill、Subagent、具体 Tool、Provider 实现或 `completion.evidence`。

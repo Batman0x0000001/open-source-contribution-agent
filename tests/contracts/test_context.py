@@ -6,17 +6,13 @@ import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from osc_agent.runtime.context import ContextPipeline, GatewayContextSummarizer, MemoryToolResultStore, SessionTranscript
+from osc_agent.runtime.context import ContextPipeline, GatewayContextSummarizer, SessionTranscript
+from osc_agent.runtime.session_store import MemoryToolResultStore
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
-from osc_agent.runtime.models import (
-    QueryConfig,
-    RuntimeMessage,
-    TextBlock,
-    ToolResultBlock,
-    ToolUseBlock,
-    ToolUseContext,
-    WorktreeSession,
-)
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
+from osc_agent.runtime.query_models import QueryConfig
+from osc_agent.runtime.tool_models import ToolUseContext
+from osc_agent.workspaces.models import WorktreeSession
 
 
 def message(role: str, *blocks):
@@ -120,7 +116,6 @@ def test_runtime_reminder_reinjects_plan_and_worktree_without_mutating_transcrip
     context = ToolUseContext(
         session_id="session-1",
         working_directory=str(tmp_path / "worktree"),
-        repository_root=str(tmp_path),
         state_directory=str(tmp_path / "state"),
         permission_mode="default",
         plan_path="session-1.md",

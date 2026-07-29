@@ -10,7 +10,7 @@ from pathlib import Path
 import typer
 
 from osc_agent.application import AgentConversation, AgentInput, UserPrompt
-from osc_agent.runtime.models import (
+from osc_agent.runtime.events import (
     AssistantDelta,
     ContextCompacted,
     ModelRequestStarted,
@@ -20,7 +20,7 @@ from osc_agent.runtime.models import (
     ToolCompleted,
     ToolRequested,
 )
-from osc_agent.runtime.session_summary import SessionSummary, build_session_summary
+from osc_agent.application.session_summary import SessionSummary, build_session_summary
 
 
 def run_conversation(

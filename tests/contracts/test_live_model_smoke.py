@@ -16,7 +16,7 @@ from osc_agent.application import (
     build_agent_application,
 )
 from osc_agent.config import load_settings
-from osc_agent.runtime.models import RunCompleted
+from osc_agent.runtime.events import RunCompleted
 
 
 @pytest.mark.live_model

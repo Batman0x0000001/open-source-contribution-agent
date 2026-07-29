@@ -10,15 +10,10 @@ import pytest
 
 from osc_agent.application import AgentProfile, SkillInput, UserPrompt
 from osc_agent.application.service import AgentApplication
-from osc_agent.runtime.models import (
-    CapabilityScope,
-    Complete,
-    CompletionRequirements,
-    QueryConfig,
-    ResumeQueryParams,
-    RunCompleted,
-    StartQueryParams,
-)
+from osc_agent.completion.models import CompletionRequirements
+from osc_agent.runtime.events import Complete, RunCompleted
+from osc_agent.runtime.query_models import QueryConfig, ResumeQueryParams, StartQueryParams
+from osc_agent.runtime.tool_models import CapabilityScope
 from osc_agent.skills.models import PreparedSkill
 
 
@@ -91,7 +86,7 @@ def test_start_binds_repository_root_and_resolves_user_prompt(tmp_path: Path) ->
 
     params = runtime.params[0]
     assert isinstance(params, StartQueryParams)
-    assert params.repository_root == str(tmp_path.resolve())
+    assert params.workspace_root == str(tmp_path.resolve())
     assert params.messages[0].content[0].text == "task"
     assert params.model == "persisted-model"
 
@@ -111,7 +106,7 @@ def test_existing_session_resumes_with_optional_prompt(tmp_path: Path, input) ->
 
     params = runtime.params[0]
     assert isinstance(params, ResumeQueryParams)
-    assert params.repository_root == str(tmp_path.resolve())
+    assert params.workspace_root == str(tmp_path.resolve())
     assert len(params.messages) == (0 if input is None else 1)
 
 

@@ -9,10 +9,12 @@ import subprocess
 
 import pytest
 
-from osc_agent.runtime.models import ToolUseBlock, ToolUseContext, WorktreeSession
+from osc_agent.runtime.messages import ToolUseBlock
+from osc_agent.runtime.tool_models import ToolUseContext
+from osc_agent.workspaces.models import WorktreeSession
 from osc_agent.runtime.tool_execution import ToolExecutor
 from osc_agent.runtime.tool import ToolRegistry
-from osc_agent.runtime.context import MemoryToolResultStore
+from osc_agent.runtime.session_store import MemoryToolResultStore
 from tests.contracts.registry_factory import build_test_tool_registry
 from osc_agent.tools.git import (
     GitDiffInput,
@@ -33,7 +35,7 @@ def initialize_repository(root: Path) -> None:
 
 
 def context(root: Path) -> ToolUseContext:
-    return ToolUseContext(session_id="session-1", working_directory=str(root), repository_root=str(root), state_directory=str(root / "state"))
+    return ToolUseContext(session_id="session-1", working_directory=str(root), state_directory=str(root / "state"))
 
 
 def test_git_tools_have_strict_contracts_and_read_only_concurrency() -> None:

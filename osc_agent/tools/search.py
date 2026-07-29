@@ -10,10 +10,9 @@ import subprocess
 
 from pydantic import Field
 
-from osc_agent.runtime.instructions import RepositoryInstructionResolver
-from osc_agent.runtime.models import (
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.tool_models import (
     ContextUpdate,
-    ContractModel,
     ToolError,
     ToolResult,
     ToolUseContext,
@@ -24,6 +23,7 @@ from osc_agent.runtime.models import (
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.processes.policy import build_subprocess_environment
 from osc_agent.workspaces.path_policy import normalize_repo_relative_path, safe_repo_path
+from osc_agent.workspaces.instructions import RepositoryInstructionResolver
 
 
 class GrepInput(ContractModel):

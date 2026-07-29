@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-from osc_agent.runtime.models import (
-    RuntimeMessage,
-    SessionMetadata,
-    SessionRuntimeState,
-    SessionSnapshot,
-    ToolResultBlock,
-    ToolUseBlock,
-)
-from osc_agent.runtime.session_summary import build_session_summary
+from osc_agent.application.session_summary import build_session_summary
+from osc_agent.runtime.messages import RuntimeMessage, ToolResultBlock, ToolUseBlock
+from osc_agent.runtime.session import SessionMetadata, SessionRuntimeState, SessionSnapshot
 
 
 def test_summary_uses_only_successful_typed_tool_evidence() -> None:

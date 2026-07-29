@@ -7,7 +7,7 @@ import shutil
 
 from osc_agent.bot.config import BotSettings
 from osc_agent.bot.store import BotStore
-from osc_agent.runtime.state_paths import ApplicationStatePaths
+from osc_agent.application.state_paths import ApplicationStatePaths
 
 
 def cleanup_bot_state(settings: BotSettings) -> tuple[int, int]:

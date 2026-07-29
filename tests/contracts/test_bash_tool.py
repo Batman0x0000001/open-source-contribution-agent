@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from osc_agent.runtime.models import ToolUseBlock, ToolUseContext
+from osc_agent.runtime.messages import ToolUseBlock
+from osc_agent.runtime.tool_models import ToolUseContext
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
 from osc_agent.tools.bash import BashTool, is_read_only_command
@@ -14,7 +15,7 @@ from osc_agent.processes.contracts import CommandResult
 
 def context(root: Path) -> ToolUseContext:
     return ToolUseContext(
-        session_id="bash", working_directory=str(root), repository_root=str(root),
+        session_id="bash", working_directory=str(root),
         state_directory=str(root / "state"),
     )
 

@@ -16,9 +16,10 @@ from pydantic import Field
 from osc_agent.application import build_model_gateway, build_skill_catalog
 from osc_agent.config import Settings
 from osc_agent.runtime.gateway import ModelCompleted, ModelRequest
-from osc_agent.runtime.models import FrozenContractModel, RuntimeMessage, TextBlock
+from osc_agent.contracts import FrozenContractModel
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock
 from osc_agent.runtime.session_store import FileSessionStore
-from osc_agent.runtime.state_paths import ApplicationStatePaths
+from osc_agent.application.state_paths import ApplicationStatePaths
 from osc_agent.subagents.builtins import build_explore_subagent, build_verify_subagent
 from osc_agent.subagents.registry import SubagentRegistry
 from osc_agent.processes.policy import (

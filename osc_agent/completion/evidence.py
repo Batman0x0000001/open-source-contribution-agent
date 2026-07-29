@@ -6,7 +6,8 @@ import asyncio
 from pathlib import Path
 
 from osc_agent.runtime.hooks import StopHookPayload, StopHookResult
-from osc_agent.runtime.models import ToolResultBlock, ToolUseBlock, ToolUseContext
+from osc_agent.runtime.messages import ToolResultBlock, ToolUseBlock
+from osc_agent.runtime.tool_models import ToolUseContext
 from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
