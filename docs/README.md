@@ -18,4 +18,4 @@
 - [`architecture/non-goals.md`](architecture/non-goals.md)：当前明确不实现的能力。
 - [`architecture/adr-auto-merge.md`](architecture/adr-auto-merge.md)：禁止自动合并 PR 的安全决策。
 
-`bot-job-state-machine.md` 由 `osc-agent architecture render-state-machine` 生成，不应手工修改。Ubuntu 安装、升级、权限和 Nginx 配置见 [`deploy/ubuntu/README.md`](../deploy/ubuntu/README.md)。
+`bot-job-state-machine.md` 由 `osc-agent-bot render-state-machine` 生成，不应手工修改。Ubuntu 安装、升级、权限和 Nginx 配置见 [`deploy/ubuntu/README.md`](../deploy/ubuntu/README.md)。

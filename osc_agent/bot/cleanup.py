@@ -5,12 +5,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import shutil
 
-from osc_agent.bot.config import BotSettings
+from osc_agent.bot.config import BotMaintenanceSettings
 from osc_agent.bot.store import BotStore
 from osc_agent.application.state_paths import ApplicationStatePaths
 
 
-def cleanup_bot_state(settings: BotSettings) -> tuple[int, int]:
+def cleanup_bot_state(settings: BotMaintenanceSettings) -> tuple[int, int]:
     """Remove expired terminal workspaces, then prune their durable records."""
 
     store = BotStore(settings.database_path)

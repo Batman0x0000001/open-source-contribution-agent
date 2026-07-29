@@ -16,7 +16,7 @@ from osc_agent.application import (
     SkillInput,
     build_agent_application,
 )
-from osc_agent.config import Settings
+from tests.settings_factory import make_agent_settings as Settings
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
 from osc_agent.application.state_paths import ApplicationStatePaths
 from osc_agent.runtime.events import RunCompleted

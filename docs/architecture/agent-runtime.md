@@ -40,6 +40,17 @@ QueryConfig + QueryDependencies + _QueryState
          └──────────────► 下一轮 _QueryState
 ```
 
+## 产品入口
+
+本地命令与 GitHub Bot 是两个独立产品适配层：`osc-agent` 只接收终端 Prompt、Skill 和
+Session 操作；`osc-agent-bot` 只启动 Control、Worker 和 Bot 状态维护。Control 处理
+Webhook、审批与发布，不进入 AgentApplication；只有 Worker 将可信 Job 投影为 Plan 或
+Implementation Application，并调用同一个 `AgentConversation → AgentRuntime`。
+
+CLI 不得导入 Bot。Control 启动路径不得加载 Worker、Application、模型 Provider 或 Docker
+Runner。CLI 与 Worker 共用的 `AgentSettings` 由 `configuration/` 显式加载；GitHub App
+凭据只存在于 Bot Control 配置中。
+
 ## Query
 
 Query 是异步生成器，而不是只返回最终文本的同步函数。它负责推进一次 Agent turn，并持续输出模型流、Tool 事件、上下文事件和终态。

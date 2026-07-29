@@ -140,6 +140,7 @@ def test_publisher_accepts_only_one_clean_commit_on_approved_base(tmp_path: Path
         worker_id="worker-1",
         github_commit_name="Bot",
         github_commit_email="bot@example.com",
+        model_id="model",
     )
     publisher = TrustedPublisher(settings=settings, store=BotStore(settings.database_path), github=object())
     job = BotJob(

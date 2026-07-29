@@ -48,4 +48,4 @@ install -m 0644 "${PROJECT_ROOT}/deploy/ubuntu/osc-agent-bot-cleanup.service" /e
 install -m 0644 "${PROJECT_ROOT}/deploy/ubuntu/osc-agent-bot-cleanup.timer" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable osc-agent-bot-control osc-agent-bot-worker osc-agent-bot-cleanup.timer
-echo "Install /etc/osc-agent/bot.env and worker.env with mode 0600, then run /opt/osc-agent/current/venv/bin/osc-agent deploy doctor."
+echo "Install /etc/osc-agent/bot.env and worker.env with mode 0600, then run /opt/osc-agent/current/venv/bin/osc-agent-bot doctor."

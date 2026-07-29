@@ -31,7 +31,7 @@ class BotSettings(BaseSettings):
     plan_approval_days: int = Field(default=7, ge=1, le=30, validation_alias="OSC_AGENT_BOT_PLAN_APPROVAL_DAYS")
     completed_workspace_hours: int = Field(default=24, ge=1, le=168, validation_alias="OSC_AGENT_BOT_WORKSPACE_RETENTION_HOURS")
     audit_retention_days: int = Field(default=30, ge=1, le=365, validation_alias="OSC_AGENT_BOT_AUDIT_RETENTION_DAYS")
-    model_id: str = Field(default="configured-by-worker", min_length=1, validation_alias="MODEL_ID")
+    model_id: str = Field(min_length=1, validation_alias="MODEL_ID")
 
     @model_validator(mode="after")
     def protect_control_state_from_workspace_mounts(self) -> "BotSettings":
@@ -68,6 +68,38 @@ class BotWorkerSettings(BaseSettings):
         ):
             if path.resolve().is_relative_to(workspace):
                 raise ValueError(f"{name} must be outside the bot workspace root")
+        return self
+
+
+class BotMaintenanceSettings(BaseSettings):
+    """Bot 状态维护只加载所需路径和保留策略，不加载 GitHub 凭据。"""
+
+    model_config = SettingsConfigDict(extra="ignore", frozen=True, populate_by_name=True)
+
+    database_path: Path = Field(validation_alias="OSC_AGENT_BOT_DATABASE_PATH")
+    workspace_root: Path = Field(validation_alias="OSC_AGENT_BOT_WORKSPACE_ROOT")
+    bind_port: int = Field(default=8080, ge=1, le=65_535, validation_alias="OSC_AGENT_BOT_BIND_PORT")
+    completed_workspace_hours: int = Field(
+        default=24,
+        ge=1,
+        le=168,
+        validation_alias="OSC_AGENT_BOT_WORKSPACE_RETENTION_HOURS",
+    )
+    audit_retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=365,
+        validation_alias="OSC_AGENT_BOT_AUDIT_RETENTION_DAYS",
+    )
+
+    @model_validator(mode="after")
+    def protect_state_from_recursive_reset(self) -> "BotMaintenanceSettings":
+        workspace = self.workspace_root.resolve()
+        database = self.database_path.resolve()
+        if workspace == Path(workspace.anchor):
+            raise ValueError("Bot workspace root cannot be a filesystem root")
+        if database.is_relative_to(workspace):
+            raise ValueError("SQLite database must be outside the Bot workspace root")
         return self
 
 

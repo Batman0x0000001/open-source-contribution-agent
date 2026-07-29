@@ -18,7 +18,7 @@ from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBloc
 from osc_agent.runtime.query_models import StartQueryParams
 from osc_agent.runtime.tool_models import CapabilityScope, ToolUseContext
 from osc_agent.runtime.query import AgentRuntime
-from osc_agent.runtime_config import default_runtime_config_path, load_runtime_config
+from osc_agent.configuration.runtime import default_runtime_config_path, load_runtime_config
 from osc_agent.runtime.session_store import FileSessionStore
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor

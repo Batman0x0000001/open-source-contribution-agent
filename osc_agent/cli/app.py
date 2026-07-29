@@ -1,14 +1,10 @@
-"""定义 osc-agent 命令行入口及其子命令。"""
+"""定义本地 osc-agent 命令行入口及其子命令。"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import sys
-import os
-import shutil
-import urllib.request
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
@@ -17,17 +13,16 @@ import typer
 from pydantic import JsonValue
 
 from osc_agent.application import (
-    AgentApplicationConfig,
-    AgentProfile,
     SkillInput,
     UserPrompt,
-    build_agent_application,
     build_session_store,
     build_skill_catalog,
 )
-from osc_agent.cli_session import render_session_summary, run_conversation
-from osc_agent.config import load_settings
-from osc_agent.doctor import run_doctor
+from osc_agent.cli.application import build_cli_application
+from osc_agent.cli.config import build_general_profile, build_skill_profile
+from osc_agent.cli.session import render_session_summary, run_conversation
+from osc_agent.configuration import load_agent_settings
+from osc_agent.cli.doctor import run_doctor
 from osc_agent.application.session_summary import build_session_summary
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
 from osc_agent.runtime.tool_models import ApprovalResponse, Ask
@@ -36,14 +31,8 @@ from osc_agent.runtime.tool_models import ApprovalResponse, Ask
 app = typer.Typer(help="Extensible coding agent for open-source contribution workflows.")
 skill_app = typer.Typer(help="List and run validated Skills.")
 session_app = typer.Typer(help="Inspect repository-scoped Sessions.")
-bot_app = typer.Typer(help="Run the optional GitHub App control and worker services.")
-deploy_app = typer.Typer(help="Install and operate the Bot deployment.")
-architecture_app = typer.Typer(help="Render architecture contracts.")
 app.add_typer(skill_app, name="skill")
 app.add_typer(session_app, name="session")
-app.add_typer(bot_app, name="bot")
-app.add_typer(deploy_app, name="deploy")
-app.add_typer(architecture_app, name="architecture")
 
 RepoOption = Annotated[Path, typer.Option("--repo", exists=True, file_okay=False, dir_okay=True, resolve_path=True)]
 
@@ -63,18 +52,11 @@ def run_agent(
             raise typer.BadParameter("task is required when stdin is not a TTY")
         task = typer.prompt("Task")
     session_id = str(uuid4())
-    settings = load_settings()
-    agent_application = build_agent_application(
-        AgentApplicationConfig(
-            settings=settings,
-            repository_root=repo,
-            profile=AgentProfile(
-                profile_id="local_debug",
-                system_prompt="Use repository evidence and the smallest safe change that satisfies the task.",
-            ),
-            approval_handler=_approve,
-            question_handler=_ask_questions,
-        )
+    agent_application = build_cli_application(
+        repo,
+        build_general_profile(),
+        approval_handler=_approve,
+        question_handler=_ask_questions,
     )
     conversation = agent_application.open_session(session_id)
 
@@ -106,18 +88,11 @@ def resume_session(
         if session_id is None:
             raise typer.BadParameter("no valid Session exists for this repository")
     assert session_id is not None
-    settings = load_settings()
-    agent_application = build_agent_application(
-        AgentApplicationConfig(
-            settings=settings,
-            repository_root=repo,
-            profile=AgentProfile(
-                profile_id="local_debug",
-                system_prompt="Continue the existing repository task from its authoritative transcript.",
-            ),
-            approval_handler=_approve,
-            question_handler=_ask_questions,
-        )
+    agent_application = build_cli_application(
+        repo,
+        build_general_profile(resume=True),
+        approval_handler=_approve,
+        question_handler=_ask_questions,
     )
     conversation = agent_application.open_session(session_id)
     typer.echo(f"Session: {session_id}")
@@ -162,7 +137,7 @@ def doctor(
     results = asyncio.run(
         run_doctor(
             repository_root=repo,
-            settings=load_settings(),
+            settings=load_agent_settings(),
             local_only=local_only,
         )
     )
@@ -221,20 +196,12 @@ def _run_inline_skill(
     once: bool,
     quiet: bool,
 ) -> None:
-    settings = load_settings()
     session_id = str(uuid4())
-    agent_application = build_agent_application(
-        AgentApplicationConfig(
-            settings=settings,
-            repository_root=repo,
-            profile=AgentProfile(
-                profile_id="local_debug",
-                system_prompt="Use repository evidence and follow the explicitly invoked Skill.",
-                allowed_initial_skills=frozenset({name}),
-            ),
-            approval_handler=_approve,
-            question_handler=_ask_questions,
-        )
+    agent_application = build_cli_application(
+        repo,
+        build_skill_profile(name),
+        approval_handler=_approve,
+        question_handler=_ask_questions,
     )
     conversation = agent_application.open_session(session_id)
     typer.echo(f"Session: {session_id}")
@@ -385,193 +352,6 @@ def _message_preview(message: RuntimeMessage) -> str:
                 f"{'error' if block.is_error else 'ok'}]"
             )
     return " ".join(parts)
-
-
-@bot_app.command("serve")
-def bot_serve() -> None:
-    """Run the authenticated GitHub webhook control service."""
-
-    try:
-        from osc_agent.bot.config import BotSettings
-        from osc_agent.bot.service_runner import run_control_forever
-
-        settings = BotSettings()
-    except (ImportError, ValueError) as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    asyncio.run(run_control_forever(settings))
-
-
-@bot_app.command("worker")
-def bot_worker() -> None:
-    """Run the trusted Agent worker without loading GitHub App credentials."""
-
-    from osc_agent.bot.config import BotWorkerSettings
-    from osc_agent.bot.service_runner import run_worker_forever
-
-    try:
-        asyncio.run(run_worker_forever(BotWorkerSettings()))
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    except KeyboardInterrupt:
-        return
-
-
-@bot_app.command("doctor")
-def bot_doctor(
-    control: Annotated[
-        bool,
-        typer.Option("--control", help="Check the credentialed Control service without Docker access."),
-    ] = False,
-    worker: Annotated[
-        bool,
-        typer.Option("--worker", help="Check the Docker-enabled Worker service."),
-    ] = False,
-) -> None:
-    """Validate exactly one Bot process boundary."""
-
-    from pydantic import ValidationError
-    from osc_agent.bot.config import BotSettings, BotWorkerSettings
-    from osc_agent.bot.doctor import run_bot_control_doctor, run_bot_worker_doctor
-
-    if control == worker:
-        raise typer.BadParameter("select exactly one of --control or --worker")
-    try:
-        results = (
-            asyncio.run(run_bot_control_doctor(BotSettings()))
-            if control
-            else asyncio.run(run_bot_worker_doctor(BotWorkerSettings(), load_settings()))
-        )
-    except (ValidationError, ValueError) as exc:
-        detail = (
-            f"{exc.error_count()} required or invalid settings"
-            if isinstance(exc, ValidationError)
-            else str(exc)[:500]
-        )
-        typer.echo(f"FAIL\tconfiguration\t{detail}", err=True)
-        raise typer.Exit(1) from exc
-    for item in results:
-        typer.echo(f"{item.status}\t{item.name}\t{item.message}")
-    if any(item.status == "FAIL" for item in results):
-        raise typer.Exit(1)
-
-
-@bot_app.command("cleanup")
-def bot_cleanup() -> None:
-    """Remove expired terminal Job workspaces and audit records."""
-
-    from pydantic import ValidationError
-    from osc_agent.bot.cleanup import cleanup_bot_state
-    from osc_agent.bot.config import BotSettings
-
-    try:
-        workspaces, records = cleanup_bot_state(BotSettings())
-    except (ValidationError, ValueError, OSError) as exc:
-        typer.echo(f"FAIL\tcleanup\t{str(exc)[:500]}", err=True)
-        raise typer.Exit(1) from exc
-    typer.echo(f"PASS\tcleanup\tremoved {workspaces} workspace(s), {records} job record(s)")
-
-
-@deploy_app.command("schema-check")
-def deploy_schema_check() -> None:
-    from osc_agent.bot.store import BotStore
-
-    value = os.environ.get("OSC_AGENT_BOT_DATABASE_PATH")
-    if not value:
-        raise typer.BadParameter("OSC_AGENT_BOT_DATABASE_PATH is required")
-    BotStore(Path(value)).check_schema()
-    typer.echo("PASS\tschema\tepoch 2 / bot-job-v2")
-
-
-@deploy_app.command("archive-state")
-def deploy_archive_state() -> None:
-    database = Path(os.environ["OSC_AGENT_BOT_DATABASE_PATH"]).resolve()
-    workspace = Path(os.environ["OSC_AGENT_BOT_WORKSPACE_ROOT"]).resolve()
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    destination = database.parent / "archive" / stamp
-    destination.mkdir(parents=True, exist_ok=False)
-    for candidate in (database, Path(str(database) + "-wal"), Path(str(database) + "-shm")):
-        if candidate.exists():
-            shutil.copy2(candidate, destination / candidate.name)
-    if workspace.exists():
-        shutil.copytree(workspace, destination / "workspaces")
-    typer.echo(str(destination))
-
-
-@deploy_app.command("reset-state")
-def deploy_reset_state(
-    confirm: Annotated[bool, typer.Option("--confirm", help="Archive then replace Bot state.")] = False,
-) -> None:
-    """Archive Bot state, then create a fresh epoch-2 database and workspace root."""
-
-    if not confirm:
-        raise typer.BadParameter("--confirm is required")
-    deploy_archive_state()
-    database = Path(os.environ["OSC_AGENT_BOT_DATABASE_PATH"]).resolve()
-    workspace = Path(os.environ["OSC_AGENT_BOT_WORKSPACE_ROOT"]).resolve()
-    for candidate in (database, Path(str(database) + "-wal"), Path(str(database) + "-shm")):
-        if candidate.exists():
-            candidate.unlink()
-    if workspace.exists():
-        shutil.rmtree(workspace)
-    workspace.mkdir(parents=True, exist_ok=True)
-    workspace.chmod(0o2770)
-    from osc_agent.bot.store import BotStore
-    BotStore(database).initialize()
-    typer.echo("PASS\treset\tepoch 2 state initialized")
-
-
-@deploy_app.command("doctor")
-def deploy_doctor() -> None:
-    """Run the production Control and Worker preflight checks."""
-
-    from osc_agent.bot.config import BotSettings, BotWorkerSettings
-    from osc_agent.bot.doctor import run_bot_control_doctor, run_bot_worker_doctor
-    results = asyncio.run(run_bot_control_doctor(BotSettings()))
-    results += asyncio.run(run_bot_worker_doctor(BotWorkerSettings(), load_settings()))
-    for item in results:
-        typer.echo(f"{item.status}\t{item.name}\t{item.message}")
-    if any(item.status == "FAIL" for item in results):
-        raise typer.Exit(1)
-
-
-@deploy_app.command("smoke-test")
-def deploy_smoke_test() -> None:
-    """Check liveness, readiness, and Prometheus without external write side effects."""
-
-    from osc_agent.bot.config import BotSettings
-    settings = BotSettings()
-    base = f"http://127.0.0.1:{settings.bind_port}"
-    for endpoint in ("/health/live", "/health/ready", "/metrics"):
-        try:
-            with urllib.request.urlopen(base + endpoint, timeout=10) as response:
-                if response.status != 200:
-                    raise ValueError(f"HTTP {response.status}")
-        except Exception as exc:
-            typer.echo(f"FAIL\t{endpoint}\t{str(exc)[:300]}", err=True)
-            raise typer.Exit(1) from exc
-        typer.echo(f"PASS\t{endpoint}\tHTTP 200")
-
-
-@architecture_app.command("render-state-machine")
-def render_state_machine(
-    check: Annotated[bool, typer.Option("--check")] = False,
-) -> None:
-    from osc_agent.bot.state_machine import BotJobStateMachine
-
-    path = Path(__file__).resolve().parents[1] / "docs" / "architecture" / "bot-job-state-machine.md"
-    content = (
-        "# Bot Job State Machine\n\n"
-        "This file is generated by `osc-agent architecture render-state-machine`.\n\n"
-        "```mermaid\n" + BotJobStateMachine.mermaid() + "\n```\n\n"
-        + BotJobStateMachine.transition_table() + "\n"
-    )
-    if check:
-        if not path.exists() or path.read_text(encoding="utf-8") != content:
-            raise typer.Exit(1)
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    typer.echo(str(path))
 
 
 if __name__ == "__main__":

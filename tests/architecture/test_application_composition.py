@@ -9,11 +9,11 @@ from typing import AsyncIterator
 import pytest
 from typer.testing import CliRunner
 
-import osc_agent.config as config_module
+import osc_agent.configuration.agent as config_module
 from osc_agent.application import AgentApplicationConfig, AgentProfile
 from osc_agent.application.composition import build_discovery_prompt, compose_application
-from osc_agent.cli import app
-from osc_agent.config import Settings
+from osc_agent.cli.app import app
+from tests.settings_factory import make_agent_settings as Settings
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
 from osc_agent.runtime.tool_models import CapabilityScope, ToolUseContext
@@ -42,7 +42,7 @@ def test_model_id_is_explicit_and_dotenv_does_not_override_environment(
     )
     monkeypatch.delenv("MODEL_ID", raising=False)
 
-    settings = config_module.load_settings()
+    settings = config_module.load_agent_settings()
 
     assert settings.model_id is None
     assert calls == [False]
@@ -63,7 +63,7 @@ def test_subprocess_environment_allowlist_uses_strict_json_array(monkeypatch) ->
         '["CUSTOM_BUILD_FLAG", "NODE_OPTIONS"]',
     )
 
-    settings = config_module.Settings()
+    settings = config_module.load_agent_settings()
 
     assert settings.subprocess_env_allowlist == {
         "CUSTOM_BUILD_FLAG",
@@ -158,6 +158,9 @@ Legacy.
     assert contribution_help.exit_code == 0
     assert listed.exit_code == 0
     assert "run" in root_help.stdout
+    assert "bot" not in root_help.stdout
+    assert "deploy" not in root_help.stdout
+    assert "architecture" not in root_help.stdout
     assert "--repo-url" in contribution_help.stdout
     assert "resume" in root_help.stdout
     assert "open-source-contribution" in listed.stdout
@@ -165,7 +168,7 @@ Legacy.
 
 
 def test_cli_does_not_import_legacy_runtime_or_stage_functions() -> None:
-    path = PROJECT_ROOT / "osc_agent" / "cli.py"
+    path = PROJECT_ROOT / "osc_agent" / "cli" / "app.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     imports = {
         node.module
@@ -180,7 +183,11 @@ def test_cli_does_not_import_legacy_runtime_or_stage_functions() -> None:
 
 
 def test_product_entrypoints_use_agent_application_only() -> None:
-    for relative in ("osc_agent/cli.py", "osc_agent/bot/worker.py"):
+    factories = (
+        "osc_agent/cli/application.py",
+        "osc_agent/bot/application_factory.py",
+    )
+    for relative in factories:
         source = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
         tree = ast.parse(source)
         called_names = {
@@ -190,11 +197,57 @@ def test_product_entrypoints_use_agent_application_only() -> None:
         }
         assert "build_agent_application" in called_names
         assert "build_application" not in called_names
+
+    entrypoints = (
+        "osc_agent/cli/app.py",
+        "osc_agent/bot/worker.py",
+    )
+    for relative in entrypoints:
+        source = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
         assert "AgentRunSpec" not in source
         assert "RunEnvironment" not in source
         assert "StartQueryParams" not in source
         assert "ResumeQueryParams" not in source
         assert ".runtime.query(" not in source
+
+
+def test_cli_and_bot_entrypoints_have_separate_product_boundaries() -> None:
+    cli_root = PROJECT_ROOT / "osc_agent" / "cli"
+    cli_imports = {
+        node.module
+        for path in cli_root.rglob("*.py")
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+    bot_entrypoint = PROJECT_ROOT / "osc_agent" / "bot" / "entrypoint.py"
+    bot_imports = {
+        node.module
+        for node in ast.walk(ast.parse(bot_entrypoint.read_text(encoding="utf-8")))
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+
+    assert not any(module.startswith("osc_agent.bot") for module in cli_imports)
+    assert not any(module.startswith("osc_agent.cli") for module in bot_imports)
+    for legacy in ("cli.py", "config.py", "cli_session.py", "runtime_config.py"):
+        assert not (PROJECT_ROOT / "osc_agent" / legacy).exists()
+
+
+def test_control_service_does_not_load_worker_or_agent_execution() -> None:
+    path = PROJECT_ROOT / "osc_agent" / "bot" / "control_service.py"
+    imports = {
+        node.module
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+
+    forbidden = (
+        "osc_agent.application",
+        "osc_agent.providers",
+        "osc_agent.bot.worker",
+        "osc_agent.bot.sandbox",
+        "osc_agent.bot.application_factory",
+    )
+    assert not any(module.startswith(forbidden) for module in imports)
 
 
 def test_application_composition_does_not_name_bot_artifact_tools() -> None:

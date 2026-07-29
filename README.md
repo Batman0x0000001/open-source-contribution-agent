@@ -120,10 +120,10 @@ CLI 默认把模型轮次、Tool、Agent、重试和 compact 状态以紧凑行�
 
 ```bash
 python -m pip install -e ".[bot]"
-osc-agent bot doctor --control
-osc-agent bot doctor --worker
-osc-agent bot serve
-osc-agent bot worker
+osc-agent-bot doctor --control
+osc-agent-bot doctor --worker
+osc-agent-bot control
+osc-agent-bot worker
 ```
 
 Bot 是生产主入口；CLI 保留为本地调试入口。机器人只接受具有 `write`、`maintain` 或
@@ -155,6 +155,7 @@ Ubuntu 双用户、systemd、Nginx、权限与云服务器安全组配置见
 conda run --no-capture-output -n osc-agent python -m pytest
 conda run --no-capture-output -n osc-agent python -m osc_agent.cli --help
 conda run --no-capture-output -n osc-agent python -m osc_agent.cli skill list --repo .
+conda run --no-capture-output -n osc-agent python -m osc_agent.bot --help
 ```
 
 Bash 与 ripgrep 是源码运行环境的必需外部命令，`environment.yml` 会安装 ripgrep。

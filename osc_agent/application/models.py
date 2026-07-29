@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pydantic import Field, JsonValue
 
-from osc_agent.config import Settings
+from osc_agent.configuration import AgentSettings
 from osc_agent.runtime.gateway import ModelGateway
 from osc_agent.runtime.hooks import PreToolHook, StopHook
 from osc_agent.completion.models import CompletionRequirements
@@ -48,7 +48,7 @@ QuestionHandler = Callable[[list[dict[str, JsonValue]]], Awaitable[dict[str, str
 class AgentApplicationConfig:
     """构建一次产品 Agent 所需的稳定配置和可替换依赖。"""
 
-    settings: Settings
+    settings: AgentSettings
     repository_root: Path
     profile: AgentProfile
     approval_handler: ApprovalHandler | None = None

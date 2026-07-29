@@ -47,6 +47,7 @@ def _settings(tmp_path: Path) -> BotSettings:
         worker_id="worker-1",
         github_commit_name="OSA Bot",
         github_commit_email="bot@example.com",
+        model_id="model",
     )
 
 
@@ -91,6 +92,8 @@ def test_control_creates_plan_and_bound_implementation_approval(tmp_path: Path) 
     job = store.get_job(job_id)
     assert job is not None and job.status == "queued_plan"
     assert job.image_id == IMAGE_ID
+    contract = store.get_execution_contract(job.execution_contract_hash)
+    assert contract is not None and contract.model_id == settings.model_id
     assert store.get_job_input(job_id)["trust"] == "untrusted_external"
     plan = IssuePlanArtifact(
         status="ready",

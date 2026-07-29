@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from osc_agent.config import Settings
+from osc_agent.configuration import AgentSettings, load_agent_settings
 from osc_agent.bot.config import load_repository_catalog
-from osc_agent.runtime_config import default_runtime_config_path, load_runtime_config
+from osc_agent.configuration.runtime import default_runtime_config_path, load_runtime_config
 
 
 def _runtime_yaml(*, verify_rounds: int = 16, extra: str = "") -> str:
@@ -67,10 +67,22 @@ def test_settings_loads_runtime_config_selected_by_environment(
     path.write_text(_runtime_yaml(verify_rounds=21), encoding="utf-8")
     monkeypatch.setenv("OSC_AGENT_RUNTIME_CONFIG", str(path))
 
-    settings = Settings()
+    settings = load_agent_settings()
 
     assert settings.runtime_config_path == path
     assert settings.runtime.agents.verify.max_rounds == 21
+
+
+def test_agent_settings_construction_does_not_read_runtime_file(tmp_path: Path) -> None:
+    runtime = load_runtime_config(default_runtime_config_path())
+
+    settings = AgentSettings(
+        model_id="test-model",
+        runtime_config_path=tmp_path / "missing.yml",
+        runtime=runtime,
+    )
+
+    assert settings.runtime is runtime
 
 
 @pytest.mark.parametrize(

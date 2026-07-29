@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from osc_agent.bot.models import BotJob
 from osc_agent.bot.store import BotStore
-from osc_agent.bot.worker import BotWorker
+from osc_agent.bot.worker import BotModelContractMismatch, BotWorker
 from osc_agent.runtime.events import (
     AssistantDelta,
     Complete,
@@ -83,11 +83,44 @@ def test_repository_policy_violation_immediately_terminates_job(tmp_path: Path) 
     assert terminated.error_message == "protected path"
 
 
+def test_model_contract_mismatch_dead_letters_without_running_agent() -> None:
+    job = _job(status="running_plan")
+    transitions: list[tuple[str, dict[str, object]]] = []
+
+    class Store:
+        def claim_job(self, _worker_id, phase=None):
+            return job
+
+        def get_job(self, _job_id):
+            return job
+
+        def transition_with_outbox(self, **changes):
+            transitions.append(("retry_wait", changes))
+            return job.model_copy(update={"status": "retry_wait", "version": job.version + 1})
+
+        def transition(self, **changes):
+            transitions.append(("dead_letter", changes))
+            return job.model_copy(update={"status": "dead_letter", "version": job.version + 2})
+
+    worker = object.__new__(BotWorker)
+    worker.store = Store()  # type: ignore[assignment]
+    worker.bot_settings = SimpleNamespace(worker_id="worker")  # type: ignore[assignment]
+
+    async def reject(_job):
+        raise BotModelContractMismatch("model mismatch")
+
+    worker._run_plan = reject  # type: ignore[method-assign]
+
+    assert asyncio.run(worker.run_once("plan")) is True
+    assert [status for status, _ in transitions] == ["retry_wait", "dead_letter"]
+    assert transitions[0][1]["error_code"] == "BOT_MODEL_CONTRACT_MISMATCH"
+
+
 def test_worker_uses_independent_phase_slots_and_graceful_shutdown(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    import osc_agent.bot.service_runner as server_module
+    import osc_agent.bot.worker_service as server_module
 
     started = asyncio.Event()
     slot_names: set[str] = set()
@@ -114,7 +147,7 @@ def test_worker_uses_independent_phase_slots_and_graceful_shutdown(
     monkeypatch.setattr(server_module, "BotStore", Store)
     monkeypatch.setattr(server_module, "BotWorker", Worker)
     monkeypatch.setattr(server_module, "load_repository_catalog", lambda _path: object())
-    monkeypatch.setattr(server_module, "load_settings", lambda: object())
+    monkeypatch.setattr(server_module, "load_agent_settings", lambda: object())
     settings = SimpleNamespace(
         database_path=tmp_path / "bot.sqlite3",
         repositories_config=tmp_path / "repositories.yml",

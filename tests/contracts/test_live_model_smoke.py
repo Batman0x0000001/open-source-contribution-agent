@@ -15,7 +15,7 @@ from osc_agent.application import (
     UserPrompt,
     build_agent_application,
 )
-from osc_agent.config import load_settings
+from osc_agent.configuration import load_agent_settings
 from osc_agent.runtime.events import RunCompleted
 
 
@@ -23,7 +23,7 @@ from osc_agent.runtime.events import RunCompleted
 def test_opt_in_live_model_can_complete_one_runtime_turn(tmp_path: Path) -> None:
     if os.getenv("OSC_AGENT_LIVE_MODEL") != "1":
         pytest.skip("set OSC_AGENT_LIVE_MODEL=1 to run the paid live-model smoke")
-    settings = load_settings()
+    settings = load_agent_settings()
     if not settings.anthropic_api_key:
         pytest.skip("ANTHROPIC_API_KEY is not configured")
     if not settings.model_id:

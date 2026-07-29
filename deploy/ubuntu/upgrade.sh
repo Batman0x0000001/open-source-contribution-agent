@@ -27,10 +27,10 @@ systemctl stop osc-agent-bot-worker osc-agent-bot-control
 ln -sfn "${RELEASE}" /opt/osc-agent/next
 mv -Tf /opt/osc-agent/next /opt/osc-agent/current
 
-/opt/osc-agent/current/venv/bin/osc-agent deploy reset-state --confirm
-/opt/osc-agent/current/venv/bin/osc-agent deploy schema-check
+/opt/osc-agent/current/venv/bin/osc-agent-bot reset-state --confirm
+/opt/osc-agent/current/venv/bin/osc-agent-bot schema-check
 systemctl start osc-agent-bot-control
 systemctl start osc-agent-bot-worker
-/opt/osc-agent/current/venv/bin/osc-agent deploy smoke-test
+/opt/osc-agent/current/venv/bin/osc-agent-bot smoke-test
 rm -f /run/osc-agent-webhook-maintenance
 systemctl reload nginx

@@ -11,7 +11,7 @@ import sys
 from osc_agent.bot.config import BotSettings, BotWorkerSettings, load_repository_catalog
 from osc_agent.bot.sandbox import resolve_image_id
 from osc_agent.bot.store import BotStore
-from osc_agent.config import Settings
+from osc_agent.configuration import AgentSettings
 from osc_agent.contracts import FrozenContractModel
 
 
@@ -72,7 +72,7 @@ async def run_bot_control_doctor(settings: BotSettings) -> list[BotDoctorResult]
 
 async def run_bot_worker_doctor(
     settings: BotWorkerSettings,
-    model_settings: Settings,
+    model_settings: AgentSettings,
 ) -> list[BotDoctorResult]:
     """检查 Worker、模型配置和本机不可变镜像。"""
 

@@ -18,7 +18,7 @@ from osc_agent.subagents.models import SubagentRequest, SubagentRunResult
 from osc_agent.subagents.registry import SubagentRegistry
 from osc_agent.subagents.tool import AgentTool, AgentToolInput
 from osc_agent.runtime.tool_models import CapabilityScope, ToolUseContext
-from osc_agent.runtime_config import default_runtime_config_path, load_runtime_config
+from osc_agent.configuration.runtime import default_runtime_config_path, load_runtime_config
 
 
 VERIFY_CONFIG = load_runtime_config(default_runtime_config_path()).agents.verify.to_query_config()

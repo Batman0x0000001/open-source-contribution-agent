@@ -1,3 +1,4 @@
+# CLI 与 Bot Worker 共用的默认 Agent 执行预算。
 agents:
   main:
     max_rounds: 30

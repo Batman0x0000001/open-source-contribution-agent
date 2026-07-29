@@ -8,8 +8,8 @@ import os
 from pathlib import Path
 import subprocess
 
-from osc_agent.config import Settings
-from osc_agent.doctor import run_doctor
+from tests.settings_factory import make_agent_settings as Settings
+from osc_agent.cli.doctor import run_doctor
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
 
@@ -76,7 +76,7 @@ def test_live_doctor_uses_gateway_without_creating_session(
                 stop_reason="end_turn",
             )
 
-    monkeypatch.setattr("osc_agent.doctor.build_model_gateway", lambda _settings: Gateway())
+    monkeypatch.setattr("osc_agent.cli.doctor.build_model_gateway", lambda _settings: Gateway())
 
     results = asyncio.run(
         run_doctor(

@@ -29,13 +29,14 @@ bot = [
 ]
 
 [project.scripts]
-osc-agent = "osc_agent.cli:app"
+osc-agent = "osc_agent.cli.app:app"
+osc-agent-bot = "osc_agent.bot.entrypoint:app"
 
 [tool.setuptools.packages.find]
 include = ["osc_agent*"]
 
 [tool.setuptools.package-data]
-osc_agent = ["skills/**/*.md", "runtime.yml"]
+osc_agent = ["skills/**/*.md", "configuration/runtime.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

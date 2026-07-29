@@ -1,4 +1,4 @@
-"""执行本地 Runtime、模型和外部工具的诊断检查。"""
+"""执行本地 CLI、Runtime、模型和外部工具的诊断检查。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from uuid import uuid4
 from pydantic import Field
 
 from osc_agent.application import build_model_gateway, build_skill_catalog
-from osc_agent.config import Settings
+from osc_agent.configuration import AgentSettings
 from osc_agent.runtime.gateway import ModelCompleted, ModelRequest
 from osc_agent.contracts import FrozenContractModel
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
@@ -37,7 +37,7 @@ class DiagnosticResult(FrozenContractModel):
 async def run_doctor(
     *,
     repository_root: Path,
-    settings: Settings,
+    settings: AgentSettings,
     local_only: bool,
 ) -> list[DiagnosticResult]:
     results: list[DiagnosticResult] = []
@@ -318,7 +318,7 @@ def _state_directory_check(repository_root: Path) -> DiagnosticResult:
                 pass
 
 
-def _safe_error(exc: Exception, settings: Settings) -> str:
+def _safe_error(exc: Exception, settings: AgentSettings) -> str:
     message = str(exc) or type(exc).__name__
     for secret in (settings.anthropic_api_key, os.environ.get("GITHUB_TOKEN")):
         if secret:

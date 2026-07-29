@@ -7,8 +7,8 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from osc_agent.cli import app
-from osc_agent.cli_session import run_conversation
+from osc_agent.cli.app import app
+from osc_agent.cli.session import run_conversation
 from osc_agent.runtime.events import Complete, RunCompleted, RuntimeEvent
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
 from osc_agent.runtime.session import SessionMetadata, SessionRuntimeState
@@ -90,15 +90,24 @@ def test_non_tty_run_requires_explicit_task(tmp_path: Path) -> None:
     assert "task is required when stdin is not a TTY" in result.output
 
 
+def test_local_cli_has_no_bot_deploy_or_architecture_commands() -> None:
+    runner = CliRunner()
+
+    for command in ("bot", "deploy", "architecture"):
+        result = runner.invoke(app, [command])
+        assert result.exit_code != 0
+        assert "No such command" in result.output
+
+
 def test_conversation_driver_reuses_session_for_follow_up(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     store = _store_with_session(tmp_path / "sessions")
     prompts = iter(["follow up", "/exit"])
-    monkeypatch.setattr("osc_agent.cli_session.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("osc_agent.cli.session.sys.stdin.isatty", lambda: True)
     monkeypatch.setattr(
-        "osc_agent.cli_session.typer.prompt",
+        "osc_agent.cli.session.typer.prompt",
         lambda *_args, **_kwargs: next(prompts),
     )
     submitted = []
@@ -154,10 +163,11 @@ def test_resume_latest_resolves_repository_scoped_session(
             return object()
 
     monkeypatch.setattr(
-        "osc_agent.cli.build_agent_application", lambda _config: AgentApplication()
+        "osc_agent.cli.app.build_cli_application",
+        lambda *_args, **_kwargs: AgentApplication(),
     )
     monkeypatch.setattr(
-        "osc_agent.cli.run_conversation",
+        "osc_agent.cli.app.run_conversation",
         lambda **kwargs: captured.update(kwargs),
     )
 

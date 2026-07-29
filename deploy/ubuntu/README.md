@@ -45,8 +45,8 @@ Control 与 Worker 的 primary group 都是 `osa-shared`，systemd `UMask=0007`�
 Webhook URL 为 `https://<public-host>/webhooks/github`。只订阅
 `issue_comment`，最小仓库权限为 Metadata read、Issues write、Pull requests write、Contents
 write；不要授予 Workflows 权限。部署后分别通过使用对应 `EnvironmentFile` 的临时
-systemd unit 或受控维护终端运行 `osc-agent bot doctor --control` 和
-`osc-agent bot doctor --worker`。Control Doctor 不访问 Docker；Worker Doctor 校验
+systemd unit 或受控维护终端运行 `osc-agent-bot doctor --control` 和
+`osc-agent-bot doctor --worker`。Control Doctor 不访问 Docker；Worker Doctor 校验
 `git`、`docker`、`bash`、`rg`、模型配置和本机镜像。不要用命令替换把 env 文件展开到 argv
 或 shell history；Doctor 本身不会输出凭据值。
 
@@ -79,10 +79,11 @@ Job，并在 `OSC_AGENT_BOT_SHUTDOWN_TIMEOUT_SECONDS` 内等待在途任务清�
 ## 运维命令
 
 ```bash
-osc-agent deploy doctor
-osc-agent deploy smoke-test
-osc-agent deploy archive-state
-osc-agent deploy reset-state --confirm
+osc-agent-bot doctor --control
+osc-agent-bot doctor --worker
+osc-agent-bot smoke-test
+osc-agent-bot archive-state
+osc-agent-bot reset-state --confirm
 ```
 
 当前状态模型的升级不迁移运行中的 Job。`upgrade.sh` 先让 Webhook 返回 503，同时停止 Control 与

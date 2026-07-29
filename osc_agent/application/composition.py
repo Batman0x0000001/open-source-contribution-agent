@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from osc_agent.application.models import AgentApplicationConfig
-from osc_agent.config import Settings
+from osc_agent.configuration import AgentSettings
 from osc_agent.workspaces.git_worktree import GitWorktreeManager
 from osc_agent.providers.anthropic import AnthropicModelGateway
 from osc_agent.completion.evidence import CompletionEvidenceStopHook
@@ -68,7 +68,7 @@ def build_session_store(repo_root: Path) -> FileSessionStore:
 
 
 def build_model_gateway(
-    settings: Settings,
+    settings: AgentSettings,
     model_gateway: ModelGateway | None = None,
 ) -> ModelGateway:
     if model_gateway is None and not settings.anthropic_api_key:

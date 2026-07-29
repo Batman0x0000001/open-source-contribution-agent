@@ -6,14 +6,15 @@ import asyncio
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from typer.testing import CliRunner
 
-from osc_agent.bot.config import BotSettings, BotWorkerSettings
+from osc_agent.bot.config import BotMaintenanceSettings, BotSettings, BotWorkerSettings
 from osc_agent.bot.doctor import run_bot_control_doctor, run_bot_worker_doctor
 from osc_agent.bot.models import BotJob, RepositoryBotCatalog, RepositoryBotConfig
 from osc_agent.bot.worker import BotWorker
-from osc_agent.cli import app
-from osc_agent.config import Settings
+from osc_agent.bot.entrypoint import app as bot_app
+from tests.settings_factory import make_agent_settings as Settings
 
 
 IMAGE_ID = "sha256:" + "d" * 64
@@ -61,6 +62,7 @@ def test_control_doctor_never_checks_docker(monkeypatch, tmp_path: Path) -> None
         repositories_config=_catalog_file(tmp_path),
         github_commit_name="OSA Bot",
         github_commit_email="bot@example.com",
+        model_id="model",
     )
 
     results = asyncio.run(run_bot_control_doctor(settings))
@@ -187,8 +189,46 @@ def test_plan_worker_never_resolves_docker_image(monkeypatch, tmp_path: Path) ->
 def test_bot_doctor_requires_exactly_one_role() -> None:
     runner = CliRunner()
 
-    assert runner.invoke(app, ["bot", "doctor"]).exit_code != 0
-    assert runner.invoke(app, ["bot", "doctor", "--control", "--worker"]).exit_code != 0
+    assert runner.invoke(bot_app, ["doctor"]).exit_code != 0
+    assert runner.invoke(bot_app, ["doctor", "--control", "--worker"]).exit_code != 0
+
+
+def test_bot_entrypoint_exposes_only_bot_service_and_operations() -> None:
+    result = CliRunner().invoke(bot_app, ["--help"])
+
+    assert result.exit_code == 0
+    for command in (
+        "control",
+        "worker",
+        "doctor",
+        "cleanup",
+        "schema-check",
+        "archive-state",
+        "reset-state",
+        "smoke-test",
+        "render-state-machine",
+    ):
+        assert command in result.output
+    assert "contribute" not in result.output
+
+
+def test_bot_maintenance_settings_do_not_require_github_credentials(tmp_path: Path) -> None:
+    settings = BotMaintenanceSettings(
+        database_path=tmp_path / "bot.sqlite3",
+        workspace_root=tmp_path / "workspaces",
+    )
+
+    assert settings.database_path == tmp_path / "bot.sqlite3"
+
+
+def test_bot_maintenance_settings_reject_database_inside_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspaces"
+
+    with pytest.raises(ValueError, match="outside"):
+        BotMaintenanceSettings(
+            database_path=workspace / "bot.sqlite3",
+            workspace_root=workspace,
+        )
 
 
 def test_python_worker_image_template_is_offline_ready() -> None:
@@ -218,6 +258,10 @@ def test_ubuntu_deployment_uses_accessible_maintenance_flag_and_valid_unit_secti
     assert "StartLimitBurst=5" in unit_section
     assert "StartLimitIntervalSec" not in service_section
     assert "StartLimitBurst" not in service_section
+    assert "osc-agent-bot schema-check" in control_unit
+    assert "osc-agent-bot control" in control_unit
+    assert "osc-agent deploy" not in upgrade + control_unit
+    assert "osc-agent bot" not in upgrade + control_unit
 
 
 def test_reset_state_sets_shared_runtime_permissions(monkeypatch, tmp_path: Path) -> None:
@@ -234,7 +278,7 @@ def test_reset_state_sets_shared_runtime_permissions(monkeypatch, tmp_path: Path
     monkeypatch.setenv("OSC_AGENT_BOT_DATABASE_PATH", str(database))
     monkeypatch.setenv("OSC_AGENT_BOT_WORKSPACE_ROOT", str(workspace))
 
-    result = CliRunner().invoke(app, ["deploy", "reset-state", "--confirm"])
+    result = CliRunner().invoke(bot_app, ["reset-state", "--confirm"])
 
     assert result.exit_code == 0, result.output
     assert (database.resolve(), 0o660) in chmod_calls

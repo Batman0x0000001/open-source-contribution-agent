@@ -8,10 +8,9 @@ from time import monotonic
 from typing import Literal
 from uuid import uuid4
 
-from osc_agent.application import (
-    AgentApplicationConfig,
-    AgentProfile,
-    build_agent_application,
+from osc_agent.bot.application_factory import (
+    build_implementation_application,
+    build_plan_application,
 )
 from osc_agent.bot.config import BotWorkerSettings
 from osc_agent.bot.agent_inputs import (
@@ -23,25 +22,25 @@ from osc_agent.bot.models import (
     RepositoryBotCatalog,
     validate_implementation_approval,
 )
-from osc_agent.bot.policy import BotPermissionPolicy, BotRepositoryPolicyHook, ConfiguredValidationStopHook
 from osc_agent.bot.sandbox import DockerProcessRunner, resolve_image_id
 from osc_agent.bot.store import BotStore, SqliteSessionStore
-from osc_agent.bot.artifact_tools import SubmitDeliveryDraftTool, SubmitIssuePlanTool
-from osc_agent.config import Settings
+from osc_agent.configuration import AgentSettings
 from osc_agent.runtime.gateway import ModelGateway
 from osc_agent.runtime.events import (
     RunCompleted,
     RunStopped,
 )
-from osc_agent.subagents.builtins import build_explore_subagent
-from osc_agent.processes.runner import DisabledProcessRunner
+
+
+class BotModelContractMismatch(ValueError):
+    """执行合同绑定的模型与 Worker 实际模型不一致。"""
 
 
 class BotWorker:
     def __init__(
         self,
         *,
-        settings: Settings,
+        settings: AgentSettings,
         bot_settings: BotWorkerSettings,
         catalog: RepositoryBotCatalog,
         store: BotStore,
@@ -73,6 +72,30 @@ class BotWorker:
                 if resolved_image_id != job.image_id:
                     raise ValueError("configured immutable Docker image does not match the local image")
                 await self._run_implementation(job)
+        except BotModelContractMismatch as exc:
+            current = self.store.get_job(job.job_id)
+            if current is not None and current.status in {"running_plan", "running_implementation"}:
+                retry_phase = "plan" if current.status == "running_plan" else "implementation"
+                retrying = self.store.transition_with_outbox(
+                    job_id=current.job_id,
+                    expected_version=current.version,
+                    status="retry_wait",
+                    retry_phase=retry_phase,
+                    event=self._comment_event(
+                        current.job_id,
+                        "model-contract-mismatch",
+                        "The Bot job cannot run because its approved model contract no longer matches the Worker configuration.",
+                    ),
+                    error_code="BOT_MODEL_CONTRACT_MISMATCH",
+                    error_message=str(exc)[:1_000],
+                    lease_owner=None,
+                    lease_until=None,
+                )
+                self.store.transition(
+                    job_id=retrying.job_id,
+                    expected_version=retrying.version,
+                    status="dead_letter",
+                )
         except Exception as exc:
             current = self.store.get_job(job.job_id)
             if current is not None and current.status not in {"cancelled", "completed", "stale"}:
@@ -112,38 +135,16 @@ class BotWorker:
             await self._finish_plan(job.job_id, *existing_artifact)
             return
         session_id = job.plan_session_id or str(uuid4())
-        app = build_agent_application(
-            AgentApplicationConfig(
-                settings=self.settings,
-                repository_root=workspace,
-                profile=AgentProfile(
-                    profile_id="bot_plan",
-                    system_prompt="You are the read-only planning component of an authenticated GitHub App job.",
-                    allowed_tools=contract.plan_allowed_tools,
-                    allowed_initial_skills=frozenset({contract.planning_skill_name}),
-                    required_evidence=frozenset({"issue_plan"}),
-                ),
-                model_gateway=self.model_gateway,
-                session_store=self.sessions,
-                state_root=self.bot_settings.workspace_root.parent / "runtime-state",
-                process_runner=DisabledProcessRunner(),
-                permission_policy=BotPermissionPolicy(implementation_approved=False),
-                extra_tools=(
-                    SubmitIssuePlanTool(
-                        self.store,
-                        job_id=job.job_id,
-                        base_sha=job.base_sha,
-                        execution_contract_hash=job.execution_contract_hash,
-                    ),
-                ),
-                pre_tool_hooks=(BotRepositoryPolicyHook(config),),
-                subagent_registrations=(
-                    build_explore_subagent(
-                        model=self.settings.model_id or "",
-                        config=self.settings.runtime.agents.explore.to_query_config(),
-                    ),
-                ),
-            )
+        app = build_plan_application(
+            settings=self.settings,
+            bot_settings=self.bot_settings,
+            store=self.store,
+            sessions=self.sessions,
+            model_gateway=self.model_gateway,
+            job=job,
+            repository_config=config,
+            contract=contract,
+            workspace=workspace,
         )
         conversation = app.open_session(session_id)
         if job.plan_session_id is None:
@@ -219,57 +220,20 @@ class BotWorker:
                 job.job_id, reason
             ),
         )
-        system = (
-            "This is an approved GitHub App implementation job. Repository writes and process execution are allowed only "
-            "through the provided tools; process commands run in a network-disabled Docker sandbox. Never ask questions, "
-            "enter a worktree, commit, push, or access GitHub. Run every configured validation command exactly as written "
-            "after the final modification:\n- "
-            + "\n- ".join(config.validation_commands)
-        )
-        app = build_agent_application(
-            AgentApplicationConfig(
-                settings=self.settings,
-                repository_root=workspace,
-                profile=AgentProfile(
-                    profile_id="bot_implementation",
-                    system_prompt=system,
-                    allowed_tools=contract.implementation_allowed_tools,
-                    allowed_initial_skills=frozenset(
-                        {contract.implementation_skill_name}
-                    ),
-                    required_evidence=frozenset(
-                        {
-                            "successful_test",
-                            "independent_verification",
-                            "git_change_snapshot",
-                            "delivery_draft",
-                        }
-                    ),
-                ),
-                model_gateway=self.model_gateway,
-                session_store=self.sessions,
-                state_root=self.bot_settings.workspace_root.parent / "runtime-state",
-                process_runner=runner,
-                permission_policy=BotPermissionPolicy(implementation_approved=True),
-                extra_tools=(
-                    SubmitDeliveryDraftTool(
-                        self.store,
-                        job_id=job.job_id,
-                        issue_number=job.issue_number,
-                        base_sha=job.base_sha,
-                        execution_contract_hash=job.execution_contract_hash,
-                    ),
-                ),
-                pre_tool_hooks=(
-                    BotRepositoryPolicyHook(
-                        config,
-                        on_violation=lambda reason: self._terminate_repository_policy(
-                            job.job_id, reason
-                        ),
-                    ),
-                ),
-                stop_hooks=(ConfiguredValidationStopHook(config.validation_commands),),
-            )
+        app = build_implementation_application(
+            settings=self.settings,
+            bot_settings=self.bot_settings,
+            store=self.store,
+            sessions=self.sessions,
+            model_gateway=self.model_gateway,
+            job=job,
+            repository_config=config,
+            contract=contract,
+            workspace=workspace,
+            process_runner=runner,
+            on_policy_violation=lambda reason: self._terminate_repository_policy(
+                job.job_id, reason
+            ),
         )
         conversation = app.open_session(session_id)
         if job.implementation_session_id is None:
@@ -393,6 +357,10 @@ class BotWorker:
             or contract.issue_input_hash != job.issue_input_hash
         ):
             raise ValueError("Job does not match its execution contract")
+        if not self.settings.model_id or contract.model_id != self.settings.model_id:
+            raise BotModelContractMismatch(
+                "execution contract model does not match the configured Worker model"
+            )
         config = type(configured)(
             enabled=True,
             image=contract.image_id,
