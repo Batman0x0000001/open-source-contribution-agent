@@ -6,30 +6,28 @@ import asyncio
 from pathlib import Path, PurePosixPath
 import shutil
 
-from osc_agent.bot.config import BotSettings
-from osc_agent.bot.github_app import GitHubControlClient, basic_git_auth_header
-from osc_agent.bot.models import (
-    BotJob,
-    OutboxEvent,
-    RepositoryBotConfig,
-    validate_implementation_approval,
-)
-from osc_agent.bot.policy import _matches
-from osc_agent.bot.store import BotStore
+from osc_agent.bot.config import BotControlSettings
+from osc_agent.bot.control.github import GitHubControlClient, basic_git_auth_header
+from osc_agent.bot.domain.events import OutboxEvent
+from osc_agent.bot.domain.execution import validate_implementation_approval
+from osc_agent.bot.domain.jobs import BotJob
+from osc_agent.bot.domain.repositories import RepositoryBotConfig
+from osc_agent.bot.persistence.session_store import SqliteSessionStore
+from osc_agent.bot.persistence.store import BotStore
+from osc_agent.bot.validation import ConfiguredValidationStopHook
 from osc_agent.processes.policy import build_subprocess_environment
 from osc_agent.workspaces.git_state import git_snapshot, git_workspace_fingerprint
-from osc_agent.bot.policy import ConfiguredValidationStopHook
-from osc_agent.bot.store import SqliteSessionStore
 from osc_agent.completion.evidence import CompletionEvidenceStopHook
 from osc_agent.completion.models import CompletionRequirements
 from osc_agent.runtime.hooks import StopHookPayload
 from osc_agent.runtime.tool_models import ToolUseContext
+from osc_agent.workspaces.path_policy import repo_path_matches
 
 
 class TrustedPublisher:
     """唯一持有远程写权限的交付组件；不执行仓库代码。"""
 
-    def __init__(self, *, settings: BotSettings, store: BotStore, github: GitHubControlClient) -> None:
+    def __init__(self, *, settings: BotControlSettings, store: BotStore, github: GitHubControlClient) -> None:
         self.settings = settings
         self.store = store
         self.github = github
@@ -93,7 +91,7 @@ class TrustedPublisher:
             path = PurePosixPath(value.replace("\\", "/"))
             if path.is_absolute() or ".." in path.parts:
                 raise ValueError(f"publisher rejected invalid changed path: {value}")
-            if any(_matches(path, pattern) for pattern in config.denied_paths):
+            if any(repo_path_matches(path.as_posix(), pattern) for pattern in config.denied_paths):
                 raise ValueError(f"publisher rejected protected path: {value}")
             candidate = workspace.joinpath(*path.parts)
             if candidate.exists() and (

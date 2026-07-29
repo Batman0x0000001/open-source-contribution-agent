@@ -6,11 +6,11 @@ import asyncio
 from dataclasses import dataclass
 from time import monotonic
 
-from osc_agent.bot.github_app import GitHubApiError, GitHubControlClient
-from osc_agent.bot.models import RepositoryBotCatalog
-from osc_agent.bot.publisher import TrustedPublisher
-from osc_agent.bot.store import BotStore
-from osc_agent.bot.job_workspace import BotJobWorkspacePreparer
+from osc_agent.bot.control.github import GitHubApiError, GitHubControlClient
+from osc_agent.bot.control.job_workspace import BotJobWorkspacePreparer
+from osc_agent.bot.control.publisher import TrustedPublisher
+from osc_agent.bot.domain.repositories import RepositoryBotCatalog
+from osc_agent.bot.persistence.store import BotStore
 from osc_agent.bot.observability import OUTBOX_HEARTBEAT, OUTBOX_ITERATIONS, OUTBOX_UP
 
 

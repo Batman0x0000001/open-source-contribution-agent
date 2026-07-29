@@ -11,12 +11,12 @@ import sys
 from time import monotonic
 from typing import Callable
 
-from osc_agent.bot.models import RepositoryBotConfig
+from osc_agent.bot.domain.repositories import RepositoryBotConfig
 from osc_agent.runtime.tool_models import ToolUseContext
 from osc_agent.processes.contracts import CommandResult, ProcessRequest, ProcessRunner
 from osc_agent.processes.policy import build_subprocess_environment
 from osc_agent.workspaces.git_state import git_snapshot, git_workspace_fingerprint
-from osc_agent.bot.policy import _matches
+from osc_agent.workspaces.path_policy import repo_path_matches
 from osc_agent.bot.observability import log_event
 
 
@@ -142,7 +142,11 @@ class DockerProcessRunner(ProcessRunner):
         )
         files = [PurePosixPath(str(item["path"]).replace("\\", "/")) for item in snapshot["files"]]
         violation = next(
-            (path.as_posix() for path in files if any(_matches(path, pattern) for pattern in self.config.denied_paths)),
+            (
+                path.as_posix()
+                for path in files
+                if any(repo_path_matches(path.as_posix(), pattern) for pattern in self.config.denied_paths)
+            ),
             None,
         )
         if violation is not None:

@@ -15,11 +15,11 @@ app = typer.Typer(help="Run and maintain the GitHub App Bot services.")
 def control() -> None:
     """Run the authenticated GitHub webhook Control service."""
 
-    from osc_agent.bot.config import BotSettings
-    from osc_agent.bot.control_service import run_control_forever
+    from osc_agent.bot.config import BotControlSettings
+    from osc_agent.bot.control.service import run_control_forever
 
     try:
-        asyncio.run(run_control_forever(BotSettings()))
+        asyncio.run(run_control_forever(BotControlSettings()))
     except (ValidationError, ValueError, ImportError) as exc:
         _configuration_error(exc)
 
@@ -29,7 +29,7 @@ def worker() -> None:
     """Run the trusted Agent Worker without GitHub App credentials."""
 
     from osc_agent.bot.config import BotWorkerSettings
-    from osc_agent.bot.worker_service import run_worker_forever
+    from osc_agent.bot.worker.service import run_worker_forever
 
     try:
         asyncio.run(run_worker_forever(BotWorkerSettings()))
@@ -54,16 +54,20 @@ def doctor(
 
     if control_process == worker_process:
         raise typer.BadParameter("select exactly one of --control or --worker")
-    from osc_agent.bot.config import BotSettings, BotWorkerSettings
-    from osc_agent.bot.doctor import run_bot_control_doctor, run_bot_worker_doctor
-    from osc_agent.configuration import load_agent_settings
-
     try:
-        results = (
-            asyncio.run(run_bot_control_doctor(BotSettings()))
-            if control_process
-            else asyncio.run(run_bot_worker_doctor(BotWorkerSettings(), load_agent_settings()))
-        )
+        if control_process:
+            from osc_agent.bot.config import BotControlSettings
+            from osc_agent.bot.control.doctor import run_bot_control_doctor
+
+            results = asyncio.run(run_bot_control_doctor(BotControlSettings()))
+        else:
+            from osc_agent.bot.config import BotWorkerSettings
+            from osc_agent.bot.worker.doctor import run_bot_worker_doctor
+            from osc_agent.configuration import load_agent_settings
+
+            results = asyncio.run(
+                run_bot_worker_doctor(BotWorkerSettings(), load_agent_settings())
+            )
     except (ValidationError, ValueError, ImportError) as exc:
         _configuration_error(exc)
         return
@@ -74,8 +78,8 @@ def doctor(
 def cleanup() -> None:
     """Remove expired terminal Job workspaces and audit records."""
 
-    from osc_agent.bot.cleanup import cleanup_bot_state
     from osc_agent.bot.config import BotMaintenanceSettings
+    from osc_agent.bot.maintenance import cleanup_bot_state
 
     try:
         workspaces, records = cleanup_bot_state(BotMaintenanceSettings())
@@ -90,7 +94,7 @@ def schema_check() -> None:
     """Validate the Bot SQLite schema epoch."""
 
     from osc_agent.bot.config import BotMaintenanceSettings
-    from osc_agent.bot.operations import check_schema
+    from osc_agent.bot.maintenance import check_schema
 
     try:
         check_schema(BotMaintenanceSettings())
@@ -105,7 +109,7 @@ def archive() -> None:
     """Archive Bot SQLite and workspace state for audit."""
 
     from osc_agent.bot.config import BotMaintenanceSettings
-    from osc_agent.bot.operations import archive_state
+    from osc_agent.bot.maintenance import archive_state
 
     try:
         destination = archive_state(BotMaintenanceSettings())
@@ -124,7 +128,7 @@ def reset(
     if not confirm:
         raise typer.BadParameter("--confirm is required")
     from osc_agent.bot.config import BotMaintenanceSettings
-    from osc_agent.bot.operations import reset_state
+    from osc_agent.bot.maintenance import reset_state
 
     try:
         reset_state(BotMaintenanceSettings())
@@ -139,7 +143,7 @@ def smoke_test() -> None:
     """Check liveness, readiness, and Prometheus without external writes."""
 
     from osc_agent.bot.config import BotMaintenanceSettings
-    from osc_agent.bot.operations import check_service_endpoints
+    from osc_agent.bot.maintenance import check_service_endpoints
 
     try:
         endpoints = check_service_endpoints(BotMaintenanceSettings())
@@ -156,7 +160,7 @@ def render_state_machine(
 ) -> None:
     """Render or verify the Bot Job state-machine document."""
 
-    from osc_agent.bot.operations import render_state_machine as render_state_machine_document
+    from osc_agent.bot.maintenance import render_state_machine as render_state_machine_document
 
     try:
         path = render_state_machine_document(check=check)

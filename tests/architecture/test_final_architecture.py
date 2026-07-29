@@ -34,6 +34,26 @@ def test_old_execution_architecture_is_absent() -> None:
         PACKAGE_ROOT / "config.py",
         PACKAGE_ROOT / "runtime_config.py",
         PACKAGE_ROOT / "bot" / "service_runner.py",
+        PACKAGE_ROOT / "bot" / "models.py",
+        PACKAGE_ROOT / "bot" / "store.py",
+        PACKAGE_ROOT / "bot" / "state_machine.py",
+        PACKAGE_ROOT / "bot" / "control.py",
+        PACKAGE_ROOT / "bot" / "worker.py",
+        PACKAGE_ROOT / "bot" / "doctor.py",
+        PACKAGE_ROOT / "bot" / "sandbox.py",
+        PACKAGE_ROOT / "bot" / "policy.py",
+        PACKAGE_ROOT / "bot" / "application_factory.py",
+        PACKAGE_ROOT / "bot" / "agent_inputs.py",
+        PACKAGE_ROOT / "bot" / "artifact_tools.py",
+        PACKAGE_ROOT / "bot" / "control_service.py",
+        PACKAGE_ROOT / "bot" / "worker_service.py",
+        PACKAGE_ROOT / "bot" / "github_app.py",
+        PACKAGE_ROOT / "bot" / "job_workspace.py",
+        PACKAGE_ROOT / "bot" / "outbox.py",
+        PACKAGE_ROOT / "bot" / "publisher.py",
+        PACKAGE_ROOT / "bot" / "webhook.py",
+        PACKAGE_ROOT / "bot" / "cleanup.py",
+        PACKAGE_ROOT / "bot" / "operations.py",
         PACKAGE_ROOT / "agents",
         PACKAGE_ROOT / "runtime" / "models.py",
         PACKAGE_ROOT / "runtime" / "completion.py",
@@ -55,13 +75,19 @@ def test_query_and_tool_execution_have_one_authoritative_definition() -> None:
     assert _class_definitions("ToolExecutor") == [PACKAGE_ROOT / "runtime" / "tool_execution.py"]
     assert _class_definitions("SkillPreparer") == [PACKAGE_ROOT / "skills" / "preparer.py"]
     assert not _class_definitions("SkillExecutor")
+    assert _class_definitions("BotStore") == [
+        PACKAGE_ROOT / "bot" / "persistence" / "store.py"
+    ]
+    assert _class_definitions("SqliteSessionStore") == [
+        PACKAGE_ROOT / "bot" / "persistence" / "session_store.py"
+    ]
 
 
 def test_workspace_capabilities_have_explicit_names() -> None:
     expected = [
         PACKAGE_ROOT / "workspaces" / "git_worktree.py",
         PACKAGE_ROOT / "tools" / "worktree.py",
-        PACKAGE_ROOT / "bot" / "job_workspace.py",
+        PACKAGE_ROOT / "bot" / "control" / "job_workspace.py",
     ]
     forbidden = [
         PACKAGE_ROOT / "isolation" / "worktree.py",

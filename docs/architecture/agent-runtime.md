@@ -51,6 +51,21 @@ CLI 不得导入 Bot。Control 启动路径不得加载 Worker、Application、�
 Runner。CLI 与 Worker 共用的 `AgentSettings` 由 `configuration/` 显式加载；GitHub App
 凭据只存在于 Bot Control 配置中。
 
+Bot 内部按信任边界阅读：
+
+```text
+bot/entrypoint.py + bot/config.py
+  → bot/domain
+  → bot/persistence
+  → bot/control 或 bot/worker
+  → application → runtime  # 仅 Worker
+```
+
+`domain/` 保存跨进程合同，`persistence/` 保存 SQLite 权威状态；`control/` 持有 GitHub
+凭据、Webhook、Outbox 和唯一 Publisher，`worker/` 持有 Conversation、Artifact Tool 与
+Docker ProcessRunner。Control 不得导入 Worker、Application 或模型 Provider，Worker 不得
+导入 GitHub App Client、Webhook、Outbox Dispatcher 或 Publisher。
+
 ## Query
 
 Query 是异步生成器，而不是只返回最终文本的同步函数。它负责推进一次 Agent turn，并持续输出模型流、Tool 事件、上下文事件和终态。

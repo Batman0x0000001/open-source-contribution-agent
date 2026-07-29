@@ -7,8 +7,8 @@ import signal
 from typing import Literal
 
 from osc_agent.bot.config import BotWorkerSettings, load_repository_catalog
-from osc_agent.bot.store import BotStore
-from osc_agent.bot.worker import BotWorker
+from osc_agent.bot.persistence.store import BotStore
+from osc_agent.bot.worker.coordinator import BotWorker
 from osc_agent.configuration import load_agent_settings
 
 

@@ -5,56 +5,25 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
-import re
 from uuid import UUID, uuid4
 
-from osc_agent.bot.config import BotSettings
-from osc_agent.bot.github_app import GitHubControlClient
-from osc_agent.bot.models import (
-    BotApproval,
-    BotJob,
-    OutboxEvent,
-    RepositoryBotCatalog,
-    RepositoryBotConfig,
-    ExecutionContract,
-    WebhookCommand,
-    plan_evidence_hash,
-)
-from osc_agent.bot.store import BotStore
+from osc_agent.bot.config import BotControlSettings
+from osc_agent.bot.control.commands import parse_issue_comment, parse_webhook_command
+from osc_agent.bot.control.github import GitHubControlClient
+from osc_agent.bot.control.models import IssueCommentContext
+from osc_agent.bot.domain.events import OutboxEvent
+from osc_agent.bot.domain.execution import BotApproval, ExecutionContract, plan_evidence_hash
+from osc_agent.bot.domain.jobs import BotJob
+from osc_agent.bot.domain.repositories import RepositoryBotCatalog, RepositoryBotConfig
+from osc_agent.bot.persistence.store import BotStore
 
 
 AUTHORIZED_PERMISSIONS = {"write", "maintain", "admin"}
-_JOB_ID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-_IMPLEMENT = re.compile(rf"^/osa implement ({_JOB_ID})$")
-_CANCEL = re.compile(rf"^/osa cancel ({_JOB_ID})$")
-
-
-def parse_webhook_command(body: str) -> WebhookCommand | None:
-    command = body.strip()
-    if command == "/osa plan":
-        return WebhookCommand(action="plan")
-    if command == "/osa implement":
-        return WebhookCommand(action="implement")
-    if match := _IMPLEMENT.fullmatch(command):
-        return WebhookCommand(action="implement", job_id=match.group(1))
-    if command == "/osa cancel":
-        return WebhookCommand(action="cancel")
-    if match := _CANCEL.fullmatch(command):
-        return WebhookCommand(action="cancel", job_id=match.group(1))
-    if command == "/osa status":
-        return WebhookCommand(action="status")
-    if command == "/osa retry":
-        return WebhookCommand(action="retry")
-    if command.startswith("/osa reply ") and command[11:].strip():
-        return WebhookCommand(action="reply", message=command[11:].strip())
-    return None
-
-
 class BotControlService:
     def __init__(
         self,
         *,
-        settings: BotSettings,
+        settings: BotControlSettings,
         catalog: RepositoryBotCatalog,
         store: BotStore,
         github: GitHubControlClient,
@@ -75,16 +44,16 @@ class BotControlService:
             login = sender.get("login")
             if sender.get("type") == "Bot" or (isinstance(login, str) and login.endswith("[bot]")):
                 return "ignored"
-        parsed = _parse_issue_comment(payload)
-        command = parse_webhook_command(parsed["body"])
+        parsed = parse_issue_comment(payload)
+        command = parse_webhook_command(parsed.body)
         if command is None:
             return "ignored"
-        repository = parsed["repository"]
+        repository = parsed.repository
         config = self.catalog.repositories.get(repository)
         if config is None or not config.enabled:
             raise ValueError("repository is not enabled for this GitHub App bot")
         permission = await self.github.collaborator_permission(
-            parsed["installation_id"], repository, parsed["actor_login"]
+            parsed.installation_id, repository, parsed.actor_login
         )
         if permission not in AUTHORIZED_PERMISSIONS:
             raise PermissionError("comment author does not have repository write permission")
@@ -95,26 +64,26 @@ class BotControlService:
         job = (
             self.store.get_job(command.job_id)
             if command.job_id is not None
-            else self.store.get_active_job(int(parsed["repository_id"]), int(parsed["issue_number"]))
+            else self.store.get_active_job(int(parsed.repository_id), int(parsed.issue_number))
         )
-        if job is None or job.repository_full_name != repository or job.issue_number != parsed["issue_number"]:
+        if job is None or job.repository_full_name != repository or job.issue_number != parsed.issue_number:
             raise ValueError("job does not belong to this repository issue")
         if command.action == "implement":
             return await self._implement(job, parsed)
         if command.action == "reply":
             assert command.message is not None
-            source_id = f"github:{parsed['comment_id']}"
+            source_id = f"github:{parsed.comment_id}"
             self.store.enqueue_plan_reply(
                 source_id=source_id,
                 job=job,
                 body=command.message,
                 prepare_event=OutboxEvent(
                     event_id=str(uuid4()), job_id=job.job_id, kind="prepare",
-                    idempotency_key=f"prepare:{job.job_id}:plan:{parsed['comment_id']}",
+                    idempotency_key=f"prepare:{job.job_id}:plan:{parsed.comment_id}",
                     payload={"phase": "plan"},
                 ),
                 acknowledgement_event=self._comment_event(
-                    job, f"reply-received:{parsed['comment_id']}",
+                    job, f"reply-received:{parsed.comment_id}",
                     "Plan reply received. The original planning Session will resume.",
                 ),
             )
@@ -134,21 +103,21 @@ class BotControlService:
             return job.job_id
         return self._cancel(job)
 
-    async def _plan(self, parsed: dict[str, object], config: RepositoryBotConfig) -> str:
-        existing = self.store.get_active_job(int(parsed["repository_id"]), int(parsed["issue_number"]))
+    async def _plan(self, parsed: IssueCommentContext, config: RepositoryBotConfig) -> str:
+        existing = self.store.get_active_job(int(parsed.repository_id), int(parsed.issue_number))
         if existing is not None:
             return existing.job_id
         branch, base_sha = await self.github.repository_head(
-            int(parsed["installation_id"]), str(parsed["repository"])
+            int(parsed.installation_id), str(parsed.repository)
         )
         issue_evidence = await self.github.issue(
-            int(parsed["installation_id"]), str(parsed["repository"]), int(parsed["issue_number"])
+            int(parsed.installation_id), str(parsed.repository), int(parsed.issue_number)
         )
         issue_hash = sha256(json.dumps(issue_evidence, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         contract = ExecutionContract(
-            repository_id=int(parsed["repository_id"]), repository_full_name=str(parsed["repository"]),
-            installation_id=int(parsed["installation_id"]), base_branch=branch, base_sha=base_sha,
-            issue_number=int(parsed["issue_number"]), issue_input_hash=issue_hash, model_id=self.settings.model_id,
+            repository_id=int(parsed.repository_id), repository_full_name=str(parsed.repository),
+            installation_id=int(parsed.installation_id), base_branch=branch, base_sha=base_sha,
+            issue_number=int(parsed.issue_number), issue_input_hash=issue_hash, model_id=self.settings.model_id,
             plan_allowed_tools=frozenset({"read_file","glob","grep","git_status","git_diff","git_log","read_tool_result","agent","submit_issue_plan"}),
             implementation_allowed_tools=frozenset({"read_file","glob","grep","bash","git_status","git_diff","git_log","read_skill_resource","write_file","edit_file","read_tool_result","agent","submit_delivery_draft"}),
             validation_commands=config.validation_commands, denied_paths=config.denied_paths,
@@ -160,11 +129,11 @@ class BotControlService:
         self.store.save_execution_contract(contract)
         job = BotJob(
             job_id=str(uuid4()),
-            repository_id=int(parsed["repository_id"]),
-            repository_full_name=str(parsed["repository"]),
-            installation_id=int(parsed["installation_id"]),
-            issue_number=int(parsed["issue_number"]),
-            issue_url=str(parsed["issue_url"]),
+            repository_id=int(parsed.repository_id),
+            repository_full_name=str(parsed.repository),
+            installation_id=int(parsed.installation_id),
+            issue_number=int(parsed.issue_number),
+            issue_url=str(parsed.issue_url),
             base_branch=branch, base_sha=base_sha, issue_input_hash=issue_hash,
             execution_contract_hash=contract.contract_hash, image_id=config.image,
             status="queued_plan",
@@ -185,7 +154,7 @@ class BotControlService:
         )
         return job.job_id
 
-    async def _implement(self, job: BotJob, parsed: dict[str, object]) -> str:
+    async def _implement(self, job: BotJob, parsed: IssueCommentContext) -> str:
         if job.status != "waiting_approval" or job.plan_artifact_id is None:
             raise ValueError("job is not waiting for implementation approval")
         _branch, current_sha = await self.github.repository_head(job.installation_id, job.repository_full_name)
@@ -215,8 +184,8 @@ class BotControlService:
         approval = BotApproval(
             approval_id=str(uuid4()),
             job_id=job.job_id,
-            actor_id=int(parsed["actor_id"]),
-            actor_login=str(parsed["actor_login"]),
+            actor_id=int(parsed.actor_id),
+            actor_login=str(parsed.actor_login),
             evidence_hash=evidence_hash,
             execution_contract_hash=job.execution_contract_hash,
             base_sha=job.base_sha,
@@ -264,40 +233,3 @@ class BotControlService:
             idempotency_key=f"comment:{job.job_id}:{suffix}:{job.version}", payload={"body": body})
 
 
-def _parse_issue_comment(payload: dict[str, object]) -> dict[str, object]:
-    if payload.get("action") != "created":
-        raise ValueError("only newly created issue comments are supported")
-    installation = payload.get("installation")
-    repository = payload.get("repository")
-    issue = payload.get("issue")
-    comment = payload.get("comment")
-    sender = payload.get("sender")
-    if not all(isinstance(item, dict) for item in (installation, repository, issue, comment, sender)):
-        raise ValueError("GitHub issue_comment payload is incomplete")
-    assert isinstance(installation, dict) and isinstance(repository, dict)
-    assert isinstance(issue, dict) and isinstance(comment, dict) and isinstance(sender, dict)
-    if issue.get("pull_request") is not None:
-        raise ValueError("pull request comments are not supported")
-    login = sender.get("login")
-    if sender.get("type") == "Bot" or (isinstance(login, str) and login.endswith("[bot]")):
-        raise ValueError("bot comments are ignored")
-    values = {
-        "installation_id": installation.get("id"),
-        "repository_id": repository.get("id"),
-        "repository": repository.get("full_name"),
-        "issue_number": issue.get("number"),
-        "issue_url": issue.get("html_url"),
-        "body": comment.get("body"),
-        "actor_id": sender.get("id"),
-        "actor_login": login,
-        "comment_id": comment.get("id"),
-    }
-    if not isinstance(values["installation_id"], int) or not isinstance(values["repository_id"], int):
-        raise ValueError("GitHub installation or repository id is invalid")
-    if not isinstance(values["issue_number"], int) or not isinstance(values["actor_id"], int):
-        raise ValueError("GitHub issue or actor id is invalid")
-    if not isinstance(values["comment_id"], int):
-        raise ValueError("GitHub comment id is invalid")
-    if any(not isinstance(values[key], str) or not values[key] for key in ("repository", "issue_url", "body", "actor_login")):
-        raise ValueError("GitHub issue_comment text fields are invalid")
-    return values

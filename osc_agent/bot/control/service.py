@@ -4,18 +4,25 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Any
 
-from osc_agent.bot.config import BotSettings, load_repository_catalog
-from osc_agent.bot.control import BotControlService
-from osc_agent.bot.github_app import GitHubAppClient
-from osc_agent.bot.outbox import DispatcherHealth, OutboxDispatcher, OutboxProcessor
-from osc_agent.bot.publisher import TrustedPublisher
-from osc_agent.bot.store import BotStore
-from osc_agent.bot.webhook import create_webhook_app
-from osc_agent.bot.job_workspace import BotJobWorkspacePreparer
+from osc_agent.bot.config import BotControlSettings, load_repository_catalog
+from osc_agent.bot.control.github import GitHubAppClient
+from osc_agent.bot.control.handler import BotControlService
+from osc_agent.bot.control.job_workspace import BotJobWorkspacePreparer
+from osc_agent.bot.control.outbox import DispatcherHealth, OutboxDispatcher, OutboxProcessor
+from osc_agent.bot.control.publisher import TrustedPublisher
+from osc_agent.bot.control.webhook import create_webhook_app
+from osc_agent.bot.persistence.store import BotStore
 
 
-def build_control_components(settings: BotSettings):
+@dataclass(frozen=True)
+class ControlComponents:
+    app: Any
+    dispatcher: OutboxDispatcher
+
+
+def build_control_components(settings: BotControlSettings) -> ControlComponents:
     catalog = load_repository_catalog(settings.repositories_config)
     store = BotStore(settings.database_path)
     store.initialize()
@@ -47,29 +54,27 @@ def build_control_components(settings: BotSettings):
         control=control,
         dispatcher_health=health,
     )
-    return app, dispatcher
-
-
-def build_control_app(settings: BotSettings):
-    """Compatibility helper for ASGI inspection; production uses run_control_forever."""
-    return build_control_components(settings)[0]
+    return ControlComponents(app=app, dispatcher=dispatcher)
 
 
 @dataclass
 class ControlSupervisor:
-    settings: BotSettings
+    settings: BotControlSettings
 
     async def run(self) -> None:
         import uvicorn
 
-        app, dispatcher = build_control_components(self.settings)
+        components = build_control_components(self.settings)
         shutdown = asyncio.Event()
         server = uvicorn.Server(uvicorn.Config(
-            app, host=self.settings.bind_host, port=self.settings.bind_port, log_config=None
+            components.app,
+            host=self.settings.bind_host,
+            port=self.settings.bind_port,
+            log_config=None,
         ))
         web_task = asyncio.create_task(server.serve(), name="control-http")
         dispatcher_task = asyncio.create_task(
-            dispatcher.run_forever(shutdown), name="control-outbox"
+            components.dispatcher.run_forever(shutdown), name="control-outbox"
         )
         tasks = {web_task, dispatcher_task}
         try:
@@ -92,6 +97,5 @@ class ControlSupervisor:
             await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def run_control_forever(settings: BotSettings) -> None:
+async def run_control_forever(settings: BotControlSettings) -> None:
     await ControlSupervisor(settings).run()
-

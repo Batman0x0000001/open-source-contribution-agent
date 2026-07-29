@@ -1,4 +1,4 @@
-"""使用 SQLite 持久化 Bot 作业、会话、事件和 Outbox 数据。"""
+"""使用 SQLite 持久化 Bot 作业、审批、Artifact 和 Outbox 数据。"""
 
 from __future__ import annotations
 
@@ -10,131 +10,19 @@ import sqlite3
 from typing import Iterator, Literal
 from uuid import uuid4
 
-from osc_agent.bot.models import (
-    BotApproval,
-    BotJob,
-    DeliveryDraft,
-    IssuePlanArtifact,
-    JobStatus,
-    OutboxEvent,
-    ExecutionContract,
-    utc_now,
+from osc_agent.bot.domain.artifacts import DeliveryDraft, IssuePlanArtifact
+from osc_agent.bot.domain.events import OutboxEvent
+from osc_agent.bot.domain.execution import BotApproval, ExecutionContract
+from osc_agent.bot.domain.jobs import BotJob, JobStatus, utc_now
+from osc_agent.bot.domain.state_machine import BotJobStateMachine
+from osc_agent.bot.persistence.schema import (
+    APPLICATION_VERSION,
+    SCHEMA,
+    SCHEMA_EPOCH,
+    SCHEMA_MIGRATION_VERSION,
+    STATE_MODEL_REVISION,
 )
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
-from osc_agent.runtime.session import (
-    SessionMetadata,
-    SessionOverview,
-    SessionRuntimeState,
-    SessionSnapshot,
-)
-from osc_agent.runtime.session_store import SessionStore
-from osc_agent.bot.state_machine import BotJobStateMachine
-
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS schema_meta (
-    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-    schema_epoch INTEGER NOT NULL,
-    state_model_revision TEXT NOT NULL,
-    application_version TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    version INTEGER PRIMARY KEY,
-    applied_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS webhook_deliveries (
-    delivery_id TEXT PRIMARY KEY,
-    event_name TEXT NOT NULL,
-    received_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS bot_jobs (
-    job_id TEXT PRIMARY KEY,
-    repository_id INTEGER NOT NULL,
-    repository_full_name TEXT NOT NULL,
-    issue_number INTEGER NOT NULL,
-    status TEXT NOT NULL,
-    version INTEGER NOT NULL,
-    lease_owner TEXT,
-    lease_until TEXT,
-    job_json TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_jobs_active_issue
-ON bot_jobs(repository_id, issue_number)
-WHERE status IN ('queued_plan','running_plan','blocked_plan','waiting_approval',
- 'queued_implementation','running_implementation','ready_to_publish','publishing','retry_wait');
-CREATE INDEX IF NOT EXISTS idx_bot_jobs_claim ON bot_jobs(status, lease_until, created_at);
-CREATE INDEX IF NOT EXISTS idx_bot_jobs_repo ON bot_jobs(repository_full_name, status);
-CREATE TABLE IF NOT EXISTS bot_approvals (
-    approval_id TEXT PRIMARY KEY,
-    job_id TEXT NOT NULL REFERENCES bot_jobs(job_id),
-    approval_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS bot_artifacts (
-    artifact_id TEXT PRIMARY KEY,
-    job_id TEXT NOT NULL REFERENCES bot_jobs(job_id),
-    kind TEXT NOT NULL,
-    artifact_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS bot_job_inputs (
-    job_id TEXT PRIMARY KEY REFERENCES bot_jobs(job_id),
-    input_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS execution_contracts (
-    contract_hash TEXT PRIMARY KEY,
-    contract_version INTEGER NOT NULL,
-    contract_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS bot_inbox_messages (
-    source_id TEXT PRIMARY KEY,
-    job_id TEXT NOT NULL REFERENCES bot_jobs(job_id),
-    session_id TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK(kind='plan_reply'),
-    body TEXT NOT NULL,
-    status TEXT NOT NULL CHECK(status IN ('pending','consumed')),
-    created_at TEXT NOT NULL,
-    consumed_at TEXT
-);
-CREATE TABLE IF NOT EXISTS outbox_events (
-    event_id TEXT PRIMARY KEY,
-    job_id TEXT NOT NULL REFERENCES bot_jobs(job_id),
-    kind TEXT NOT NULL,
-    idempotency_key TEXT NOT NULL UNIQUE,
-    status TEXT NOT NULL,
-    attempts INTEGER NOT NULL,
-    next_attempt_at TEXT NOT NULL,
-    event_json TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox_events(status, next_attempt_at);
-CREATE TABLE IF NOT EXISTS job_events (
-    event_id TEXT PRIMARY KEY,
-    job_id TEXT NOT NULL REFERENCES bot_jobs(job_id),
-    event_type TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS session_records (
-    session_id TEXT NOT NULL,
-    sequence INTEGER NOT NULL,
-    event_id TEXT NOT NULL UNIQUE,
-    previous_event_id TEXT,
-    record_type TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY(session_id, sequence)
-);
-CREATE TABLE IF NOT EXISTS session_leases (
-    session_id TEXT PRIMARY KEY,
-    owner TEXT NOT NULL,
-    lease_until TEXT NOT NULL
-);
-"""
 
 
 class BotStore:
@@ -146,7 +34,7 @@ class BotStore:
     def initialize(self) -> None:
         database_exists = self.path.exists()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
+        with self.connect() as connection:
             legacy_jobs = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_jobs'"
             ).fetchone()
@@ -154,18 +42,18 @@ class BotStore:
                 columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(bot_jobs)")}
                 if "repository_id" not in columns:
                     raise ValueError("BOT_SCHEMA_EPOCH_MISMATCH: archive and reset Bot state")
-            connection.executescript(_SCHEMA)
+            connection.executescript(SCHEMA)
             old = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
-            if old not in {None, 2}:
+            if old not in {None, SCHEMA_MIGRATION_VERSION}:
                 raise ValueError("BOT_SCHEMA_EPOCH_MISMATCH: archive and reset Bot state")
             connection.execute(
-                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(2, ?)",
-                (utc_now(),),
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
+                (SCHEMA_MIGRATION_VERSION, utc_now()),
             )
             connection.execute(
                 """INSERT OR IGNORE INTO schema_meta(singleton, schema_epoch, state_model_revision,
-                   application_version, created_at) VALUES(1, 2, 'bot-job-v2', '0.2.4', ?)""",
-                (utc_now(),),
+                   application_version, created_at) VALUES(1, ?, ?, ?, ?)""",
+                (SCHEMA_EPOCH, STATE_MODEL_REVISION, APPLICATION_VERSION, utc_now()),
             )
         if not database_exists:
             for candidate in (
@@ -178,18 +66,18 @@ class BotStore:
         self.check_schema()
 
     def check_schema(self) -> None:
-        with self._connect() as connection:
+        with self.connect() as connection:
             row = connection.execute(
                 "SELECT schema_epoch, state_model_revision FROM schema_meta WHERE singleton=1"
             ).fetchone()
-        if row != (2, "bot-job-v2"):
+        if row != (SCHEMA_EPOCH, STATE_MODEL_REVISION):
             raise ValueError("BOT_SCHEMA_EPOCH_MISMATCH")
 
     def readiness_check(self) -> None:
         """Verify epoch compatibility and acquire a SQLite write lock without changing data."""
 
         self.check_schema()
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute("SELECT 1").fetchone()
             connection.rollback()
@@ -198,7 +86,7 @@ class BotStore:
         if not delivery_id or not event_name:
             raise ValueError("delivery id and event name are required")
         try:
-            with self._connect() as connection:
+            with self.connect() as connection:
                 connection.execute(
                     "INSERT INTO webhook_deliveries(delivery_id, event_name, received_at) VALUES(?, ?, ?)",
                     (delivery_id, event_name, utc_now()),
@@ -210,7 +98,7 @@ class BotStore:
     def release_delivery(self, delivery_id: str) -> None:
         """仅在控制请求尚未产生任何状态变更就失败时允许 GitHub 重试。"""
 
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute(
                 "DELETE FROM webhook_deliveries WHERE delivery_id=?", (delivery_id,)
             )
@@ -229,7 +117,7 @@ class BotStore:
             input_encoded = json.dumps(input_value, ensure_ascii=False, sort_keys=True)
             if len(input_encoded) > 500_000:
                 raise ValueError("GitHub issue evidence exceeds the bot input limit")
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """INSERT INTO bot_jobs(
@@ -286,14 +174,14 @@ class BotStore:
             connection.commit()
 
     def get_job(self, job_id: str) -> BotJob | None:
-        with self._connect() as connection:
+        with self.connect() as connection:
             row = connection.execute(
                 "SELECT job_json FROM bot_jobs WHERE job_id = ?", (job_id,)
             ).fetchone()
         return BotJob.model_validate_json(row[0]) if row else None
 
     def get_active_job(self, repository_id: int, issue_number: int) -> BotJob | None:
-        with self._connect() as connection:
+        with self.connect() as connection:
             row = connection.execute(
                 """SELECT job_json FROM bot_jobs WHERE issue_number=?
                    AND repository_id=?
@@ -305,7 +193,7 @@ class BotStore:
         return BotJob.model_validate_json(row[0]) if row else None
 
     def save_execution_contract(self, contract: ExecutionContract) -> str:
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute(
                 """INSERT OR IGNORE INTO execution_contracts(
                    contract_hash, contract_version, contract_json, created_at) VALUES(?, ?, ?, ?)""",
@@ -314,7 +202,7 @@ class BotStore:
         return contract.contract_hash
 
     def get_execution_contract(self, contract_hash: str) -> ExecutionContract | None:
-        with self._connect() as connection:
+        with self.connect() as connection:
             row = connection.execute(
                 "SELECT contract_json FROM execution_contracts WHERE contract_hash=?", (contract_hash,)
             ).fetchone()
@@ -333,7 +221,7 @@ class BotStore:
             raise ValueError("BOT_INVALID_TRANSITION: reply requires a blocked Plan")
         if any(event.job_id != job.job_id for event in (prepare_event, acknowledgement_event)):
             raise ValueError("reply outbox event belongs to a different job")
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             inserted = connection.execute(
                 """INSERT OR IGNORE INTO bot_inbox_messages(
@@ -374,7 +262,7 @@ class BotStore:
         return True
 
     def pending_plan_reply(self, job_id: str) -> tuple[str, str] | None:
-        with self._connect() as connection:
+        with self.connect() as connection:
             row = connection.execute(
                 """SELECT source_id, body FROM bot_inbox_messages
                    WHERE job_id=? AND status='pending' ORDER BY created_at LIMIT 1""", (job_id,)
@@ -382,7 +270,7 @@ class BotStore:
         return (str(row[0]), str(row[1])) if row else None
 
     def consume_plan_reply(self, source_id: str) -> None:
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute(
                 """UPDATE bot_inbox_messages SET status='consumed', consumed_at=?
                    WHERE source_id=? AND status='pending'""", (utc_now(), source_id)
@@ -392,7 +280,7 @@ class BotStore:
         """Append an inbox message and consume it in the same SQLite transaction."""
 
         message = RuntimeMessage(role="user", content=[TextBlock(text=text)])
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             inbox = connection.execute(
                 """SELECT status, session_id FROM bot_inbox_messages
@@ -445,7 +333,7 @@ class BotStore:
             {**current.model_dump(mode="json"), **update}
         )
         encoded = updated.model_dump_json()
-        with self._connect() as connection:
+        with self.connect() as connection:
             cursor = connection.execute(
                 """UPDATE bot_jobs SET status = ?, version = ?, lease_owner = ?,
                     lease_until = ?, job_json = ?, updated_at = ?
@@ -483,7 +371,7 @@ class BotStore:
             **current.model_dump(mode="json"), **changes, "status": status,
             "version": current.version + 1, "updated_at": utc_now(),
         })
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 """UPDATE bot_jobs SET status=?, version=?, lease_owner=?, lease_until=?,
@@ -510,7 +398,7 @@ class BotStore:
     ) -> BotJob | None:
         now = datetime.now(timezone.utc)
         lease_until = (now + timedelta(seconds=lease_seconds)).isoformat()
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """SELECT candidate.job_json FROM bot_jobs AS candidate
@@ -615,7 +503,7 @@ class BotStore:
         )
 
     def save_approval(self, approval: BotApproval) -> None:
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute(
                 "INSERT INTO bot_approvals(approval_id, job_id, approval_json, created_at) VALUES(?, ?, ?, ?)",
                 (approval.approval_id, approval.job_id, approval.model_dump_json(), approval.created_at),
@@ -623,7 +511,7 @@ class BotStore:
         self.append_job_event(approval.job_id, "ApprovalRecorded", {"approval_id": approval.approval_id})
 
     def get_approval(self, approval_id: str) -> BotApproval | None:
-        with self._connect() as connection:
+        with self.connect() as connection:
             row = connection.execute(
                 "SELECT approval_json FROM bot_approvals WHERE approval_id=?", (approval_id,)
             ).fetchone()
@@ -654,7 +542,7 @@ class BotStore:
                 "updated_at": utc_now(),
             }
         )
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 """UPDATE bot_jobs SET status=?, version=?, lease_owner=?, lease_until=?,
@@ -713,7 +601,7 @@ class BotStore:
         artifact: IssuePlanArtifact | DeliveryDraft,
     ) -> str:
         artifact_id = str(uuid4())
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute(
                 "INSERT INTO bot_artifacts(artifact_id, job_id, kind, artifact_json, created_at) VALUES(?, ?, ?, ?, ?)",
                 (artifact_id, job_id, artifact.evidence_type, artifact.model_dump_json(), utc_now()),
@@ -724,14 +612,14 @@ class BotStore:
         encoded = json.dumps(value, ensure_ascii=False, sort_keys=True)
         if len(encoded) > 500_000:
             raise ValueError("GitHub issue evidence exceeds the bot input limit")
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute(
                 "INSERT INTO bot_job_inputs(job_id, input_json, created_at) VALUES(?, ?, ?)",
                 (job_id, encoded, utc_now()),
             )
 
     def get_job_input(self, job_id: str) -> dict[str, object]:
-        with self._connect() as connection:
+        with self.connect() as connection:
             row = connection.execute(
                 "SELECT input_json FROM bot_job_inputs WHERE job_id=?", (job_id,)
             ).fetchone()
@@ -743,7 +631,7 @@ class BotStore:
         return value
 
     def get_plan_artifact(self, artifact_id: str) -> IssuePlanArtifact | None:
-        with self._connect() as connection:
+        with self.connect() as connection:
             row = connection.execute(
                 "SELECT artifact_json FROM bot_artifacts WHERE artifact_id=? AND kind='issue_plan'",
                 (artifact_id,),
@@ -751,7 +639,7 @@ class BotStore:
         return IssuePlanArtifact.model_validate_json(row[0]) if row else None
 
     def latest_plan_artifact(self, job_id: str) -> tuple[str, IssuePlanArtifact] | None:
-        with self._connect() as connection:
+        with self.connect() as connection:
             row = connection.execute(
                 """SELECT artifact_id, artifact_json FROM bot_artifacts
                    WHERE job_id=? AND kind='issue_plan' ORDER BY created_at DESC LIMIT 1""",
@@ -760,7 +648,7 @@ class BotStore:
         return (str(row[0]), IssuePlanArtifact.model_validate_json(row[1])) if row else None
 
     def get_delivery_draft(self, job_id: str) -> DeliveryDraft | None:
-        with self._connect() as connection:
+        with self.connect() as connection:
             row = connection.execute(
                 """SELECT artifact_json FROM bot_artifacts
                    WHERE job_id=? AND kind='delivery_draft' ORDER BY created_at DESC LIMIT 1""",
@@ -770,7 +658,7 @@ class BotStore:
 
     def enqueue_outbox(self, event: OutboxEvent) -> bool:
         try:
-            with self._connect() as connection:
+            with self.connect() as connection:
                 connection.execute(
                     """INSERT INTO outbox_events(event_id, job_id, kind, idempotency_key,
                        status, attempts, next_attempt_at, event_json) VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -813,7 +701,7 @@ class BotStore:
                 "updated_at": utc_now(),
             }
         )
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 """UPDATE bot_jobs SET status=?, version=?, lease_owner=?, lease_until=?,
@@ -861,7 +749,7 @@ class BotStore:
 
     def next_outbox(self, *, lease_seconds: int = 60) -> OutboxEvent | None:
         now = datetime.now(timezone.utc)
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """SELECT event_id, event_json FROM outbox_events
@@ -895,7 +783,7 @@ class BotStore:
         self._update_outbox(event_id, "completed", None)
 
     def fail_outbox(self, event_id: str, error: str, *, delay_seconds: int = 30) -> None:
-        with self._connect() as connection:
+        with self.connect() as connection:
             row = connection.execute("SELECT attempts FROM outbox_events WHERE event_id=?", (event_id,)).fetchone()
         attempts = int(row[0]) if row else 1
         if attempts >= 5:
@@ -908,14 +796,14 @@ class BotStore:
         self._update_outbox(event_id, "dead_letter", error[:1_000])
 
     def append_job_event(self, job_id: str, event_type: str, payload: dict[str, object]) -> None:
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute(
                 "INSERT INTO job_events(event_id, job_id, event_type, payload_json, created_at) VALUES(?, ?, ?, ?, ?)",
                 (str(uuid4()), job_id, event_type, json.dumps(payload, sort_keys=True), utc_now()),
             )
 
     def terminal_jobs_before(self, cutoff: datetime) -> list[BotJob]:
-        with self._connect() as connection:
+        with self.connect() as connection:
             rows = connection.execute(
                 """SELECT job_json FROM bot_jobs
                    WHERE status IN ('completed', 'stale', 'dead_letter', 'cancelled')
@@ -937,7 +825,7 @@ class BotStore:
             for value in (job.plan_session_id, job.implementation_session_id)
             if value is not None
         ]
-        with self._connect() as connection:
+        with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             current = connection.execute(
                 "SELECT version, status FROM bot_jobs WHERE job_id=?", (job_id,)
@@ -962,7 +850,7 @@ class BotStore:
             connection.commit()
 
     def delete_deliveries_before(self, cutoff: datetime) -> int:
-        with self._connect() as connection:
+        with self.connect() as connection:
             cursor = connection.execute(
                 "DELETE FROM webhook_deliveries WHERE received_at < ?",
                 (cutoff.astimezone(timezone.utc).isoformat(),),
@@ -977,7 +865,7 @@ class BotStore:
         *,
         delay_seconds: int = 0,
     ) -> None:
-        with self._connect() as connection:
+        with self.connect() as connection:
             row = connection.execute(
                 "SELECT event_json FROM outbox_events WHERE event_id=?", (event_id,)
             ).fetchone()
@@ -999,7 +887,7 @@ class BotStore:
             )
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA foreign_keys=ON")
@@ -1009,151 +897,6 @@ class BotStore:
                 yield connection
         finally:
             connection.close()
-
-
-class SqliteSessionStore(SessionStore):
-    """为远程 Worker 提供追加式、可跨进程恢复的 Session Store。"""
-
-    def __init__(self, store: BotStore, *, lease_seconds: int = 3_600) -> None:
-        self.store = store
-        self.lease_seconds = lease_seconds
-
-    @contextmanager
-    def lease(self, session_id: str) -> Iterator[None]:
-        owner = str(uuid4())
-        now = datetime.now(timezone.utc)
-        until = (now + timedelta(seconds=self.lease_seconds)).isoformat()
-        with self.store._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT owner, lease_until FROM session_leases WHERE session_id=?", (session_id,)
-            ).fetchone()
-            if row is not None and row[1] >= now.isoformat():
-                connection.rollback()
-                raise ValueError(f"SESSION_IN_USE: session is active in another process: {session_id}")
-            connection.execute(
-                """INSERT INTO session_leases(session_id, owner, lease_until) VALUES(?, ?, ?)
-                   ON CONFLICT(session_id) DO UPDATE SET owner=excluded.owner, lease_until=excluded.lease_until""",
-                (session_id, owner, until),
-            )
-            connection.commit()
-        try:
-            yield
-        finally:
-            with self.store._connect() as connection:
-                connection.execute(
-                    "DELETE FROM session_leases WHERE session_id=? AND owner=?", (session_id, owner)
-                )
-
-    def create(self, metadata: SessionMetadata) -> None:
-        if self.load(metadata.session_id) is not None:
-            raise ValueError(f"session already exists: {metadata.session_id}")
-        self._append(metadata.session_id, "metadata", metadata.model_dump_json())
-
-    def append_message(self, session_id: str, message: RuntimeMessage) -> None:
-        self._require(session_id)
-        self._append(session_id, "message", message.model_dump_json())
-
-    def save_state(self, session_id: str, state: SessionRuntimeState) -> None:
-        self._require(session_id)
-        self._append(session_id, "state", state.model_dump_json())
-
-    def load(self, session_id: str) -> SessionSnapshot | None:
-        with self.store._connect() as connection:
-            rows = connection.execute(
-                """SELECT sequence, event_id, previous_event_id, record_type, payload_json
-                   FROM session_records WHERE session_id=? ORDER BY sequence""",
-                (session_id,),
-            ).fetchall()
-        if not rows:
-            return None
-        metadata: SessionMetadata | None = None
-        messages: list[RuntimeMessage] = []
-        state = SessionRuntimeState()
-        previous: str | None = None
-        for expected_sequence, row in enumerate(rows, start=1):
-            sequence, event_id, previous_event_id, record_type, payload = row
-            if sequence != expected_sequence or previous_event_id != previous:
-                raise ValueError("invalid session event chain")
-            previous = event_id
-            if record_type == "metadata":
-                if metadata is not None:
-                    raise ValueError("session contains multiple metadata records")
-                metadata = SessionMetadata.model_validate_json(payload)
-            elif record_type == "message":
-                messages.append(RuntimeMessage.model_validate_json(payload))
-            elif record_type == "state":
-                state = SessionRuntimeState.model_validate_json(payload)
-            else:
-                raise ValueError(f"unknown session record type: {record_type}")
-        if metadata is None:
-            raise ValueError("session metadata is missing")
-        return SessionSnapshot(metadata=metadata, messages=messages, runtime_state=state)
-
-    def list_overviews(self, *, limit: int | None = None) -> list[SessionOverview]:
-        with self.store._connect() as connection:
-            rows = connection.execute(
-                """SELECT DISTINCT session_id FROM session_records
-                   ORDER BY (SELECT MAX(created_at) FROM session_records s2
-                             WHERE s2.session_id=session_records.session_id) DESC"""
-                + (" LIMIT ?" if limit is not None else ""),
-                (() if limit is None else (limit,)),
-            ).fetchall()
-        overviews: list[SessionOverview] = []
-        for (session_id,) in rows:
-            try:
-                snapshot = self.load(session_id)
-                assert snapshot is not None
-                overviews.append(
-                    SessionOverview(
-                        session_id=session_id,
-                        model=snapshot.metadata.model,
-                        repository_root=snapshot.metadata.repository_root,
-                        updated_at=utc_now(),
-                        status=snapshot.runtime_state.last_status or "unknown",
-                        working_directory=snapshot.metadata.initial_working_directory,
-                        worktree=snapshot.runtime_state.worktree,
-                    )
-                )
-            except ValueError as exc:
-                overviews.append(
-                    SessionOverview(
-                        session_id=session_id,
-                        updated_at=utc_now(),
-                        status="invalid",
-                        error=str(exc),
-                    )
-                )
-        return overviews
-
-    def latest_session_id(self) -> str | None:
-        return next(
-            (item.session_id for item in self.list_overviews() if item.status != "invalid"),
-            None,
-        )
-
-    def _require(self, session_id: str) -> None:
-        if self.load(session_id) is None:
-            raise ValueError(f"unknown session: {session_id}")
-
-    def _append(self, session_id: str, record_type: str, payload_json: str) -> None:
-        with self.store._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                """SELECT sequence, event_id FROM session_records
-                   WHERE session_id=? ORDER BY sequence DESC LIMIT 1""",
-                (session_id,),
-            ).fetchone()
-            sequence = 1 if row is None else int(row[0]) + 1
-            previous = None if row is None else str(row[1])
-            connection.execute(
-                """INSERT INTO session_records(session_id, sequence, event_id, previous_event_id,
-                   record_type, payload_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)""",
-                (session_id, sequence, str(uuid4()), previous, record_type, payload_json, utc_now()),
-            )
-            connection.commit()
-
-
 def _status_event(status: JobStatus) -> str:
     return {
         "blocked_plan": "JobBlocked",
@@ -1191,3 +934,5 @@ def _validate_transition(current: str, target: str, *, retry_phase: str | None) 
         event = "resume_retry"
     if event is None or BotJobStateMachine.transition(current, event, retry_phase=retry_phase) != target:
         raise ValueError(f"BOT_INVALID_TRANSITION:{current}:{target}")
+
+

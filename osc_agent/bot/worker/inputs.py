@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from osc_agent.application import SkillInput
-from osc_agent.bot.models import BotJob, ExecutionContract, IssuePlanArtifact
+from osc_agent.bot.domain.artifacts import IssuePlanArtifact
+from osc_agent.bot.domain.execution import ExecutionContract
+from osc_agent.bot.domain.jobs import BotJob
 
 
 def build_planning_skill_input(

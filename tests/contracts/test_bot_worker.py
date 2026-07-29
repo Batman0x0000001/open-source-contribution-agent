@@ -7,9 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
-from osc_agent.bot.models import BotJob
-from osc_agent.bot.store import BotStore
-from osc_agent.bot.worker import BotModelContractMismatch, BotWorker
+from osc_agent.bot.domain.jobs import BotJob
+from osc_agent.bot.persistence.store import BotStore
+from osc_agent.bot.worker.context import BotModelContractMismatch
+from osc_agent.bot.worker.conversation import consume_runtime_events
+from osc_agent.bot.worker.coordinator import BotWorker
+from osc_agent.bot.worker.implementation import ImplementationJobExecutor
 from osc_agent.runtime.events import (
     AssistantDelta,
     Complete,
@@ -56,14 +59,16 @@ def test_runtime_progress_is_redacted_and_throttled() -> None:
         yield AssistantDelta(text="sensitive model output must not be persisted")
         yield RunCompleted(transition=Complete(reason="done"))
 
-    worker = object.__new__(BotWorker)
-    worker.store = Store()  # type: ignore[assignment]
-    worker.bot_settings = SimpleNamespace(worker_id="worker")  # type: ignore[assignment]
-    completed = asyncio.run(worker._consume(events(), job.job_id, phase="plan"))
+    store = Store()
+    completed = asyncio.run(
+        consume_runtime_events(
+            events(), store=store, worker_id="worker", job_id=job.job_id, phase="plan"
+        )
+    )
 
     assert completed is True
-    assert worker.store.progress == ["plan:model_request_started", "plan:run_completed"]
-    assert "sensitive" not in " ".join(worker.store.progress)
+    assert store.progress == ["plan:model_request_started", "plan:run_completed"]
+    assert "sensitive" not in " ".join(store.progress)
 
 
 def test_repository_policy_violation_immediately_terminates_job(tmp_path: Path) -> None:
@@ -71,10 +76,10 @@ def test_repository_policy_violation_immediately_terminates_job(tmp_path: Path) 
     store.initialize()
     job = _job()
     store.create_job(job)
-    worker = object.__new__(BotWorker)
-    worker.store = store  # type: ignore[assignment]
+    executor = object.__new__(ImplementationJobExecutor)
+    executor.store = store  # type: ignore[assignment]
 
-    worker._terminate_repository_policy(job.job_id, "protected path")
+    executor._terminate_repository_policy(job.job_id, "protected path")
 
     terminated = store.get_job(job.job_id)
     assert terminated is not None
@@ -109,7 +114,7 @@ def test_model_contract_mismatch_dead_letters_without_running_agent() -> None:
     async def reject(_job):
         raise BotModelContractMismatch("model mismatch")
 
-    worker._run_plan = reject  # type: ignore[method-assign]
+    worker.plan_executor = SimpleNamespace(execute=reject)  # type: ignore[assignment]
 
     assert asyncio.run(worker.run_once("plan")) is True
     assert [status for status, _ in transitions] == ["retry_wait", "dead_letter"]
@@ -120,7 +125,7 @@ def test_worker_uses_independent_phase_slots_and_graceful_shutdown(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    import osc_agent.bot.worker_service as server_module
+    import osc_agent.bot.worker.service as server_module
 
     started = asyncio.Event()
     slot_names: set[str] = set()

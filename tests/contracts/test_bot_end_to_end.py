@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from typer.testing import CliRunner
 
-from osc_agent.bot.config import BotMaintenanceSettings, BotSettings, BotWorkerSettings
-from osc_agent.bot.doctor import run_bot_control_doctor, run_bot_worker_doctor
-from osc_agent.bot.models import BotJob, RepositoryBotCatalog, RepositoryBotConfig
-from osc_agent.bot.worker import BotWorker
+from osc_agent.bot.config import BotControlSettings, BotMaintenanceSettings, BotWorkerSettings
+from osc_agent.bot.control.doctor import run_bot_control_doctor
+from osc_agent.bot.domain.jobs import BotJob
+from osc_agent.bot.domain.repositories import RepositoryBotCatalog, RepositoryBotConfig
+from osc_agent.bot.worker.coordinator import BotWorker
+from osc_agent.bot.worker.doctor import run_bot_worker_doctor
 from osc_agent.bot.entrypoint import app as bot_app
 from tests.settings_factory import make_agent_settings as Settings
 
@@ -42,17 +45,17 @@ def _worker_settings(tmp_path: Path) -> BotWorkerSettings:
 
 
 def test_control_doctor_never_checks_docker(monkeypatch, tmp_path: Path) -> None:
-    import osc_agent.bot.doctor as doctor_module
+    import osc_agent.bot.diagnostics as diagnostics_module
 
     checked: list[str] = []
-    monkeypatch.setattr(doctor_module.sys, "platform", "linux")
-    monkeypatch.setattr(doctor_module, "_bot_dependencies_available", lambda: False)
+    monkeypatch.setattr(diagnostics_module.sys, "platform", "linux")
+    monkeypatch.setattr(diagnostics_module, "bot_dependencies_available", lambda: False)
     monkeypatch.setattr(
-        doctor_module.shutil,
+        diagnostics_module.shutil,
         "which",
         lambda program: checked.append(program) or f"/usr/bin/{program}",
     )
-    settings = BotSettings(
+    settings = BotControlSettings(
         github_app_id=1,
         github_app_private_key_path=tmp_path / "missing.pem",
         github_webhook_secret="x" * 16,
@@ -73,14 +76,15 @@ def test_control_doctor_never_checks_docker(monkeypatch, tmp_path: Path) -> None
 
 
 def test_worker_doctor_checks_rg_and_exact_image(monkeypatch, tmp_path: Path) -> None:
-    import osc_agent.bot.doctor as doctor_module
+    import osc_agent.bot.diagnostics as diagnostics_module
+    import osc_agent.bot.worker.doctor as doctor_module
 
     checked: list[str] = []
     inspected: list[str] = []
-    monkeypatch.setattr(doctor_module.sys, "platform", "linux")
-    monkeypatch.setattr(doctor_module, "_bot_dependencies_available", lambda: True)
+    monkeypatch.setattr(diagnostics_module.sys, "platform", "linux")
+    monkeypatch.setattr(diagnostics_module, "bot_dependencies_available", lambda: True)
     monkeypatch.setattr(
-        doctor_module.shutil,
+        diagnostics_module.shutil,
         "which",
         lambda program: checked.append(program) or f"/usr/bin/{program}",
     )
@@ -103,12 +107,13 @@ def test_worker_doctor_checks_rg_and_exact_image(monkeypatch, tmp_path: Path) ->
 
 
 def test_worker_doctor_fails_when_rg_or_image_is_unavailable(monkeypatch, tmp_path: Path) -> None:
-    import osc_agent.bot.doctor as doctor_module
+    import osc_agent.bot.diagnostics as diagnostics_module
+    import osc_agent.bot.worker.doctor as doctor_module
 
-    monkeypatch.setattr(doctor_module.sys, "platform", "linux")
-    monkeypatch.setattr(doctor_module, "_bot_dependencies_available", lambda: True)
+    monkeypatch.setattr(diagnostics_module.sys, "platform", "linux")
+    monkeypatch.setattr(diagnostics_module, "bot_dependencies_available", lambda: True)
     monkeypatch.setattr(
-        doctor_module.shutil,
+        diagnostics_module.shutil,
         "which",
         lambda program: None if program == "rg" else f"/usr/bin/{program}",
     )
@@ -131,7 +136,7 @@ def test_worker_doctor_fails_when_rg_or_image_is_unavailable(monkeypatch, tmp_pa
 
 
 def test_plan_worker_never_resolves_docker_image(monkeypatch, tmp_path: Path) -> None:
-    import osc_agent.bot.worker as worker_module
+    import osc_agent.bot.worker.coordinator as worker_module
 
     job = BotJob(
         job_id=str(uuid4()),
@@ -166,7 +171,6 @@ def test_plan_worker_never_resolves_docker_image(monkeypatch, tmp_path: Path) ->
         return None
 
     monkeypatch.setattr(worker_module, "resolve_image_id", must_not_resolve)
-    monkeypatch.setattr(BotWorker, "_run_plan", complete_plan)
     store = Store()
     worker = BotWorker(
         settings=Settings(anthropic_api_key="secret", model_id="model"),
@@ -181,6 +185,7 @@ def test_plan_worker_never_resolves_docker_image(monkeypatch, tmp_path: Path) ->
         ),
         store=store,  # type: ignore[arg-type]
     )
+    worker.plan_executor = SimpleNamespace(execute=complete_plan)  # type: ignore[assignment]
 
     assert asyncio.run(worker.run_once()) is True
     assert store.transitioned is None

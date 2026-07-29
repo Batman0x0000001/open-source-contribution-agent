@@ -7,9 +7,9 @@ import hmac
 import json
 from typing import Any
 
-from osc_agent.bot.control import BotControlService
-from osc_agent.bot.github_app import GitHubApiError
-from osc_agent.bot.store import BotStore
+from osc_agent.bot.control.github import GitHubApiError
+from osc_agent.bot.control.handler import BotControlService
+from osc_agent.bot.persistence.store import BotStore
 
 
 MAX_WEBHOOK_BYTES = 1_000_000

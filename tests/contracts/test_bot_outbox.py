@@ -7,12 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from osc_agent.bot.models import OutboxEvent, RepositoryBotCatalog
-from osc_agent.bot.outbox import (
+from osc_agent.bot.control.outbox import (
     OutboxProcessor,
     RetryableOutboxError,
     TerminalOutboxError,
 )
+from osc_agent.bot.domain.events import OutboxEvent
+from osc_agent.bot.domain.repositories import RepositoryBotCatalog
 
 
 def _event() -> OutboxEvent:

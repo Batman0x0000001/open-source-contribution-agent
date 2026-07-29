@@ -185,7 +185,7 @@ def test_cli_does_not_import_legacy_runtime_or_stage_functions() -> None:
 def test_product_entrypoints_use_agent_application_only() -> None:
     factories = (
         "osc_agent/cli/application.py",
-        "osc_agent/bot/application_factory.py",
+        "osc_agent/bot/worker/application.py",
     )
     for relative in factories:
         source = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
@@ -200,7 +200,7 @@ def test_product_entrypoints_use_agent_application_only() -> None:
 
     entrypoints = (
         "osc_agent/cli/app.py",
-        "osc_agent/bot/worker.py",
+        "osc_agent/bot/worker/coordinator.py",
     )
     for relative in entrypoints:
         source = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
@@ -233,7 +233,7 @@ def test_cli_and_bot_entrypoints_have_separate_product_boundaries() -> None:
 
 
 def test_control_service_does_not_load_worker_or_agent_execution() -> None:
-    path = PROJECT_ROOT / "osc_agent" / "bot" / "control_service.py"
+    path = PROJECT_ROOT / "osc_agent" / "bot" / "control" / "service.py"
     imports = {
         node.module
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
@@ -244,10 +244,31 @@ def test_control_service_does_not_load_worker_or_agent_execution() -> None:
         "osc_agent.application",
         "osc_agent.providers",
         "osc_agent.bot.worker",
-        "osc_agent.bot.sandbox",
-        "osc_agent.bot.application_factory",
     )
     assert not any(module.startswith(forbidden) for module in imports)
+
+
+def test_bot_process_packages_have_one_way_dependencies() -> None:
+    bot_root = PROJECT_ROOT / "osc_agent" / "bot"
+    control_violations = [
+        f"{path.relative_to(PROJECT_ROOT)} -> {node.module}"
+        for path in (bot_root / "control").rglob("*.py")
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.ImportFrom)
+        and node.module is not None
+        and node.module.startswith(("osc_agent.bot.worker", "osc_agent.application", "osc_agent.providers"))
+    ]
+    worker_violations = [
+        f"{path.relative_to(PROJECT_ROOT)} -> {node.module}"
+        for path in (bot_root / "worker").rglob("*.py")
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.ImportFrom)
+        and node.module is not None
+        and node.module.startswith("osc_agent.bot.control")
+    ]
+
+    assert not control_violations
+    assert not worker_violations
 
 
 def test_application_composition_does_not_name_bot_artifact_tools() -> None:

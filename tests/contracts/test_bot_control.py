@@ -8,10 +8,12 @@ from uuid import uuid4
 
 import pytest
 
-from osc_agent.bot.config import BotSettings
-from osc_agent.bot.control import BotControlService, parse_webhook_command
-from osc_agent.bot.models import IssuePlanArtifact, RepositoryBotCatalog, RepositoryBotConfig
-from osc_agent.bot.store import BotStore
+from osc_agent.bot.config import BotControlSettings
+from osc_agent.bot.control.commands import parse_webhook_command
+from osc_agent.bot.control.handler import BotControlService
+from osc_agent.bot.domain.artifacts import IssuePlanArtifact
+from osc_agent.bot.domain.repositories import RepositoryBotCatalog, RepositoryBotConfig
+from osc_agent.bot.persistence.store import BotStore
 
 
 IMAGE_ID = "sha256:" + "b" * 64
@@ -31,12 +33,12 @@ class FakeGitHub:
         return {"content_source": "github", "trust": "untrusted_external", "issue": {"title": "Bug"}, "comments": []}
 
 
-def _settings(tmp_path: Path) -> BotSettings:
+def _settings(tmp_path: Path) -> BotControlSettings:
     key = tmp_path / "app.pem"
     key.write_text("private", encoding="utf-8")
     repositories = tmp_path / "repositories.yml"
     repositories.write_text("repositories: {}\n", encoding="utf-8")
-    return BotSettings(
+    return BotControlSettings(
         github_app_id=1,
         github_app_private_key_path=key,
         github_webhook_secret="x" * 16,

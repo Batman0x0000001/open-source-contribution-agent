@@ -8,8 +8,10 @@ from uuid import uuid4
 
 import pytest
 
-from osc_agent.bot.models import BotJob, OutboxEvent
-from osc_agent.bot.store import BotStore, SqliteSessionStore
+from osc_agent.bot.domain.events import OutboxEvent
+from osc_agent.bot.domain.jobs import BotJob
+from osc_agent.bot.persistence.session_store import SqliteSessionStore
+from osc_agent.bot.persistence.store import BotStore
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
 from osc_agent.runtime.session import SessionMetadata, SessionRuntimeState
 from osc_agent.runtime.tool_models import CapabilityScope

@@ -11,15 +11,18 @@ from osc_agent.application import (
     AgentProfile,
     build_agent_application,
 )
-from osc_agent.bot.artifact_tools import SubmitDeliveryDraftTool, SubmitIssuePlanTool
+from osc_agent.bot.worker.artifact_tools import SubmitDeliveryDraftTool, SubmitIssuePlanTool
 from osc_agent.bot.config import BotWorkerSettings
-from osc_agent.bot.models import BotJob, ExecutionContract, RepositoryBotConfig
-from osc_agent.bot.policy import (
+from osc_agent.bot.domain.execution import ExecutionContract
+from osc_agent.bot.domain.jobs import BotJob
+from osc_agent.bot.domain.repositories import RepositoryBotConfig
+from osc_agent.bot.worker.policy import (
     BotPermissionPolicy,
     BotRepositoryPolicyHook,
-    ConfiguredValidationStopHook,
 )
-from osc_agent.bot.store import BotStore, SqliteSessionStore
+from osc_agent.bot.persistence.session_store import SqliteSessionStore
+from osc_agent.bot.persistence.store import BotStore
+from osc_agent.bot.validation import ConfiguredValidationStopHook
 from osc_agent.configuration import AgentSettings
 from osc_agent.processes.contracts import ProcessRunner
 from osc_agent.processes.runner import DisabledProcessRunner

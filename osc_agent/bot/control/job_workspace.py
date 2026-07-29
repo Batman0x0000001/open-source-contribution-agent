@@ -8,9 +8,9 @@ import shutil
 from typing import Literal
 from uuid import uuid4
 
-from osc_agent.bot.github_app import GitHubControlClient, basic_git_auth_header
-from osc_agent.bot.models import BotJob
-from osc_agent.bot.store import BotStore
+from osc_agent.bot.control.github import GitHubControlClient, basic_git_auth_header
+from osc_agent.bot.domain.jobs import BotJob
+from osc_agent.bot.persistence.store import BotStore
 from osc_agent.processes.policy import build_subprocess_environment
 
 

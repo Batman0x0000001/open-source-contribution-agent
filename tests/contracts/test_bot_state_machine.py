@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from osc_agent.bot.outbox import DispatcherHealth, OutboxDispatcher
-from osc_agent.bot.state_machine import BotJobStateMachine
+from osc_agent.bot.control.outbox import DispatcherHealth, OutboxDispatcher
+from osc_agent.bot.domain.state_machine import BotJobStateMachine
 
 
 @pytest.mark.parametrize(

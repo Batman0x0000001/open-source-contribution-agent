@@ -12,12 +12,13 @@ from uuid import uuid4
 
 import pytest
 
-from osc_agent.bot.config import BotSettings
-from osc_agent.bot.models import BotJob, RepositoryBotConfig
-from osc_agent.bot.publisher import TrustedPublisher
-from osc_agent.bot.sandbox import DockerProcessRunner
-from osc_agent.bot.store import BotStore
-from osc_agent.bot.webhook import create_webhook_app, verify_webhook_signature
+from osc_agent.bot.config import BotControlSettings
+from osc_agent.bot.control.publisher import TrustedPublisher
+from osc_agent.bot.control.webhook import create_webhook_app, verify_webhook_signature
+from osc_agent.bot.domain.jobs import BotJob
+from osc_agent.bot.domain.repositories import RepositoryBotConfig
+from osc_agent.bot.persistence.store import BotStore
+from osc_agent.bot.worker.docker_runner import DockerProcessRunner
 
 
 IMAGE_ID = "sha256:" + "a" * 64
@@ -69,7 +70,7 @@ def test_webhook_endpoint_rejects_bad_signature_and_deduplicates(tmp_path: Path)
 
 
 def test_docker_runner_builds_fail_closed_isolation_argv(tmp_path: Path, monkeypatch) -> None:
-    import osc_agent.bot.sandbox as sandbox_module
+    import osc_agent.bot.worker.docker_runner as sandbox_module
 
     monkeypatch.setattr(sandbox_module.sys, "platform", "linux")
     workspace = tmp_path / "jobs" / "job" / "implementation"
@@ -92,7 +93,7 @@ def test_docker_runner_builds_fail_closed_isolation_argv(tmp_path: Path, monkeyp
 
 
 def test_docker_runner_rejects_mutable_image_and_non_linux(tmp_path: Path, monkeypatch) -> None:
-    import osc_agent.bot.sandbox as sandbox_module
+    import osc_agent.bot.worker.docker_runner as sandbox_module
 
     config = RepositoryBotConfig(image=IMAGE_ID, validation_commands=("python -m pytest",))
     monkeypatch.setattr(sandbox_module.sys, "platform", "linux")
@@ -129,7 +130,7 @@ def test_publisher_accepts_only_one_clean_commit_on_approved_base(tmp_path: Path
     key.write_text("unused", encoding="utf-8")
     config = tmp_path / "repositories.yml"
     config.write_text("repositories: {}\n", encoding="utf-8")
-    settings = BotSettings(
+    settings = BotControlSettings(
         github_app_id=1,
         github_app_private_key_path=key,
         github_webhook_secret="x" * 16,

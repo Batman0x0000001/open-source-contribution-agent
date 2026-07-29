@@ -13,15 +13,14 @@ import pytest
 from pydantic import ValidationError
 
 from osc_agent.bot.config import load_repository_catalog
-from osc_agent.bot.models import (
+from osc_agent.bot.domain.artifacts import DeliveryDraft, IssuePlanArtifact
+from osc_agent.bot.domain.execution import (
     BotApproval,
-    DeliveryDraft,
     ExecutionContract,
-    IssuePlanArtifact,
-    RepositoryBotConfig,
     plan_evidence_hash,
     validate_implementation_approval,
 )
+from osc_agent.bot.domain.repositories import RepositoryBotConfig
 
 
 SHA = "a" * 40
@@ -92,7 +91,7 @@ def test_execution_contract_hash_is_canonical_and_secret_free() -> None:
 
 def test_execution_contract_hash_is_stable_across_process_hash_seeds() -> None:
     script = """
-from osc_agent.bot.models import ExecutionContract
+from osc_agent.bot.domain.execution import ExecutionContract
 
 contract = ExecutionContract(
     repository_id=1,

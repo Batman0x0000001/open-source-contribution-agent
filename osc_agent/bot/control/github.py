@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import re
 from typing import Any, Protocol
 
-from osc_agent.bot.config import BotSettings
+from osc_agent.bot.config import BotControlSettings
 
 
 class GitHubApiError(RuntimeError):
@@ -58,7 +58,7 @@ class GitHubControlClient(Protocol):
 class GitHubAppClient:
     """最小 GitHub App REST 客户端；所有响应在边界处校验。"""
 
-    def __init__(self, settings: BotSettings) -> None:
+    def __init__(self, settings: BotControlSettings) -> None:
         self.settings = settings
         self._token_cache: dict[tuple[int, str], tuple[str, datetime]] = {}
 

@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 import subprocess
 
-from osc_agent.bot.policy import ConfiguredValidationStopHook
+from osc_agent.bot.validation import ConfiguredValidationStopHook
 from osc_agent.runtime.hooks import StopHookPayload
 from osc_agent.completion.models import CompletionRequirements
 from osc_agent.runtime.tool_models import ToolUseContext

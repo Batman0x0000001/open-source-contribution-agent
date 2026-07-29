@@ -7,8 +7,8 @@ from pathlib import Path
 
 from pydantic import Field
 
-from osc_agent.bot.models import DeliveryDraft, IssuePlanArtifact
-from osc_agent.bot.store import BotStore
+from osc_agent.bot.domain.artifacts import DeliveryDraft, IssuePlanArtifact
+from osc_agent.bot.persistence.store import BotStore
 from osc_agent.contracts import ContractModel
 from osc_agent.runtime.tool_models import ToolError, ToolResult, ToolUseContext
 from osc_agent.runtime.tool import BaseTool

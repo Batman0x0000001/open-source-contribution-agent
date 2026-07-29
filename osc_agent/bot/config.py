@@ -9,10 +9,10 @@ import yaml
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from osc_agent.bot.models import RepositoryBotCatalog
+from osc_agent.bot.domain.repositories import RepositoryBotCatalog
 
 
-class BotSettings(BaseSettings):
+class BotControlSettings(BaseSettings):
     """Bot 进程显式配置；本地 CLI 不加载这些必需项。"""
 
     model_config = SettingsConfigDict(extra="ignore", frozen=True, populate_by_name=True)
@@ -34,7 +34,7 @@ class BotSettings(BaseSettings):
     model_id: str = Field(min_length=1, validation_alias="MODEL_ID")
 
     @model_validator(mode="after")
-    def protect_control_state_from_workspace_mounts(self) -> "BotSettings":
+    def protect_control_state_from_workspace_mounts(self) -> "BotControlSettings":
         workspace = self.workspace_root.resolve()
         for name, path in (
             ("GitHub App private key", self.github_app_private_key_path),
