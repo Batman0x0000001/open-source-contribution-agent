@@ -8,7 +8,7 @@ from pathlib import Path
 from osc_agent.runtime.models import ApprovalResponse, Ask, ToolUseBlock, ToolUseContext
 from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
 from tests.contracts.registry_factory import build_test_tool_registry
-from osc_agent.tools.filesystem_tools import (
+from osc_agent.tools.filesystem import (
     EditFileInput,
     GlobInput,
     ReadFileInput,

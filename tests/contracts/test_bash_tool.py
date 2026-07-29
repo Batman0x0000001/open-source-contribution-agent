@@ -9,7 +9,7 @@ from osc_agent.runtime.models import ToolUseBlock, ToolUseContext
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
 from osc_agent.tools.bash import BashTool, is_read_only_command
-from osc_agent.tools.process_runner import CommandResult
+from osc_agent.processes.contracts import CommandResult
 
 
 def context(root: Path) -> ToolUseContext:

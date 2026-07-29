@@ -23,14 +23,10 @@ from osc_agent.runtime.models import (
     ValidationSuccess,
 )
 from osc_agent.runtime.tool import BaseTool
-from osc_agent.tools.git import git_workspace_fingerprint
-from osc_agent.tools.process_runner import (
-    HostProcessRunner,
-    ProcessRunner,
-    ProcessRequest,
-    build_subprocess_environment,
-    classify_command,
-)
+from osc_agent.processes.contracts import ProcessRequest, ProcessRunner
+from osc_agent.processes.policy import build_subprocess_environment, classify_command
+from osc_agent.processes.runner import HostProcessRunner
+from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
 DEFAULT_TIMEOUT_SECONDS = 120

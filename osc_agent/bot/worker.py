@@ -31,7 +31,7 @@ from osc_agent.runtime.models import (
     RunStopped,
 )
 from osc_agent.subagents.builtins import build_explore_subagent
-from osc_agent.tools.process_runner import DisabledProcessRunner
+from osc_agent.processes.runner import DisabledProcessRunner
 
 
 class BotWorker:

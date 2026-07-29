@@ -7,7 +7,7 @@ from pathlib import Path
 
 from osc_agent.runtime.hooks import StopHookPayload, StopHookResult
 from osc_agent.runtime.models import ToolResultBlock, ToolUseBlock, ToolUseContext
-from osc_agent.tools.git import git_workspace_fingerprint
+from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
 class CompletionEvidenceStopHook:

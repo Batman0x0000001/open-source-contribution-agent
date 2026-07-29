@@ -6,7 +6,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from osc_agent.runtime.models import InstructionDocument, RepositoryInstructionState
-from osc_agent.tools.path_policy import safe_repo_path
+from osc_agent.workspaces.path_policy import safe_repo_path
 
 
 MAX_INSTRUCTION_CHARS = 40_000

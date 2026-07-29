@@ -9,7 +9,7 @@ from osc_agent.runtime.models import ToolUseBlock, ToolUseContext
 from osc_agent.runtime.session_store import FileToolResultStore
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
-from osc_agent.tools.state_tools import ReadToolResultTool
+from osc_agent.tools.state import ReadToolResultTool
 
 
 def context(root: Path, session_id: str) -> ToolUseContext:

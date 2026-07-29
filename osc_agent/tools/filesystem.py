@@ -8,11 +8,11 @@ from pathlib import Path
 
 from pydantic import Field
 
-from osc_agent.tools.path_policy import (
+from osc_agent.workspaces.path_policy import (
     normalize_repo_relative_path,
     normalize_repo_relative_pattern,
 )
-from osc_agent.tools.path_policy import safe_repo_path
+from osc_agent.workspaces.path_policy import safe_repo_path
 from osc_agent.runtime.instructions import RepositoryInstructionResolver
 from osc_agent.runtime.models import (
     ContractModel,
@@ -26,7 +26,7 @@ from osc_agent.runtime.models import (
     ValidationSuccess,
 )
 from osc_agent.runtime.tool import BaseTool
-from osc_agent.tools.filesystem_operations import edit_file, glob_files, write_file
+from osc_agent.workspaces.files import edit_file, glob_files, write_file
 
 
 class ReadFileInput(ContractModel):
@@ -163,19 +163,18 @@ class WriteFileTool(BaseTool[WriteFileInput, WriteFileOutput]):
         stale = await asyncio.to_thread(_existing_file_guard, root, input.path, context)
         if stale is not None:
             return stale
-        output = await asyncio.to_thread(
-            write_file,
-            repo_root=root,
-            path=input.path,
-            content=input.content,
-            # 风险授权已由 ToolExecutor 统一完成，底层函数只负责安全写入算法。
-            enforce_risk_checks=False,
-        )
-        if output.startswith("Error: "):
-            return _file_error(output)
-        observation = await asyncio.to_thread(_observe_written_file, root, input.path)
+        try:
+            chars_written = await asyncio.to_thread(
+                write_file,
+                repo_root=root,
+                path=input.path,
+                content=input.content,
+            )
+            observation = await asyncio.to_thread(_observe_written_file, root, input.path)
+        except (OSError, ValueError) as exc:
+            return _file_error(exc)
         return ToolResult(
-            data={"path": input.path, "chars_written": len(input.content)},
+            data={"path": input.path, "chars_written": chars_written},
             context_update=ContextUpdate(file_observations={input.path: observation}),
         )
 
@@ -241,19 +240,19 @@ class EditFileTool(BaseTool[EditFileInput, EditFileOutput]):
         stale = await asyncio.to_thread(_existing_file_guard, root, input.path, context)
         if stale is not None:
             return stale
-        output = await asyncio.to_thread(
-            edit_file,
-            repo_root=root,
-            path=input.path,
-            old_text=input.old_text,
-            new_text=input.new_text,
-            enforce_risk_checks=False,
-        )
-        if output.startswith("Error: "):
-            return _file_error(output)
-        observation = await asyncio.to_thread(_observe_written_file, root, input.path)
+        try:
+            replacements = await asyncio.to_thread(
+                edit_file,
+                repo_root=root,
+                path=input.path,
+                old_text=input.old_text,
+                new_text=input.new_text,
+            )
+            observation = await asyncio.to_thread(_observe_written_file, root, input.path)
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            return _file_error(exc)
         return ToolResult(
-            data={"path": input.path, "replacements": 1},
+            data={"path": input.path, "replacements": replacements},
             context_update=ContextUpdate(file_observations={input.path: observation}),
         )
 
@@ -290,14 +289,14 @@ class GlobTool(BaseTool[GlobInput, GlobOutput]):
         return ValidationSuccess()
 
     async def call(self, input: GlobInput, context: ToolUseContext) -> ToolResult:
-        output = await asyncio.to_thread(
-            glob_files,
-            repo_root=Path(context.working_directory),
-            pattern=input.pattern,
-        )
-        if output.startswith("Error: "):
-            return _file_error(output)
-        paths = [] if output == "(no matches)" else output.splitlines()
+        try:
+            paths = await asyncio.to_thread(
+                glob_files,
+                repo_root=Path(context.working_directory),
+                pattern=input.pattern,
+            )
+        except (OSError, ValueError) as exc:
+            return _file_error(exc)
         return ToolResult(data={"paths": paths})
 
 
@@ -309,8 +308,8 @@ def _validate_path(path: str) -> ValidationResult:
     return ValidationSuccess()
 
 
-def _file_error(output: str) -> ToolResult:
-    return ToolResult(error=ToolError(code="FILE_OPERATION_FAILED", message=output.removeprefix("Error: ")))
+def _file_error(error: Exception) -> ToolResult:
+    return ToolResult(error=ToolError(code="FILE_OPERATION_FAILED", message=str(error)))
 
 
 def _existing_file_guard(

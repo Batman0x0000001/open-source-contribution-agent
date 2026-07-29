@@ -19,8 +19,8 @@ from osc_agent.tools.git import (
     GitDiffTool,
     GitLogInput,
     GitStatusInput,
-    git_workspace_fingerprint,
 )
+from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
 def initialize_repository(root: Path) -> None:

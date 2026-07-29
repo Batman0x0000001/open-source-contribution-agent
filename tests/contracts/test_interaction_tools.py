@@ -25,7 +25,7 @@ def test_ask_user_question_returns_answers_to_agent_loop(tmp_path: Path) -> None
     async def answer(questions):
         return {questions[0]["id"]: "small_fix"}
 
-    executor = ToolExecutor(build_test_tool_registry(), dependencies=ToolExecutionDependencies(question_handler=answer))
+    executor = ToolExecutor(build_test_tool_registry(question_handler=answer))
     result = asyncio.run(executor.execute(ToolUseBlock(id="q", name="ask_user_question", input={"questions": [{"id": "scope", "header": "Scope", "question": "Choose?", "options": [{"id": "small_fix", "label": "Small fix", "description": "Low risk"}, {"id": "feature", "label": "Feature", "description": "More work"}]}]}), context(tmp_path)))
 
     assert result.error is None
@@ -36,6 +36,43 @@ def test_ask_user_question_returns_answers_to_agent_loop(tmp_path: Path) -> None
             "custom_text": None,
         }
     ]
+
+
+def test_ask_user_question_owns_missing_handler_and_invalid_answer_errors(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "questions": [
+            {
+                "id": "scope",
+                "header": "Scope",
+                "question": "Choose?",
+                "options": [
+                    {"id": "small", "label": "Small", "description": "Small change"},
+                    {"id": "large", "label": "Large", "description": "Large change"},
+                ],
+            }
+        ]
+    }
+    missing = asyncio.run(
+        ToolExecutor(build_test_tool_registry()).execute(
+            ToolUseBlock(id="missing", name="ask_user_question", input=payload),
+            context(tmp_path),
+        )
+    )
+
+    async def no_answers(_questions):
+        return {}
+
+    invalid = asyncio.run(
+        ToolExecutor(build_test_tool_registry(question_handler=no_answers)).execute(
+            ToolUseBlock(id="invalid", name="ask_user_question", input=payload),
+            context(tmp_path),
+        )
+    )
+
+    assert missing.error and missing.error.code == "USER_INTERACTION_REQUIRED"
+    assert invalid.error and invalid.error.code == "USER_INTERACTION_INVALID"
 
 
 def test_plan_mode_blocks_writes_but_allows_fixed_plan_file(tmp_path: Path) -> None:
@@ -77,10 +114,7 @@ def test_verification_waiver_requires_structured_risk_and_exact_option_ids(
     async def answer(questions):
         return {questions[0]["id"]: "proceed_without_tests"}
 
-    executor = ToolExecutor(
-        build_test_tool_registry(),
-        dependencies=ToolExecutionDependencies(question_handler=answer),
-    )
+    executor = ToolExecutor(build_test_tool_registry(question_handler=answer))
     invalid = asyncio.run(
         executor.execute(
             ToolUseBlock(
@@ -122,10 +156,7 @@ def test_independent_verification_waiver_requires_bound_child_and_exact_options(
     async def answer(questions):
         return {questions[0]["id"]: "proceed_with_partial_verification"}
 
-    executor = ToolExecutor(
-        build_test_tool_registry(),
-        dependencies=ToolExecutionDependencies(question_handler=answer),
-    )
+    executor = ToolExecutor(build_test_tool_registry(question_handler=answer))
     payload = {
         "questions": [
             {
@@ -184,10 +215,7 @@ def test_remote_mismatch_question_requires_exact_repository_pair(
     async def answer(questions):
         return {questions[0]["id"]: "proceed"}
 
-    executor = ToolExecutor(
-        build_test_tool_registry(),
-        dependencies=ToolExecutionDependencies(question_handler=answer),
-    )
+    executor = ToolExecutor(build_test_tool_registry(question_handler=answer))
     base = {
         "id": "remote",
         "header": "Remote",

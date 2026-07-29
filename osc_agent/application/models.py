@@ -23,7 +23,7 @@ from osc_agent.runtime.permissions import PermissionPolicy
 from osc_agent.runtime.session_store import SessionStore
 from osc_agent.runtime.tool import Tool
 from osc_agent.subagents.registry import SubagentRegistration
-from osc_agent.tools.process_runner import ProcessRunner
+from osc_agent.processes.contracts import ProcessRunner
 
 
 class AgentProfile(FrozenContractModel):

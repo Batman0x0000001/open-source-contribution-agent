@@ -30,7 +30,7 @@ from osc_agent.subagents.builtins import build_explore_subagent, build_verify_su
 from osc_agent.subagents.registry import SubagentRegistry
 from osc_agent.subagents.runner import SubagentRunner
 from osc_agent.subagents.tool import AgentTool
-from osc_agent.tools.registry import build_tool_registry
+from osc_agent.tools.registry import build_core_tool_registry
 
 
 @dataclass(frozen=True)
@@ -97,12 +97,13 @@ def compose_application(config: AgentApplicationConfig) -> ApplicationGraph:
     worktree_manager = GitWorktreeManager(state_paths.worktrees)
     instruction_resolver = RepositoryInstructionResolver()
     catalog = build_skill_catalog(repo_root)
-    registry = build_tool_registry(
+    registry = build_core_tool_registry(
         worktree_manager=worktree_manager,
         tool_result_store=tool_result_store,
         instruction_resolver=instruction_resolver,
         subprocess_env_allowlist=settings.subprocess_env_allowlist,
         process_runner=config.process_runner,
+        question_handler=config.question_handler,
     )
     for tool in config.extra_tools:
         registry.register(tool)
@@ -120,7 +121,6 @@ def compose_application(config: AgentApplicationConfig) -> ApplicationGraph:
         hooks=hooks,
         dependencies=ToolExecutionDependencies(
             approval_handler=config.approval_handler,
-            question_handler=config.question_handler,
         ),
     )
     gateway = build_model_gateway(settings, config.model_gateway)

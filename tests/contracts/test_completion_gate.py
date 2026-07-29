@@ -15,7 +15,7 @@ from osc_agent.runtime.models import (
     ToolUseBlock,
     ToolUseContext,
 )
-from osc_agent.tools.git import git_workspace_fingerprint
+from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
 def initialize_repository(root: Path) -> str:

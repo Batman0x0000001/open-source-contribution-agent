@@ -39,11 +39,15 @@ def normalize_repo_relative_pattern(value: Any, *, field_name: str = "pattern") 
 def repo_path_matches(path: str, pattern: str) -> bool:
     normalized_path = normalize_repo_relative_path(path)
     normalized_pattern = normalize_repo_relative_pattern(pattern)
-    if normalized_pattern.endswith("/**") and not any(marker in normalized_pattern[:-3] for marker in ("*", "?", "[")):
+    if normalized_pattern.endswith("/**") and not any(
+        marker in normalized_pattern[:-3] for marker in ("*", "?", "[")
+    ):
         directory = normalized_pattern[:-3].rstrip("/")
         return normalized_path == directory or normalized_path.startswith(f"{directory}/")
     candidate = PurePosixPath(normalized_path)
-    return candidate.match(normalized_pattern) or (normalized_pattern.startswith("**/") and candidate.match(normalized_pattern[3:]))
+    return candidate.match(normalized_pattern) or (
+        normalized_pattern.startswith("**/") and candidate.match(normalized_pattern[3:])
+    )
 
 
 def repo_path_is_within(path: str, directory: str) -> bool:

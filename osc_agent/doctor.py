@@ -21,7 +21,7 @@ from osc_agent.runtime.session_store import FileSessionStore
 from osc_agent.runtime.state_paths import ApplicationStatePaths
 from osc_agent.subagents.builtins import build_explore_subagent, build_verify_subagent
 from osc_agent.subagents.registry import SubagentRegistry
-from osc_agent.tools.process_runner import (
+from osc_agent.processes.policy import (
     build_subprocess_environment,
     is_protected_environment_name,
 )

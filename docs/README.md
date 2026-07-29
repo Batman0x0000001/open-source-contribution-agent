@@ -7,9 +7,10 @@
 1. 从项目根目录 [`README.md`](../README.md) 了解用途、CLI 和 GitHub App Bot。
 2. 阅读 [`architecture/bot-first.md`](architecture/bot-first.md) 建立生产组件全景。
 3. 阅读 [`architecture/agent-runtime.md`](architecture/agent-runtime.md) 理解统一 Agent Runtime。
-4. 阅读 [`architecture/bot-job-state-machine.md`](architecture/bot-job-state-machine.md) 理解 Job 状态流。
-5. 阅读 [`architecture/current-state-schema.md`](architecture/current-state-schema.md) 理解 SQLite 和 ExecutionContract。
-6. 阅读 [`operations/observability.md`](operations/observability.md) 了解健康检查、指标和故障处理。
+4. 阅读 [`architecture/tools.md`](architecture/tools.md) 理解 Tool adapter 与共享能力边界。
+5. 阅读 [`architecture/bot-job-state-machine.md`](architecture/bot-job-state-machine.md) 理解 Job 状态流。
+6. 阅读 [`architecture/current-state-schema.md`](architecture/current-state-schema.md) 理解 SQLite 和 ExecutionContract。
+7. 阅读 [`operations/observability.md`](operations/observability.md) 了解健康检查、指标和故障处理。
 
 ## 架构约束
 

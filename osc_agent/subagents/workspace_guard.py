@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 
 from osc_agent.runtime.models import ToolError, ToolResult, ToolUseContext
-from osc_agent.tools.git import git_workspace_fingerprint
+from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
 async def capture_workspace_fingerprint(context: ToolUseContext) -> str | ToolResult:

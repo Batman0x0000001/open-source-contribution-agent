@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import asyncio
 import hashlib
 import json
 import os
@@ -28,17 +27,12 @@ from osc_agent.runtime.models import (
 )
 from osc_agent.runtime.permissions import DefaultPermissionPolicy, PermissionPolicy
 from osc_agent.runtime.tool import Tool, ToolRegistry
-from osc_agent.tools.git import git_workspace_fingerprint
 
 
 ApprovalHandler = Callable[[Ask], Awaitable[ApprovalResponse]]
-QuestionHandler = Callable[[list[dict[str, JsonValue]]], Awaitable[dict[str, str]]]
-
-
 @dataclass(frozen=True)
 class ToolExecutionDependencies:
     approval_handler: ApprovalHandler | None = None
-    question_handler: QuestionHandler | None = None
 
 
 class ToolExecutor:
@@ -97,66 +91,11 @@ class ToolExecutor:
             return _error("HOOK_BLOCKED", hook_result.reason)
 
         try:
-            if tool.name == "ask_user_question":
-                if self.dependencies.question_handler is None:
-                    result = _error("USER_INTERACTION_REQUIRED", "no question handler is configured")
-                else:
-                    questions = serialized_input.get("questions")
-                    if not isinstance(questions, list):
-                        result = _error("TOOL_INPUT_INVALID", "questions must be a list")
-                    else:
-                        raw_answers = await self.dependencies.question_handler(questions)
-                        answers = []
-                        for question in questions:
-                            if not isinstance(question, dict):
-                                continue
-                            question_id = str(question.get("id") or "")
-                            text = str(question.get("question") or "")
-                            raw = raw_answers.get(question_id, raw_answers.get(text))
-                            if raw is None:
-                                result = _error(
-                                    "USER_INTERACTION_INVALID",
-                                    f"no answer was returned for question {question_id or text}",
-                                )
-                                break
-                            options = question.get("options") or []
-                            selected = next(
-                                (
-                                    str(option.get("id"))
-                                    for option in options
-                                    if isinstance(option, dict)
-                                    and raw in {option.get("id"), option.get("label")}
-                                ),
-                                None,
-                            )
-                            answers.append(
-                                {
-                                    "question_id": question_id,
-                                    "selected_option_id": selected,
-                                    "custom_text": None if selected is not None else str(raw),
-                                }
-                            )
-                        else:
-                            try:
-                                fingerprint = await asyncio.to_thread(
-                                    git_workspace_fingerprint,
-                                    repo_root=Path(context.working_directory),
-                                )
-                            except (OSError, ValueError):
-                                fingerprint = None
-                            result = ToolResult(
-                                data={
-                                    "questions": questions,
-                                    "answers": answers,
-                                    "workspace_fingerprint": fingerprint,
-                                }
-                            )
-            else:
-                execution_context = context.model_copy(
-                    update={"tool_use_id": call.id},
-                    deep=True,
-                )
-                result = await tool.call(allowed_input, execution_context)
+            execution_context = context.model_copy(
+                update={"tool_use_id": call.id},
+                deep=True,
+            )
+            result = await tool.call(allowed_input, execution_context)
         except Exception as exc:  # noqa: BLE001 - Tool 异常必须转换为结构化结果。
             result = _error("TOOL_EXECUTION_FAILED", str(exc) or type(exc).__name__)
 

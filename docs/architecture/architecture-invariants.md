@@ -8,11 +8,12 @@
 | Q2 | 配置、依赖、状态、Tool 上下文分离 | `QueryConfig`、`QueryDependencies`、`QueryState`、`ToolUseContext` | Pydantic / frozen dataclass |
 | T1 | Tool 是输入敏感的完整行为对象 | `Tool`、`ToolExecutor` | validation → permission → hooks → call 测试 |
 | T2 | 并发完成可乱序，ContextUpdate 按调用顺序应用 | `tool_orchestration.py` | 并发与串行测试 |
+| T3 | Tool 只适配模型协议，共享文件、Git 和进程能力位于 Tool 外部 | `tools/`、`workspaces/`、`processes/` | AST 依赖边界与核心注册表测试 |
 | C1 | Transcript 与模型 Projection 分离 | `SessionTranscript`、`ContextPipeline` | compact 不改变权威历史和 Tool 配对 |
 | R1 | Transcript 驱动恢复 | `FileSessionStore` | JSONL 新建、追加、损坏拒绝、状态恢复 |
 | S1 | Catalog 只发现 manifest，正文和资源延迟加载 | `SkillLoader`、`ReadSkillResourceTool` | 调用时读取与路径逃逸测试 |
 | S2 | 产品 Skill、SkillTool 共用执行器 | `AgentConversation`、`SkillTool`、`SkillExecutor` | composition 对象同一性测试 |
-| P1 | Plan Mode 是 Permission 状态，不是 Workflow Gate | interaction tools、`DefaultPermissionPolicy` | 禁止普通写、固定计划路径、批准退出 |
+| P1 | Plan Mode 是 Permission 状态，不是 Workflow Gate | plan tools、`DefaultPermissionPolicy` | 禁止普通写、固定计划路径、批准退出 |
 | A1 | 子 Agent 递归复用 Query，且不能再次调用 AgentTool | `SubagentRunner`、`AgentTool` | Runtime 同一性、隔离与 capability 收窄测试 |
 | W1 | Git worktree 是工作区隔离 | `GitWorktreeManager`、enter/exit tools | 创建、上下文切换、脏状态保护 |
 | D1 | 无第二套执行架构 | `runtime/`、`subagents/`、`skills/`、`workspaces/` | 禁止 `support`、`workflows`、Todo、Task、Mock MCP 依赖 |

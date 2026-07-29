@@ -11,7 +11,7 @@ from pydantic import Field, ValidationInfo, field_validator, model_validator
 from osc_agent.runtime.models import CapabilityScope, ContractModel, FrozenContractModel, QueryConfig
 from osc_agent.subagents.models import SubagentDefinition
 from osc_agent.subagents.registry import SubagentContract, SubagentRegistration
-from osc_agent.tools.path_policy import normalize_repo_relative_path, safe_repo_path
+from osc_agent.workspaces.path_policy import normalize_repo_relative_path, safe_repo_path
 
 
 EXPLORE_TOOLS = frozenset(

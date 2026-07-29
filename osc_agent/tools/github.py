@@ -27,7 +27,7 @@ from osc_agent.runtime.models import (
     ValidationSuccess,
 )
 from osc_agent.runtime.tool import BaseTool
-from osc_agent.tools.process_runner import build_subprocess_environment
+from osc_agent.processes.policy import build_subprocess_environment
 
 
 class GitHubIssue(ContractModel):
