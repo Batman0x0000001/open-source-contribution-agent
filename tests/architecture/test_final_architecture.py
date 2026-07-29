@@ -43,6 +43,24 @@ def test_query_and_tool_execution_have_one_authoritative_definition() -> None:
     assert _class_definitions("SkillExecutor") == [PACKAGE_ROOT / "skills" / "executor.py"]
 
 
+def test_workspace_capabilities_have_explicit_names() -> None:
+    expected = [
+        PACKAGE_ROOT / "workspaces" / "git_worktree.py",
+        PACKAGE_ROOT / "tools" / "worktree.py",
+        PACKAGE_ROOT / "bot" / "job_workspace.py",
+    ]
+    forbidden = [
+        PACKAGE_ROOT / "isolation" / "worktree.py",
+        PACKAGE_ROOT / "tools" / "worktree_tools.py",
+        PACKAGE_ROOT / "bot" / "workspace.py",
+    ]
+
+    assert all(path.is_file() for path in expected)
+    assert not any(path.exists() for path in forbidden)
+    assert _class_definitions("GitWorktreeManager") == [expected[0]]
+    assert _class_definitions("BotJobWorkspacePreparer") == [expected[2]]
+
+
 def test_only_provider_calls_anthropic_sdk() -> None:
     importers: list[Path] = []
     for path in PACKAGE_ROOT.rglob("*.py"):

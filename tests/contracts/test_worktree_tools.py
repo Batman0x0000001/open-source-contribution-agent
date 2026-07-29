@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from osc_agent.isolation.worktree import WorktreeManager
+from osc_agent.workspaces.git_worktree import GitWorktreeManager
 from osc_agent.runtime.models import ApprovalResponse, Ask, ToolUseBlock, ToolUseContext, WorktreeSession
 from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
 from tests.contracts.registry_factory import build_test_tool_registry
@@ -40,7 +40,7 @@ def test_worktree_name_is_validated_before_approval(tmp_path: Path) -> None:
 def test_worktree_mutations_use_permission_pipeline(monkeypatch, tmp_path: Path) -> None:
     target = tmp_path / ".osc_agent" / "worktrees" / "feature"
     monkeypatch.setattr(
-        WorktreeManager,
+        GitWorktreeManager,
         "create",
         lambda self, repo_root, name: WorktreeSession(
             path=str(target), original_working_directory=str(tmp_path), branch="osc-agent/feature", base_commit="abc123"

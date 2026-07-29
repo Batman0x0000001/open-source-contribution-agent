@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from osc_agent.isolation.worktree import WorktreeManager
+from osc_agent.workspaces.git_worktree import GitWorktreeManager
 from osc_agent.runtime.models import ContextUpdate, ContractModel, ToolResult, ToolUseContext, ValidationFailure, ValidationResult, ValidationSuccess
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.runtime.instructions import RepositoryInstructionResolver
@@ -32,7 +32,7 @@ class EnterWorktreeTool(BaseTool[EnterWorktreeInput, WorktreeOutput]):
 
     def __init__(
         self,
-        manager: WorktreeManager,
+        manager: GitWorktreeManager,
         instructions: RepositoryInstructionResolver | None = None,
     ) -> None:
         self.manager = manager
@@ -91,7 +91,7 @@ class ExitWorktreeTool(BaseTool[ExitWorktreeInput, WorktreeOutput]):
 
     def __init__(
         self,
-        manager: WorktreeManager,
+        manager: GitWorktreeManager,
         instructions: RepositoryInstructionResolver | None = None,
     ) -> None:
         self.manager = manager

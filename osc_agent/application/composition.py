@@ -12,7 +12,7 @@ from osc_agent.agents.tool import AgentTool
 from osc_agent.agents.verify import build_verify_registration
 from osc_agent.application.models import AgentApplicationConfig
 from osc_agent.config import Settings
-from osc_agent.isolation.worktree import WorktreeManager
+from osc_agent.workspaces.git_worktree import GitWorktreeManager
 from osc_agent.providers.anthropic import AnthropicModelGateway
 from osc_agent.runtime.completion import CompletionEvidenceStopHook
 from osc_agent.runtime.context import ContextPipeline, GatewayContextSummarizer
@@ -95,7 +95,7 @@ def compose_application(config: AgentApplicationConfig) -> ApplicationGraph:
     state_paths = ApplicationStatePaths.for_repository(repo_root, state_root=config.state_root)
     session_store: SessionStore = config.session_store or FileSessionStore(state_paths.sessions)
     tool_result_store = FileToolResultStore(state_paths.tool_results)
-    worktree_manager = WorktreeManager(state_paths.worktrees)
+    worktree_manager = GitWorktreeManager(state_paths.worktrees)
     instruction_resolver = RepositoryInstructionResolver()
     catalog = build_skill_catalog(repo_root)
     registry = build_tool_registry(

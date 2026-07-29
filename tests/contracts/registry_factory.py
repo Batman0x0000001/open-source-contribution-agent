@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 
-from osc_agent.isolation.worktree import WorktreeManager
+from osc_agent.workspaces.git_worktree import GitWorktreeManager
 from osc_agent.runtime.context import MemoryToolResultStore
 from osc_agent.tools.registry import build_tool_registry
 
@@ -13,6 +13,6 @@ from osc_agent.tools.registry import build_tool_registry
 def build_test_tool_registry(root: Path | None = None):
     state = (root or Path(tempfile.gettempdir()) / "osc-agent-contract-tests") / "state"
     return build_tool_registry(
-        worktree_manager=WorktreeManager(state / "worktrees"),
+        worktree_manager=GitWorktreeManager(state / "worktrees"),
         tool_result_store=MemoryToolResultStore(),
     )

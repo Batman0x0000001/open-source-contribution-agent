@@ -10,7 +10,7 @@ from osc_agent.bot.github_app import GitHubApiError, GitHubControlClient
 from osc_agent.bot.models import RepositoryBotCatalog
 from osc_agent.bot.publisher import TrustedPublisher
 from osc_agent.bot.store import BotStore
-from osc_agent.bot.workspace import WorkspacePreparer
+from osc_agent.bot.job_workspace import BotJobWorkspacePreparer
 from osc_agent.bot.observability import OUTBOX_HEARTBEAT, OUTBOX_ITERATIONS, OUTBOX_UP
 
 
@@ -37,7 +37,7 @@ class DispatcherHealth:
 
 
 class OutboxProcessor:
-    def __init__(self, *, store: BotStore, github: GitHubControlClient, preparer: WorkspacePreparer, publisher: TrustedPublisher, catalog: RepositoryBotCatalog) -> None:
+    def __init__(self, *, store: BotStore, github: GitHubControlClient, preparer: BotJobWorkspacePreparer, publisher: TrustedPublisher, catalog: RepositoryBotCatalog) -> None:
         self.store = store
         self.github = github
         self.preparer = preparer

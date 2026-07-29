@@ -101,7 +101,7 @@ class AgentRuntime:
                 )
             if runtime_state.worktree is not None:
                 if self.dependencies.worktree_manager is None:
-                    raise ValueError("resume of a worktree session requires WorktreeManager")
+                    raise ValueError("resume of a worktree session requires GitWorktreeManager")
                 self.dependencies.worktree_manager.validate_session(runtime_state.worktree)
             interrupted = _repair_interrupted_tool_uses(snapshot.messages)
             if interrupted is not None:

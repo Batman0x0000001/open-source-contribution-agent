@@ -8,10 +8,10 @@ from osc_agent.tools.git import GitDiffTool, GitLogTool, GitStatusTool
 from osc_agent.tools.github import GitHubGetIssueTool, GitHubListIssuesTool
 from osc_agent.tools.bash import BashTool
 from osc_agent.tools.interaction import AskUserQuestionTool, EnterPlanModeTool, ExitPlanModeTool, ReadPlanTool, WritePlanTool
-from osc_agent.tools.worktree_tools import EnterWorktreeTool, ExitWorktreeTool
+from osc_agent.tools.worktree import EnterWorktreeTool, ExitWorktreeTool
 from osc_agent.tools.state_tools import ReadToolResultTool
 from osc_agent.tools.search import GrepTool
-from osc_agent.isolation.worktree import WorktreeManager
+from osc_agent.workspaces.git_worktree import GitWorktreeManager
 from osc_agent.runtime.instructions import RepositoryInstructionResolver
 from osc_agent.runtime.session_store import ToolResultStore
 from osc_agent.tools.process_runner import ProcessRunner
@@ -19,7 +19,7 @@ from osc_agent.tools.process_runner import ProcessRunner
 
 def build_tool_registry(
     *,
-    worktree_manager: WorktreeManager,
+    worktree_manager: GitWorktreeManager,
     tool_result_store: ToolResultStore,
     instruction_resolver: RepositoryInstructionResolver | None = None,
     subprocess_env_allowlist: frozenset[str] = frozenset(),

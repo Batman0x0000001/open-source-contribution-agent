@@ -12,7 +12,7 @@ from osc_agent.runtime.gateway import ModelGateway
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
 from osc_agent.runtime.session_store import SessionStore
-from osc_agent.isolation.worktree import WorktreeManager
+from osc_agent.workspaces.git_worktree import GitWorktreeManager
 from osc_agent.runtime.instructions import RepositoryInstructionResolver
 
 
@@ -26,7 +26,7 @@ class QueryDependencies:
     context_pipeline: ContextPipeline = field(default_factory=ContextPipeline)
     session_store: SessionStore | None = None
     state_directory: str | None = None
-    worktree_manager: WorktreeManager | None = None
+    worktree_manager: GitWorktreeManager | None = None
     instruction_resolver: RepositoryInstructionResolver = field(
         default_factory=RepositoryInstructionResolver
     )

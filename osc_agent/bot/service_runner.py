@@ -15,7 +15,7 @@ from osc_agent.bot.publisher import TrustedPublisher
 from osc_agent.bot.store import BotStore
 from osc_agent.bot.webhook import create_webhook_app
 from osc_agent.bot.worker import BotWorker
-from osc_agent.bot.workspace import WorkspacePreparer
+from osc_agent.bot.job_workspace import BotJobWorkspacePreparer
 from osc_agent.config import load_settings
 
 
@@ -30,7 +30,11 @@ def build_control_components(settings: BotSettings):
         store=store,
         github=github,
     )
-    preparer = WorkspacePreparer(root=settings.workspace_root, store=store, github=github)
+    preparer = BotJobWorkspacePreparer(
+        root=settings.workspace_root,
+        store=store,
+        github=github,
+    )
     publisher = TrustedPublisher(settings=settings, store=store, github=github)
     processor = OutboxProcessor(
         store=store,

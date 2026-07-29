@@ -95,7 +95,11 @@ Manifest 声明的资源由 `read_skill_resource` 在调用时读取，并受根
 
 ## Session、Plan 与 Contribution
 
-完整 JSONL Session transcript 是恢复依据；Plan Mode 与 Worktree 是少量类型化会话状态。Contribution 是 inline Skill，不是 Workflow：Agent Loop 根据 transcript、批准的 plan、测试和 git diff 动态推进，人工检查点由 AskUserQuestion 与 PermissionPolicy 表达。
+完整 JSONL Session transcript 是恢复依据；Plan Mode 与 Worktree 是少量类型化会话状态。
+`workspaces/git_worktree.py` 管理 Git 工作目录生命周期，`tools/worktree.py` 只负责权限、
+输入输出与 Session Context 适配。Contribution 是 inline Skill，不是 Workflow：Agent Loop
+根据 transcript、批准的 plan、测试和 git diff 动态推进，人工检查点由 AskUserQuestion 与
+PermissionPolicy 表达。
 
 ## Pydantic 与 Protocol
 

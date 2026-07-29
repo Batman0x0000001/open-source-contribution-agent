@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from osc_agent.isolation.worktree import WorktreeManager
+from osc_agent.workspaces.git_worktree import GitWorktreeManager
 from osc_agent.runtime.models import WorktreeSession
 
 
@@ -22,7 +22,7 @@ def test_real_worktree_create_dirty_protection_and_cleanup(tmp_path: Path) -> No
     (tmp_path / "tracked.txt").write_text("base", encoding="utf-8")
     git(tmp_path, "add", "tracked.txt")
     git(tmp_path, "commit", "-m", "base")
-    manager = WorktreeManager(tmp_path.parent / f"{tmp_path.name}-worktrees")
+    manager = GitWorktreeManager(tmp_path.parent / f"{tmp_path.name}-worktrees")
 
     session = manager.create(tmp_path, "feature")
     target = Path(session.path)
@@ -45,7 +45,7 @@ def test_committed_work_is_not_removed_without_explicit_discard(tmp_path: Path) 
     (tmp_path / "tracked.txt").write_text("base", encoding="utf-8")
     git(tmp_path, "add", "tracked.txt")
     git(tmp_path, "commit", "-m", "base")
-    manager = WorktreeManager(tmp_path.parent / f"{tmp_path.name}-worktrees")
+    manager = GitWorktreeManager(tmp_path.parent / f"{tmp_path.name}-worktrees")
     session = manager.create(tmp_path, "committed")
     target = Path(session.path)
     (target / "tracked.txt").write_text("committed change", encoding="utf-8")
@@ -64,7 +64,7 @@ def test_committed_work_is_not_removed_without_explicit_discard(tmp_path: Path) 
 def test_git_inspection_failure_keeps_worktree(monkeypatch, tmp_path: Path) -> None:
     target = tmp_path / "worktree"
     target.mkdir()
-    manager = WorktreeManager(tmp_path / "state")
+    manager = GitWorktreeManager(tmp_path / "state")
     session = WorktreeSession(
         path=str(target),
         original_working_directory=str(tmp_path),

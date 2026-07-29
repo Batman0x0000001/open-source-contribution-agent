@@ -25,7 +25,7 @@ AgentRuntime.query ← SkillExecutor ← SkillTool
         ↓
 ToolExecutor → Permission / Plan Mode → Hooks → Tool
         ↓
-Session JSONL / Git Worktree Isolation
+Session JSONL / Git Worktree Workspace
 ```
 
 - Runtime 不知道 Contribution 阶段，也不存在固定 Workflow 状态机。
@@ -35,7 +35,7 @@ Session JSONL / Git Worktree Isolation
 - `grep`、Read-before-write 文件观察和完整 Git snapshot 提供安全的代码理解与修改证据。
 - Contribution Skill 结束前必须有最终修改之后的成功测试和更晚的 Git snapshot；无测试只能由用户显式豁免。
 - Session、Plan、Tool Result 和 Worktree 保存在按仓库哈希隔离的用户数据目录，不污染目标仓库。
-- Git worktree 提供真实执行隔离；脏 worktree 不会被静默删除。
+- Git worktree 提供独立工作目录和分支；脏 worktree 不会被静默删除。
 - 进程 Tool 只提供非交互式 Bash；生产 Bot 在无网络 Linux 容器中执行，CLI 调试要求本机 Bash。
 - Tool 子进程只接收运行必需环境变量和用户显式允许的非敏感变量；API Key、Token、
   Secret、Password 等凭据名称始终被过滤。

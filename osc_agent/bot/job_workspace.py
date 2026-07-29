@@ -1,4 +1,4 @@
-"""创建、定位和清理 Bot 作业的 Git worktree 工作区。"""
+"""创建和验证 Bot 作业的独立 Git clone 工作区。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from osc_agent.bot.store import BotStore
 from osc_agent.tools.process_runner import build_subprocess_environment
 
 
-class WorkspacePreparer:
+class BotJobWorkspacePreparer:
     def __init__(self, *, root: Path, store: BotStore, github: GitHubControlClient) -> None:
         self.root = root.resolve()
         self.store = store

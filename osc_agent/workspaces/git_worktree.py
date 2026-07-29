@@ -10,7 +10,7 @@ from osc_agent.runtime.models import WorktreeSession
 from osc_agent.tools.process_runner import build_subprocess_environment
 
 
-class WorktreeManager:
+class GitWorktreeManager:
     """以真实 Git worktree 提供执行目录隔离，不维护额外任务状态。"""
 
     def __init__(self, worktrees_root: Path) -> None:
