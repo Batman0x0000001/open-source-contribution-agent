@@ -102,18 +102,22 @@ async def run_doctor(
     try:
         catalog = build_skill_catalog(repository_root)
         names = [item.manifest.name for item in catalog.list()]
+        diagnostics = catalog.diagnostics()
         results.append(
             DiagnosticResult(
                 name="skills",
-                status="WARN" if catalog.blocked_overrides() else "PASS",
+                status="WARN" if diagnostics else "PASS",
                 message=(
                     f"{len(names)} Skill(s) discovered"
                     + (
-                        f"; {len(catalog.blocked_overrides())} reserved-name override(s) blocked"
-                        if catalog.blocked_overrides()
+                        f"; {len(diagnostics)} external Skill diagnostic(s): "
+                        + "; ".join(
+                            f"{item.code} at {item.path}" for item in diagnostics
+                        )
+                        if diagnostics
                         else ""
                     )
-                ),
+                )[:500],
             )
         )
     except Exception as exc:  # noqa: BLE001 - Doctor 必须聚合所有诊断。

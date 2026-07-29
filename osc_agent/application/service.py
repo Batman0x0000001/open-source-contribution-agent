@@ -24,7 +24,7 @@ from osc_agent.runtime.models import (
     StartQueryParams,
     TextBlock,
 )
-from osc_agent.skills.models import SkillInvocation
+from osc_agent.skills.models import PreparedSkill, SkillRequest
 
 
 class AgentApplication:
@@ -115,19 +115,21 @@ class AgentConversation:
                 capabilities=capabilities,
                 completion_requirements=requirements,
             )
-        rendered = await graph.skill_executor.execute(
-            SkillInvocation(
+        if input.name not in app._profile.allowed_initial_skills:
+            raise ValueError(
+                f"Skill {input.name!r} is not allowed by Agent Profile {app._profile.profile_id!r}"
+            )
+        rendered = await graph.skill_preparer.prepare(
+            SkillRequest(
                 name=input.name,
                 arguments=input.arguments,
-                session_id=self.session_id,
-                working_directory=str(app._repository_root),
                 caller_capabilities=capabilities,
-                trigger="user",
+                trigger="product",
             )
         )
-        if rendered.status != "inline" or rendered.rendered_prompt is None:
-            raise ValueError(rendered.error or "Skill did not render inline")
-        skill_requirements = rendered.completion_requirements or requirements
+        if not isinstance(rendered, PreparedSkill):
+            raise ValueError(rendered.error)
+        skill_requirements = rendered.completion_requirements
         if app._profile.required_evidence:
             skill_requirements = CompletionRequirements(
                 required_evidence=(
@@ -136,8 +138,8 @@ class AgentConversation:
                 waivable_evidence=skill_requirements.waivable_evidence,
             )
         return ResolvedAgentInput(
-            messages=(_message(rendered.rendered_prompt),),
-            capabilities=rendered.capabilities or capabilities,
+            messages=(_message(rendered.prompt),),
+            capabilities=rendered.capabilities,
             completion_requirements=skill_requirements,
         )
 

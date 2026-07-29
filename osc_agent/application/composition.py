@@ -22,10 +22,10 @@ from osc_agent.runtime.state_paths import ApplicationStatePaths
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
 from osc_agent.skills.catalog import SkillCatalog
-from osc_agent.skills.executor import SkillExecutor
+from osc_agent.skills.preparer import SkillPreparer
 from osc_agent.skills.loader import SkillLoader
 from osc_agent.skills.resource_tool import ReadSkillResourceTool
-from osc_agent.skills.tool import SkillTool
+from osc_agent.skills.invocation_tool import SkillTool
 from osc_agent.subagents.builtins import build_explore_subagent, build_verify_subagent
 from osc_agent.subagents.registry import SubagentRegistry
 from osc_agent.subagents.runner import SubagentRunner
@@ -43,7 +43,7 @@ class ApplicationGraph:
     subagent_registry: SubagentRegistry
     subagent_runner: SubagentRunner
     skill_catalog: SkillCatalog
-    skill_executor: SkillExecutor
+    skill_preparer: SkillPreparer
     query_config: QueryConfig
     general_capabilities: CapabilityScope
     discovery_prompt: str
@@ -52,7 +52,7 @@ class ApplicationGraph:
 
 
 def build_skill_catalog(repo_root: Path) -> SkillCatalog:
-    builtin = Path(__file__).resolve().parents[1] / "skills"
+    builtin = Path(__file__).resolve().parents[1] / "skills" / "builtins"
     return SkillCatalog(
         [
             SkillLoader(builtin, source="builtin"),
@@ -83,7 +83,7 @@ def build_model_gateway(
 
 
 def compose_application(config: AgentApplicationConfig) -> ApplicationGraph:
-    """创建一个 Runtime、ToolExecutor、SkillExecutor 和权限链。"""
+    """创建一个 Runtime、ToolExecutor、SkillPreparer 和权限链。"""
 
     settings = config.settings
     repo_root = config.repository_root.resolve()
@@ -155,9 +155,26 @@ def compose_application(config: AgentApplicationConfig) -> ApplicationGraph:
         ]
     )
     runner = SubagentRunner(runtime, subagent_registry, default_model=model_id)
-    skill_executor = SkillExecutor(catalog, subagent_runner=runner, query_config=query_config)
-    registry.register(SkillTool(skill_executor))
+    skill_preparer = SkillPreparer(catalog)
+    registry.register(SkillTool(skill_preparer))
     registry.register(AgentTool(runner, subagent_registry))
+    registered_tools = set(registry.names())
+    catalog.validate_allowed_tools(registered_tools)
+    if config.profile.allowed_tools is not None:
+        unknown_profile_tools = config.profile.allowed_tools - registered_tools
+        if unknown_profile_tools:
+            raise ValueError(
+                "Agent Profile references unregistered tools: "
+                + ", ".join(sorted(unknown_profile_tools))
+            )
+    unknown_initial_skills = config.profile.allowed_initial_skills - {
+        item.manifest.name for item in catalog.list()
+    }
+    if unknown_initial_skills:
+        raise ValueError(
+            "Agent Profile references unknown initial Skills: "
+            + ", ".join(sorted(unknown_initial_skills))
+        )
     general_capabilities = CapabilityScope(allowed_tools=frozenset(registry.names()))
     discovery_prompt = build_discovery_prompt(catalog, subagent_registry, general_capabilities)
     return ApplicationGraph(
@@ -167,7 +184,7 @@ def compose_application(config: AgentApplicationConfig) -> ApplicationGraph:
         subagent_registry=subagent_registry,
         subagent_runner=runner,
         skill_catalog=catalog,
-        skill_executor=skill_executor,
+        skill_preparer=skill_preparer,
         query_config=query_config,
         general_capabilities=general_capabilities,
         discovery_prompt=discovery_prompt,
@@ -182,9 +199,8 @@ def build_discovery_prompt(
     capabilities: CapabilityScope,
 ) -> str:
     skills = [
-        f"- {item.manifest.name}: {item.manifest.description}"
-        for item in catalog.list()
-        if item.source == "builtin" and not item.manifest.disable_model_invocation
+        f"- {item.manifest.name}: {item.manifest.description} When to use: {item.manifest.when_to_use}"
+        for item in catalog.list_model_invocable()
     ]
     agents = (
         [

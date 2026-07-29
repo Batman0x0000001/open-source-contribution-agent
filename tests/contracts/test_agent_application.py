@@ -19,7 +19,7 @@ from osc_agent.runtime.models import (
     RunCompleted,
     StartQueryParams,
 )
-from osc_agent.skills.models import SkillResult
+from osc_agent.skills.models import PreparedSkill
 
 
 class RecordingRuntime:
@@ -39,16 +39,15 @@ class SessionStore:
         return self.existing
 
 
-class SkillExecutor:
+class SkillPreparer:
     def __init__(self) -> None:
         self.invocations = []
 
-    async def execute(self, invocation):
-        self.invocations.append(invocation)
-        return SkillResult(
-            name=invocation.name,
-            status="inline",
-            rendered_prompt="rendered skill",
+    async def prepare(self, request):
+        self.invocations.append(request)
+        return PreparedSkill(
+            name=request.name,
+            prompt="rendered skill",
             capabilities=CapabilityScope(allowed_tools=frozenset({"read_file"})),
             completion_requirements=CompletionRequirements(
                 required_evidence=frozenset({"successful_test"})
@@ -56,13 +55,13 @@ class SkillExecutor:
         )
 
 
-def _application(root: Path, *, existing=None):
+def _application(root: Path, *, existing=None, allowed_initial_skills=frozenset()):
     runtime = RecordingRuntime()
-    skill_executor = SkillExecutor()
+    skill_preparer = SkillPreparer()
     graph = SimpleNamespace(
         runtime=runtime,
         session_store=SessionStore(existing),
-        skill_executor=skill_executor,
+        skill_preparer=skill_preparer,
         query_config=QueryConfig(),
         general_capabilities=CapabilityScope(allowed_tools=frozenset({"read_file", "grep"})),
         discovery_prompt="discovery",
@@ -74,10 +73,11 @@ def _application(root: Path, *, existing=None):
         profile=AgentProfile(
             profile_id="custom-product",
             system_prompt="system",
+            allowed_initial_skills=allowed_initial_skills,
             required_evidence=frozenset({"independent_verification"}),
         ),
     )
-    return application, runtime, skill_executor
+    return application, runtime, skill_preparer
 
 
 async def _collect(events):
@@ -124,8 +124,11 @@ def test_existing_session_rejects_skill_input(tmp_path: Path) -> None:
         )
 
 
-def test_skill_start_uses_shared_executor_and_tightens_requirements(tmp_path: Path) -> None:
-    application, runtime, skill_executor = _application(tmp_path)
+def test_skill_start_uses_shared_preparer_and_tightens_requirements(tmp_path: Path) -> None:
+    application, runtime, skill_preparer = _application(
+        tmp_path,
+        allowed_initial_skills=frozenset({"skill"}),
+    )
 
     asyncio.run(
         _collect(
@@ -135,10 +138,24 @@ def test_skill_start_uses_shared_executor_and_tightens_requirements(tmp_path: Pa
         )
     )
 
-    assert skill_executor.invocations[0].trigger == "user"
+    assert skill_preparer.invocations[0].trigger == "product"
     params = runtime.params[0]
     assert params.messages[0].content[0].text == "rendered skill"
     assert params.capabilities.allowed_tools == frozenset({"read_file"})
     assert params.completion_requirements.required_evidence == frozenset(
         {"successful_test", "independent_verification"}
     )
+
+
+def test_skill_start_requires_explicit_profile_authorization(tmp_path: Path) -> None:
+    application, runtime, skill_preparer = _application(tmp_path)
+
+    with pytest.raises(ValueError, match="not allowed by Agent Profile"):
+        asyncio.run(
+            _collect(
+                application.open_session("skill").submit(SkillInput(name="hidden"))
+            )
+        )
+
+    assert runtime.params == []
+    assert skill_preparer.invocations == []

@@ -60,9 +60,21 @@ def test_subagent_runner_delegates_to_agent_runtime_query() -> None:
     assert "model_gateway.stream(" not in source
 
 
-def test_skill_tool_delegates_to_skill_executor() -> None:
-    source = (PROJECT_ROOT / "osc_agent" / "skills" / "tool.py").read_text(encoding="utf-8")
+def test_skill_tool_delegates_to_skill_preparer() -> None:
+    source = (PROJECT_ROOT / "osc_agent" / "skills" / "invocation_tool.py").read_text(encoding="utf-8")
 
-    assert "self.executor.execute(" in source
+    assert "self.preparer.prepare(" in source
     assert "AgentRuntime(" not in source
     assert "model_gateway.stream(" not in source
+
+
+def test_skills_do_not_depend_on_subagents() -> None:
+    skill_root = PROJECT_ROOT / "osc_agent" / "skills"
+    violations = [
+        f"{path.relative_to(PROJECT_ROOT)} -> {module}"
+        for path in sorted(skill_root.rglob("*.py"))
+        for module in _imports(path)
+        if module.startswith("osc_agent.subagents")
+    ]
+
+    assert not violations, "Skills must not depend on subagents:\n" + "\n".join(violations)

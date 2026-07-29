@@ -211,6 +211,7 @@ def test_contribution_skill_runs_through_plan_worktree_draft_and_resume(monkeypa
             profile=AgentProfile(
                 profile_id="test",
                 system_prompt="Follow the invoked Skill instructions and use repository evidence.",
+                allowed_initial_skills=frozenset({"open-source-contribution"}),
             ),
             approval_handler=approve,
             question_handler=answer,

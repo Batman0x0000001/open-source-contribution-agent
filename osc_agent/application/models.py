@@ -30,6 +30,7 @@ class AgentProfile(FrozenContractModel):
     profile_id: str = Field(min_length=1)
     system_prompt: str
     allowed_tools: frozenset[str] | None = None
+    allowed_initial_skills: frozenset[str] = frozenset()
     required_evidence: frozenset[str] = frozenset()
 
 

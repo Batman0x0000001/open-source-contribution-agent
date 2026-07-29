@@ -184,10 +184,14 @@ def list_skills(repo: RepoOption = Path.cwd()) -> None:
 
     catalog = build_skill_catalog(repo)
     for descriptor in catalog.list():
-        typer.echo(f"{descriptor.manifest.name}\t{descriptor.source}\t{descriptor.manifest.description}")
-    for descriptor in catalog.blocked_overrides():
         typer.echo(
-            f"WARN\t{descriptor.manifest.name}\t{descriptor.source} override blocked: built-in name is reserved",
+            f"{descriptor.manifest.name}\t{descriptor.source}\t"
+            f"{descriptor.manifest.description}\t{descriptor.manifest.when_to_use}"
+        )
+    for diagnostic in catalog.diagnostics():
+        typer.echo(
+            f"WARN\t{diagnostic.skill_name or '-'}\t{diagnostic.source}\t"
+            f"{diagnostic.code}: {diagnostic.message} ({diagnostic.path})",
             err=True,
         )
 
@@ -206,13 +210,12 @@ def run_skill(
         raise typer.BadParameter(f"--arguments must be valid JSON: {exc.msg}") from exc
     if not isinstance(payload, dict):
         raise typer.BadParameter("--arguments must decode to an object")
-    descriptor = build_skill_catalog(repo).get(name)
+    catalog = build_skill_catalog(repo)
+    descriptor = catalog.get(name)
     if descriptor is None:
         raise typer.BadParameter(f"unknown skill: {name}")
-    if not descriptor.manifest.user_invocable:
+    if descriptor not in catalog.list_user_invocable():
         raise typer.BadParameter("skill is not user invocable")
-    if descriptor.manifest.context != "inline":
-        raise typer.BadParameter("local debug CLI currently supports inline Skills only")
     _run_inline_skill(name, repo, payload, once=once, quiet=quiet)
 
 
@@ -233,6 +236,7 @@ def _run_inline_skill(
             profile=AgentProfile(
                 profile_id="local_debug",
                 system_prompt="Use repository evidence and follow the explicitly invoked Skill.",
+                allowed_initial_skills=frozenset({name}),
             ),
             approval_handler=_approve,
             question_handler=_ask_questions,

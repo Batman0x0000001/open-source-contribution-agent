@@ -18,6 +18,11 @@ Implementation uses the approved `open-source-contribution` Skill and a network-
 runner. An immutable ExecutionContract binds the Issue snapshot, base SHA, model/profile/Skill
 revisions, tools, validation, sandbox limits, repository policy, and publication mode.
 
+These phases are trust boundaries rather than a task workflow. The Worker validates typed Job,
+Plan, and ExecutionContract data, then constructs one `SkillInput`; the Skill controls the adaptive
+method inside that Agent run. Discover, Design, Implement, and Verify are not Worker state-machine
+steps, and Skill instructions cannot weaken sandbox, approval, artifact, or publication checks.
+
 Worker 为 Plan 和 Implementation 建立独立 slot 配额。SIGTERM 会先停止领取新 Job，再有界
 等待在途 Agent；超过关闭期限时取消任务，ProcessRunner 负责终止进程树或 Docker 容器。
 RuntimeEvent 只按节流窗口保存事件类型和阶段。任何 denied path、Git metadata 或变更上限

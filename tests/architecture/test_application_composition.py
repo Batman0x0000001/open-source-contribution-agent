@@ -83,8 +83,7 @@ def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -
     assert graph.runtime.dependencies.tool_executor is graph.tool_executor
     assert graph.runtime.dependencies.tool_registry is graph.tool_registry
     assert graph.subagent_runner.runtime is graph.runtime
-    assert graph.skill_executor.subagent_runner is graph.subagent_runner
-    assert graph.tool_registry.get("skill").executor is graph.skill_executor
+    assert graph.tool_registry.get("skill").preparer is graph.skill_preparer
     assert graph.tool_registry.get("agent").runner is graph.subagent_runner
     assert graph.tool_registry.get("agent").registry is graph.subagent_registry
     assert [item.definition.name for item in graph.subagent_registry.list()] == ["explore", "verify"]
@@ -94,6 +93,7 @@ def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -
     assert "agent" in graph.general_capabilities.allowed_tools
     assert "<available_skills>" in graph.discovery_prompt
     assert "open-source-contribution" in graph.discovery_prompt
+    assert "When to use:" in graph.discovery_prompt
     assert "<available_agents>" in graph.discovery_prompt
     assert "- explore:" in graph.discovery_prompt
     assert "- verify:" in graph.discovery_prompt
@@ -134,6 +134,19 @@ def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -
 
 def test_cli_exposes_only_new_architecture_commands(tmp_path: Path) -> None:
     runner = CliRunner()
+    invalid = tmp_path / ".osc_agent" / "skills" / "legacy" / "SKILL.md"
+    invalid.parent.mkdir(parents=True)
+    invalid.write_text(
+        """---
+name: legacy
+description: Legacy
+when_to_use: Never
+input_schema: {type: object}
+---
+Legacy.
+""",
+        encoding="utf-8",
+    )
 
     root_help = runner.invoke(app, ["--help"])
     skill_help = runner.invoke(app, ["skill", "--help"])
@@ -148,6 +161,7 @@ def test_cli_exposes_only_new_architecture_commands(tmp_path: Path) -> None:
     assert "--repo-url" in contribution_help.stdout
     assert "resume" in root_help.stdout
     assert "open-source-contribution" in listed.stdout
+    assert "INVALID_SKILL_MANIFEST" in listed.stderr
 
 
 def test_cli_does_not_import_legacy_runtime_or_stage_functions() -> None:
@@ -181,3 +195,12 @@ def test_product_entrypoints_use_agent_application_only() -> None:
         assert "StartQueryParams" not in source
         assert "ResumeQueryParams" not in source
         assert ".runtime.query(" not in source
+
+
+def test_application_composition_does_not_name_bot_artifact_tools() -> None:
+    source = (PROJECT_ROOT / "osc_agent" / "application" / "composition.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "submit_issue_plan" not in source
+    assert "submit_delivery_draft" not in source

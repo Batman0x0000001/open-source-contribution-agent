@@ -1,6 +1,5 @@
 ---
 name: open-source-contribution
-version: 1
 description: Analyze, design, implement, verify, and draft an open-source contribution through one adaptive agent loop.
 when_to_use: Use when a user wants to find and complete a contribution to an open-source repository.
 allowed_tools:
@@ -25,8 +24,8 @@ allowed_tools:
   - edit_file
   - read_tool_result
   - agent
+product_tools:
   - submit_delivery_draft
-context: inline
 user_invocable: true
 disable_model_invocation: false
 resources:
@@ -42,27 +41,6 @@ completion:
   waivable_evidence:
     - successful_test
     - independent_verification
-input_schema:
-  type: object
-  properties:
-    repo_url: {type: string}
-    goal: {type: [string, 'null']}
-    mode: {type: string, enum: [interactive, approved_implementation]}
-    automation:
-      type: object
-      properties:
-        issue_number: {type: integer}
-        base_sha: {type: string}
-        approved_plan: {type: string}
-        execution_contract_hash: {type: string}
-      required: [issue_number, base_sha, approved_plan, execution_contract_hash]
-      additionalProperties: false
-  required: [repo_url]
-  additionalProperties: false
-output_schema:
-  type: object
-  properties: {}
-  additionalProperties: true
 ---
 You are running the open-source contribution method for the supplied repository.
 

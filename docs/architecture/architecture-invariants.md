@@ -12,7 +12,9 @@
 | C1 | Transcript 与模型 Projection 分离 | `SessionTranscript`、`ContextPipeline` | compact 不改变权威历史和 Tool 配对 |
 | R1 | Transcript 驱动恢复 | `FileSessionStore` | JSONL 新建、追加、损坏拒绝、状态恢复 |
 | S1 | Catalog 只发现 manifest，正文和资源延迟加载 | `SkillLoader`、`ReadSkillResourceTool` | 调用时读取与路径逃逸测试 |
-| S2 | 产品 Skill、SkillTool 共用执行器 | `AgentConversation`、`SkillTool`、`SkillExecutor` | composition 对象同一性测试 |
+| S2 | 产品 Skill、SkillTool 共用准备器 | `AgentConversation`、`SkillTool`、`SkillPreparer` | composition 对象同一性测试 |
+| S3 | Skill 只注入当前 Conversation，不创建子模型循环 | `SkillPreparer`、`AgentTool` | Skills 禁止导入 Subagents 与旧 fork 路径测试 |
+| S4 | 产品主动启动 Skill 必须由 Profile 显式授权 | `allowed_initial_skills`、`product_tools` | 隐藏 Skill、CLI 与 Bot 入口授权测试 |
 | P1 | Plan Mode 是 Permission 状态，不是 Workflow Gate | plan tools、`DefaultPermissionPolicy` | 禁止普通写、固定计划路径、批准退出 |
 | A1 | 子 Agent 递归复用 Query，且不能再次调用 AgentTool | `SubagentRunner`、`AgentTool` | Runtime 同一性、隔离与 capability 收窄测试 |
 | W1 | Git worktree 是工作区隔离 | `GitWorktreeManager`、enter/exit tools | 创建、上下文切换、脏状态保护 |
@@ -20,5 +22,9 @@
 | B1 | 所有产品入口共享 Agent 生命周期 | `AgentApplication`、`AgentConversation` | CLI/Worker 不直接构造 Query 参数 |
 | B3 | 仓库与 Profile 只在构建时绑定 | `AgentApplicationConfig` | 单轮输入不能覆盖仓库路径或 Profile |
 | B2 | 服务状态机不侵入 Agent Runtime | `BotJobStateMachine` | Runtime 不 import Bot，状态图自动校验 |
+
+Bot 只持有 Plan/Approval/Implementation/Publish 的信任转换；分析、规划、实现和验证方法仍由
+Skill 驱动。Skill Prompt 不能替代 ExecutionContract、Docker、Artifact Tool 或 Publisher
+的强制校验。
 
 新增 Runtime 抽象必须对应当前消费者和可验证机制；无法映射到核心机制的预留框架不进入 Runtime。

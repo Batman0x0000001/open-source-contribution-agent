@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
+
+import pytest
 
 from osc_agent.runtime.models import ToolUseBlock, ToolUseContext
 from osc_agent.runtime.tool import ToolRegistry
@@ -21,8 +24,6 @@ name: method
 description: Method
 when_to_use: Testing
 resources: [guide.md]
-input_schema: {type: object, properties: {}}
-output_schema: {type: object, properties: {}}
 ---
 Use the guide.
 """, encoding="utf-8")
@@ -46,3 +47,30 @@ def test_skill_resource_rejects_undeclared_path(tmp_path: Path) -> None:
     registry = ToolRegistry([ReadSkillResourceTool(catalog)])
     result = asyncio.run(ToolExecutor(registry).execute(ToolUseBlock(id="r", name="read_skill_resource", input={"skill": "method", "path": "../secret.md"}), ToolUseContext(session_id="s", working_directory=str(tmp_path), repository_root=str(tmp_path), state_directory=str(tmp_path / "state"))))
     assert result.error and result.error.code == "TOOL_VALIDATION_FAILED"
+
+
+def test_skill_resource_call_rechecks_path_after_validation(tmp_path: Path) -> None:
+    directory = make_skill(tmp_path)
+    resource = directory / "guide.md"
+    resource.write_text("safe", encoding="utf-8")
+    outside = tmp_path / "secret.md"
+    outside.write_text("secret", encoding="utf-8")
+    catalog = SkillCatalog([SkillLoader(tmp_path, source="project")])
+    tool = ReadSkillResourceTool(catalog)
+    input = tool.input_model(skill="method", path="guide.md")
+    context = ToolUseContext(
+        session_id="s",
+        working_directory=str(tmp_path),
+        repository_root=str(tmp_path),
+        state_directory=str(tmp_path / "state"),
+    )
+
+    assert asyncio.run(tool.validate_input(input, context)).valid is True
+    resource.unlink()
+    try:
+        os.symlink(outside, resource)
+    except OSError as exc:
+        pytest.skip(f"file symlinks are unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="escapes"):
+        asyncio.run(tool.call(input, context))

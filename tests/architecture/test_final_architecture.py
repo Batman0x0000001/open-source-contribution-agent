@@ -25,6 +25,8 @@ def test_old_execution_architecture_is_absent() -> None:
         PACKAGE_ROOT / "harness",
         PACKAGE_ROOT / "skills" / "registry.py",
         PACKAGE_ROOT / "skills" / "runner.py",
+        PACKAGE_ROOT / "skills" / "executor.py",
+        PACKAGE_ROOT / "skills" / "tool.py",
         PACKAGE_ROOT / "agent_service.py",
         PACKAGE_ROOT / "composition.py",
         PACKAGE_ROOT / "agents",
@@ -41,7 +43,8 @@ def test_old_execution_architecture_is_absent() -> None:
 def test_query_and_tool_execution_have_one_authoritative_definition() -> None:
     assert _class_definitions("AgentRuntime") == [PACKAGE_ROOT / "runtime" / "query.py"]
     assert _class_definitions("ToolExecutor") == [PACKAGE_ROOT / "runtime" / "tool_execution.py"]
-    assert _class_definitions("SkillExecutor") == [PACKAGE_ROOT / "skills" / "executor.py"]
+    assert _class_definitions("SkillPreparer") == [PACKAGE_ROOT / "skills" / "preparer.py"]
+    assert not _class_definitions("SkillExecutor")
 
 
 def test_workspace_capabilities_have_explicit_names() -> None:

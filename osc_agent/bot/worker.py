@@ -11,10 +11,13 @@ from uuid import uuid4
 from osc_agent.application import (
     AgentApplicationConfig,
     AgentProfile,
-    SkillInput,
     build_agent_application,
 )
 from osc_agent.bot.config import BotWorkerSettings
+from osc_agent.bot.agent_inputs import (
+    build_implementation_skill_input,
+    build_planning_skill_input,
+)
 from osc_agent.bot.models import (
     OutboxEvent,
     RepositoryBotCatalog,
@@ -117,6 +120,7 @@ class BotWorker:
                     profile_id="bot_plan",
                     system_prompt="You are the read-only planning component of an authenticated GitHub App job.",
                     allowed_tools=contract.plan_allowed_tools,
+                    allowed_initial_skills=frozenset({contract.planning_skill_name}),
                     required_evidence=frozenset({"issue_plan"}),
                 ),
                 model_gateway=self.model_gateway,
@@ -154,13 +158,11 @@ class BotWorker:
             )
         initial_input = None
         if conversation.snapshot() is None:
-            initial_input = SkillInput(
-                name="issue-planning",
-                arguments={
-                    "issue_evidence": evidence,
-                    "base_sha": job.base_sha,
-                    "execution_contract_hash": job.execution_contract_hash,
-                },
+            initial_input = build_planning_skill_input(
+                job,
+                contract,
+                evidence,
+                skill_name=self.catalog.planning_skill_name,
             )
         query = conversation.submit(initial_input)
         completed = await self._consume(query, job.job_id, phase="plan")
@@ -232,6 +234,9 @@ class BotWorker:
                     profile_id="bot_implementation",
                     system_prompt=system,
                     allowed_tools=contract.implementation_allowed_tools,
+                    allowed_initial_skills=frozenset(
+                        {contract.implementation_skill_name}
+                    ),
                     required_evidence=frozenset(
                         {
                             "successful_test",
@@ -273,19 +278,11 @@ class BotWorker:
             self.store.update_job_fields(current.job_id, expected_version=current.version, implementation_session_id=session_id)
         initial_input = None
         if conversation.snapshot() is None:
-            initial_input = SkillInput(
-                name="open-source-contribution",
-                arguments={
-                    "repo_url": f"https://github.com/{job.repository_full_name}",
-                    "goal": f"Implement approved plan for issue #{job.issue_number}",
-                    "mode": "approved_implementation",
-                    "automation": {
-                        "issue_number": job.issue_number,
-                        "base_sha": job.base_sha,
-                        "approved_plan": plan.plan_markdown,
-                        "execution_contract_hash": job.execution_contract_hash,
-                    },
-                },
+            initial_input = build_implementation_skill_input(
+                job,
+                contract,
+                plan,
+                skill_name=self.catalog.implementation_skill_name,
             )
         query = conversation.submit(initial_input)
         completed = await self._consume(query, job.job_id, phase="implementation")

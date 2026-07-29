@@ -114,3 +114,35 @@ def test_doctor_marks_missing_model_configuration_as_failure(
 
     failed = {item.name for item in results if item.status == "FAIL"}
     assert {"MODEL_ID", "ANTHROPIC_API_KEY", "agents"} <= failed
+
+
+def test_doctor_reports_invalid_external_skill_as_warning(monkeypatch, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_repo(repo)
+    invalid = repo / ".osc_agent" / "skills" / "legacy" / "SKILL.md"
+    invalid.parent.mkdir(parents=True)
+    invalid.write_text(
+        """---
+name: legacy
+description: Legacy
+when_to_use: Never
+output_schema: {type: object}
+---
+Legacy.
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OSC_AGENT_STATE_DIR", str(tmp_path / "state"))
+
+    results = asyncio.run(
+        run_doctor(
+            repository_root=repo,
+            settings=Settings(model_id="test-model"),
+            local_only=True,
+        )
+    )
+
+    skills = next(item for item in results if item.name == "skills")
+    assert skills.status == "WARN"
+    assert "INVALID_SKILL_MANIFEST" in skills.message

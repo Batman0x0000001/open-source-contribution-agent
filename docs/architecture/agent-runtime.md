@@ -83,18 +83,24 @@ Tool 是完整行为对象，同时包含：
 
 ## Skill
 
-Skill 是延迟加载的 Prompt Command。Catalog 默认只读取发现元数据，正文在调用时加载。
+Skill 是延迟加载的声明式 Agent 方法。Catalog 默认只读取发现元数据，正文在调用时加载；
+`when_to_use` 同时进入 CLI 和模型发现信息。模型侧的 `SkillTool` 和产品侧的
+`AgentConversation.submit(SkillInput)` 共用 `SkillPreparer`，后者只做调用授权、自由 JSON
+参数渲染和 capability 收窄。用户与模型调用由 Catalog 策略控制；产品主动启动还必须由
+`AgentProfile.allowed_initial_skills` 显式授权，且只有该路径能获得 manifest 的
+`product_tools`。Manifest 声明的资源由 `read_skill_resource` 按需读取，并受解析后根目录
+边界保护。
 
-Skill 通过统一 `SkillExecutor` 执行，支持 inline 与 fork。模型侧的 `SkillTool` 和产品侧的
-`AgentConversation.submit(SkillInput)` 共用该执行器。Skill 只能收窄调用者 capability。
-Manifest 声明的资源由 `read_skill_resource` 在调用时读取，并受根目录边界保护。
+Skill 不拥有子模型循环。隔离调查和验证统一通过 `AgentTool → SubagentRunner → 同一
+AgentRuntime.query()` 执行。推荐阅读顺序是：`models → loader → catalog → preparer →
+invocation_tool → resource_tool → builtins`。
 
 ## Agent
 
 `AgentTool` 委派给 `SubagentRunner`，后者通过隔离的 `StartQueryParams` 和 QueryState
 递归调用同一个 `AgentRuntime.query()`。子 Agent 的 capability 必须显式枚举，并在运行前
-移除 `agent` 工具以禁止递归。main agent、minimal/fork subagent 和 fork Skill 不允许拥有
-第二套模型循环。后台 Agent 在最小稳定版中不提供。
+移除 `agent` 工具以禁止递归。main agent 和 minimal/fork subagent 不允许拥有第二套模型
+循环。后台 Agent 在最小稳定版中不提供。
 
 ## Session、Plan 与 Contribution
 
