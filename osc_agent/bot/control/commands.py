@@ -1,4 +1,4 @@
-"""解析 GitHub issue_comment Payload 与 `/osa` 命令。"""
+"""解析 GitHub issue_comment Payload 与 `/osc-agent` 命令。"""
 
 from __future__ import annotations
 
@@ -8,28 +8,32 @@ from osc_agent.bot.control.models import IssueCommentContext, WebhookCommand
 
 
 _JOB_ID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-_IMPLEMENT = re.compile(rf"^/osa implement ({_JOB_ID})$")
-_CANCEL = re.compile(rf"^/osa cancel ({_JOB_ID})$")
+_COMMAND_PREFIX = "/osc-agent"
+_IMPLEMENT = re.compile(rf"^{re.escape(_COMMAND_PREFIX)} implement ({_JOB_ID})$")
+_CANCEL = re.compile(rf"^{re.escape(_COMMAND_PREFIX)} cancel ({_JOB_ID})$")
 
 
 def parse_webhook_command(body: str) -> WebhookCommand | None:
     command = body.strip()
-    if command == "/osa plan":
+    if command == f"{_COMMAND_PREFIX} plan":
         return WebhookCommand(action="plan")
-    if command == "/osa implement":
+    if command == f"{_COMMAND_PREFIX} implement":
         return WebhookCommand(action="implement")
     if match := _IMPLEMENT.fullmatch(command):
         return WebhookCommand(action="implement", job_id=match.group(1))
-    if command == "/osa cancel":
+    if command == f"{_COMMAND_PREFIX} cancel":
         return WebhookCommand(action="cancel")
     if match := _CANCEL.fullmatch(command):
         return WebhookCommand(action="cancel", job_id=match.group(1))
-    if command == "/osa status":
+    if command == f"{_COMMAND_PREFIX} status":
         return WebhookCommand(action="status")
-    if command == "/osa retry":
+    if command == f"{_COMMAND_PREFIX} retry":
         return WebhookCommand(action="retry")
-    if command.startswith("/osa reply ") and command[11:].strip():
-        return WebhookCommand(action="reply", message=command[11:].strip())
+    reply_prefix = f"{_COMMAND_PREFIX} reply "
+    if command.startswith(reply_prefix) and command[len(reply_prefix) :].strip():
+        return WebhookCommand(
+            action="reply", message=command[len(reply_prefix) :].strip()
+        )
     return None
 
 

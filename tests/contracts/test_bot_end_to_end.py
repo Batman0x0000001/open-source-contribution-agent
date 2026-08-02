@@ -23,6 +23,18 @@ from tests.settings_factory import make_agent_settings as Settings
 IMAGE_ID = "sha256:" + "d" * 64
 
 
+def test_prometheus_metrics_use_the_osc_namespace() -> None:
+    from prometheus_client import generate_latest
+
+    import osc_agent.bot.observability  # noqa: F401
+
+    metrics = generate_latest()
+    assert b"osc_outbox_dispatcher_up" in metrics
+    assert b"osc_jobs_total" in metrics
+    legacy_namespace = b"o" + b"sa_"
+    assert legacy_namespace not in metrics
+
+
 def _catalog_file(tmp_path: Path) -> Path:
     path = tmp_path / "repositories.yml"
     path.write_text(
@@ -63,7 +75,7 @@ def test_control_doctor_never_checks_docker(monkeypatch, tmp_path: Path) -> None
         database_path=tmp_path / "bot.sqlite3",
         workspace_root=tmp_path / "workspaces",
         repositories_config=_catalog_file(tmp_path),
-        github_commit_name="OSA Bot",
+        github_commit_name="osc-agent",
         github_commit_email="bot@example.com",
         model_id="model",
     )

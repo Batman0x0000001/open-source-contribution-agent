@@ -35,7 +35,7 @@ def create_webhook_app(
         raise ValueError("GitHub bot dependencies are missing; install .[bot]") from exc
 
     globals()["Request"] = Request
-    app = FastAPI(title="OSA Agent GitHub App", docs_url=None, redoc_url=None)
+    app = FastAPI(title="osc-agent GitHub App", docs_url=None, redoc_url=None)
     @app.get("/health/live")
     async def live() -> dict[str, str]:
         return {"status": "ok"}

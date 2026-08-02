@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily OSA Agent Bot cleanup
+Description=Daily OSC Agent Bot cleanup
 
 [Timer]
 OnCalendar=daily

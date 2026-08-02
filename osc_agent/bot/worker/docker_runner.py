@@ -181,11 +181,11 @@ class DockerProcessRunner(ProcessRunner):
             "--memory", self.config.container_memory,
             "--cpus", str(self.config.container_cpus),
             "--tmpfs", "/tmp:rw,noexec,nosuid,nodev",
-            "--tmpfs", "/home/osa:rw,nosuid,nodev",
+            "--tmpfs", "/home/osc:rw,nosuid,nodev",
             "--mount", f"type=bind,src={repository},dst=/workspace",
             "--mount", f"type=bind,src={repository / '.git'},dst=/workspace/.git,readonly",
             "--workdir", "/workspace", "--user", self.container_user,
-            "--env", "CI=true", "--env", "NO_COLOR=1", "--env", "HOME=/home/osa",
+            "--env", "CI=true", "--env", "NO_COLOR=1", "--env", "HOME=/home/osc",
             self.image_id,
             "/bin/bash", "--noprofile", "--norc", "-c", command,
         ]
@@ -227,4 +227,4 @@ def _container_name(job_id: str, tool_use_id: str) -> str:
         character if character.isalnum() or character in {"-", "_"} else "-"
         for character in tool_use_id.lower()
     )[:32]
-    return f"osa-{safe_job}-{safe_tool}"[:63].rstrip("-")
+    return f"osc-{safe_job}-{safe_tool}"[:63].rstrip("-")

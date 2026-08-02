@@ -67,7 +67,7 @@ class OutboxProcessor:
                 body = event.payload.get("body")
                 if not isinstance(body, str):
                     raise TerminalOutboxError("issue comment outbox has no body")
-                marker = f"<!-- osa-outbox:{event.idempotency_key} -->"
+                marker = f"<!-- osc-outbox:{event.idempotency_key} -->"
                 rendered = body if marker in body else f"{body}\n\n{marker}"
                 existing = await self.github.find_issue_comment(
                     job.installation_id,

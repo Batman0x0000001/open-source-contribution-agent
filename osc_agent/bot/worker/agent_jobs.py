@@ -422,7 +422,7 @@ def _comment_event(job_id: str, suffix: str, body: str) -> OutboxEvent:
         job_id=job_id,
         kind="issue_comment",
         idempotency_key=f"comment:{job_id}:{suffix}",
-        payload={"body": body + f"\n\n<!-- osa-job:{job_id}:{suffix} -->"},
+        payload={"body": body + f"\n\n<!-- osc-job:{job_id}:{suffix} -->"},
     )
 
 

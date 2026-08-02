@@ -205,7 +205,7 @@ def test_issue_comment_outbox_is_explicitly_routed() -> None:
     github = GitHub()
 
     assert asyncio.run(_processor(store, object(), github=github).run_once()) is True
-    assert github.body is not None and "<!-- osa-outbox:prepare:test -->" in github.body
+    assert github.body is not None and "<!-- osc-outbox:prepare:test -->" in github.body
     assert store.completed is True
 
 

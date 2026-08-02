@@ -157,7 +157,7 @@ class BotControlService:
                 ),
                 self._comment_event(
                     job, "plan-queued",
-                    f"Plan job `{job.job_id}` was queued. Use `/osa status` for progress.",
+                    f"Plan job `{job.job_id}` was queued. Use `/osc-agent status` for progress.",
                 ),
             ),
         )
@@ -178,8 +178,8 @@ class BotControlService:
                     kind="issue_comment",
                     idempotency_key=f"comment:{job.job_id}:stale",
                     payload={
-                        "body": "The default branch changed after planning. Run `/osa plan` again."
-                        f"\n\n<!-- osa-job:{job.job_id}:stale -->"
+                        "body": "The default branch changed after planning. Run `/osc-agent plan` again."
+                        f"\n\n<!-- osc-job:{job.job_id}:stale -->"
                     },
                 ),
             )
@@ -233,7 +233,7 @@ class BotControlService:
                 kind="issue_comment",
                 idempotency_key=f"comment:{job.job_id}:cancelled",
                 payload={
-                    "body": f"Job `{job.job_id}` was cancelled.\n\n<!-- osa-job:{job.job_id}:cancelled -->"
+                    "body": f"Job `{job.job_id}` was cancelled.\n\n<!-- osc-job:{job.job_id}:cancelled -->"
                 },
             ),
         )

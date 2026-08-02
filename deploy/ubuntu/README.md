@@ -1,6 +1,6 @@
 # Ubuntu 单机部署
 
-本文适用于 Open Source Contribution Agent `0.3.0`。
+本文适用于 Open Source Contribution Agent `0.3.1`。
 
 推荐从源码发布目录运行 `sudo ./deploy/ubuntu/install.sh --config /etc/osc-agent/config.yml`，
 再分别执行 Control/Worker doctor。升级采用停机归档和当前状态模型的原子重建，不支持不同
@@ -13,13 +13,13 @@ GitHub App 私钥、Webhook Secret 或 Publisher 身份。
 ## 目录与用户
 
 ```bash
-sudo groupadd --system osa-shared
-sudo useradd --system --home /var/lib/osc-agent --gid osa-shared osa-control
-sudo useradd --system --home /var/lib/osc-agent --gid osa-shared osa-worker
-sudo usermod -aG docker osa-worker
-sudo install -d -m 2770 -o osa-control -g osa-shared /var/lib/osc-agent
-sudo install -d -m 2770 -o osa-control -g osa-shared /var/lib/osc-agent/workspaces
-sudo install -d -m 0750 -o root -g osa-shared /etc/osc-agent
+sudo groupadd --system osc-shared
+sudo useradd --system --home /var/lib/osc-agent --gid osc-shared osc-control
+sudo useradd --system --home /var/lib/osc-agent --gid osc-shared osc-worker
+sudo usermod -aG docker osc-worker
+sudo install -d -m 2770 -o osc-control -g osc-shared /var/lib/osc-agent
+sudo install -d -m 2770 -o osc-control -g osc-shared /var/lib/osc-agent/workspaces
+sudo install -d -m 0750 -o root -g osc-shared /etc/osc-agent
 ```
 
 安装 Docker Engine、Git、Bash、ripgrep、Nginx 和项目固定版本 bot wheel。安装器将 wheel
@@ -31,13 +31,13 @@ sudo install -d -m 0750 -o root -g osa-shared /etc/osc-agent
 
 复制示例配置：
 
-- `/etc/osc-agent/bot.env`：owner `osa-control:osa-shared`，mode `0600`，仅 Control。
-- `/etc/osc-agent/worker.env`：owner `osa-worker:osa-shared`，mode `0600`，仅 Worker。
-- 将 `config.example.yml` 复制为 `/etc/osc-agent/config.yml`：owner `root:osa-shared`，
+- `/etc/osc-agent/bot.env`：owner `osc-control:osc-shared`，mode `0600`，仅 Control。
+- `/etc/osc-agent/worker.env`：owner `osc-worker:osc-shared`，mode `0600`，仅 Worker。
+- 将 `config.example.yml` 复制为 `/etc/osc-agent/config.yml`：owner `root:osc-shared`，
   mode `0640`。它是唯一非敏感生产配置，保存 Agent 预算、模型重试和仓库执行契约输入；
   Secret 仍只存在于两个 mode `0600` 的 EnvironmentFile。
 
-Control 与 Worker 的 primary group 都是 `osa-shared`，systemd `UMask=0007`，因此 Control
+Control 与 Worker 的 primary group 都是 `osc-shared`，systemd `UMask=0007`，因此 Control
 创建的新鲜 clone 可由 Worker 及其同 UID/GID 的非 root 容器写入。不要以 root 运行 Worker。
 
 ## GitHub App

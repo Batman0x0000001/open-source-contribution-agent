@@ -1,5 +1,5 @@
 [Unit]
-Description=OSA Agent GitHub App Control Service
+Description=OSC Agent GitHub App Control Service
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=120
@@ -7,8 +7,8 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=osa-control
-Group=osa-shared
+User=osc-control
+Group=osc-shared
 UMask=0007
 EnvironmentFile=/etc/osc-agent/bot.env
 ExecStartPre=/opt/osc-agent/current/venv/bin/osc-agent-bot schema-check

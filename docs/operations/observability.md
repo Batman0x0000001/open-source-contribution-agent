@@ -1,6 +1,6 @@
 # Bot observability runbook
 
-本文适用于 Open Source Contribution Agent `0.3.0`。
+本文适用于 Open Source Contribution Agent `0.3.1`。
 
 Control and Worker emit structured JSON. The stable envelope is `timestamp`, `level`, `service`,
 `event`, `job_id`, `session_id`, `repository`, `issue_number`, state transition, phase, attempt,
@@ -18,9 +18,9 @@ letters, ten-minute Outbox age, fifteen-minute queued jobs, two-minute Worker he
 Triage order:
 
 1. Check `/health/ready`; 503 identifies schema/database or dispatcher health failure.
-2. Check `osa_outbox_dispatcher_up`, heartbeat age and `osa_outbox_oldest_seconds`.
+2. Check `osc_outbox_dispatcher_up`, heartbeat age and `osc_outbox_oldest_seconds`.
 3. Inspect JSON events by `job_id` and `execution_contract_hash`; never paste raw prompts into logs.
-4. Use `/osa status` for active state. Use `/osa retry` only in `retry_wait`.
+4. Use `/osc-agent status` for active state. Use `/osc-agent retry` only in `retry_wait`.
 5. A dead letter is not user-retryable. An administrator must inspect the audit trail and use the
    maintenance CLI in a stopped-service window.
 

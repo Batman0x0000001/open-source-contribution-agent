@@ -2,13 +2,13 @@
 
 一个采用统一 Runtime 设计的 Python Agent：入口 Skill、子 Agent 和 Tool 全部复用同一个 `AgentRuntime`，完整 Session transcript 是唯一恢复依据。
 
-> 当前项目与文档基线：`0.3.0`。
+> 当前项目与文档基线：`0.3.1`。
 
 > 当前版本定位为 Ubuntu Bot 优先、本地 CLI 仅用于调试。Bash 在 Linux Host 上执行，
 > 环境变量经过白名单过滤，但本地 CLI 没有 OS Sandbox；不要用它执行
 > 恶意或不可信仓库中的命令。
 
-`0.3.0` 提供可选的 GitHub App 服务端能力。它把 Webhook/发布凭据、Agent Worker 和无网络
+`0.3.1` 提供可选的 GitHub App 服务端能力。它把 Webhook/发布凭据、Agent Worker 和无网络
 Docker 仓库命令分成独立边界；该能力不会改变本地 CLI，也不会自动合并 PR。
 
 ## 架构
@@ -133,12 +133,12 @@ Bot 是生产主入口；CLI 保留为本地调试入口。机器人只接受具
 `admin` 权限用户在 Issue 下的精确命令：
 
 ```text
-/osa plan
-/osa implement
-/osa reply <补充信息>
-/osa status
-/osa retry
-/osa cancel
+/osc-agent plan
+/osc-agent implement
+/osc-agent reply <补充信息>
+/osc-agent status
+/osc-agent retry
+/osc-agent cancel
 ```
 
 每个 Issue 同时只允许一个活动 Job。Plan 是无 Docker 的只读 Session；Implementation 使用

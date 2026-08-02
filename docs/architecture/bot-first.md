@@ -1,6 +1,6 @@
 # Bot-first architecture
 
-本文描述 Open Source Contribution Agent `0.3.0` 的生产架构。
+本文描述 Open Source Contribution Agent `0.3.1` 的生产架构。
 
 The GitHub App is the production product. The local CLI is a debugging adapter. Both build an
 `AgentApplication`, open an `AgentConversation`, and submit typed input. The conversation facade
@@ -35,7 +35,7 @@ exit from either cancels the other and exits the process non-zero. Known externa
 bounded retries or dead letters; database failures and unknown exceptions propagate. Readiness is
 false whenever the dispatcher is stopped or its heartbeat is stale.
 
-## `/osa reply`
+## `/osc-agent reply`
 
 A reply is stored exactly once as untrusted evidence, moves a blocked Plan back to the Plan queue,
 and resumes the original Plan Session. The Plan profile remains read-only and cannot acquire

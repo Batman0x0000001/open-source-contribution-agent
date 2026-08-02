@@ -27,13 +27,13 @@ if [[ -e "${RELEASE}" ]]; then
 fi
 
 install -d -m 0755 /opt/osc-agent /opt/osc-agent/releases
-getent group osa-shared >/dev/null || groupadd --system osa-shared
-id osa-control >/dev/null 2>&1 || useradd --system --home /var/lib/osc-agent --gid osa-shared osa-control
-id osa-worker >/dev/null 2>&1 || useradd --system --home /var/lib/osc-agent --gid osa-shared osa-worker
-usermod -aG docker osa-worker
-install -d -m 2770 -o osa-control -g osa-shared /var/lib/osc-agent /var/lib/osc-agent/workspaces
-install -d -m 0750 -o root -g osa-shared /etc/osc-agent
-install -m 0640 -o root -g osa-shared "${CONFIG}" /etc/osc-agent/config.yml
+getent group osc-shared >/dev/null || groupadd --system osc-shared
+id osc-control >/dev/null 2>&1 || useradd --system --home /var/lib/osc-agent --gid osc-shared osc-control
+id osc-worker >/dev/null 2>&1 || useradd --system --home /var/lib/osc-agent --gid osc-shared osc-worker
+usermod -aG docker osc-worker
+install -d -m 2770 -o osc-control -g osc-shared /var/lib/osc-agent /var/lib/osc-agent/workspaces
+install -d -m 0750 -o root -g osc-shared /etc/osc-agent
+install -m 0640 -o root -g osc-shared "${CONFIG}" /etc/osc-agent/config.yml
 install -d -m 0755 "${RELEASE}" "${RELEASE}/wheels"
 python3 -m venv "${RELEASE}/venv"
 "${RELEASE}/venv/bin/pip" install --upgrade pip

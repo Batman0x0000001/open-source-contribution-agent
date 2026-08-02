@@ -95,7 +95,7 @@ class TrustedPublisher:
             ):
                 raise ValueError(f"publisher rejected changed symlink or path escape: {value}")
         current = job
-        branch = job.branch or f"osa/issue-{job.issue_number}-{job.job_id[:8]}"
+        branch = job.branch or f"osc/issue-{job.issue_number}-{job.job_id[:8]}"
         if current.status != "publishing":
             current = self.store.apply_job_event(
                 job_id=current.job_id,
@@ -159,7 +159,7 @@ class TrustedPublisher:
             current.installation_id, current.repository_full_name, head=branch, base=branch_base
         )
         if found is None:
-            marker = f"<!-- osa-job:{current.job_id}:delivery -->"
+            marker = f"<!-- osc-job:{current.job_id}:delivery -->"
             number, url = await self.github.create_draft_pull_request(
                 current.installation_id,
                 current.repository_full_name,
@@ -186,7 +186,7 @@ class TrustedPublisher:
                 idempotency_key=f"comment:{current.job_id}:completed",
                 payload={
                     "body": f"{'Draft ' if policy.pull_request_mode == 'draft' else ''}PR created: {url}"
-                    f"\n\n<!-- osa-job:{current.job_id}:completed -->"
+                    f"\n\n<!-- osc-job:{current.job_id}:completed -->"
                 },
             ),
         )
@@ -204,8 +204,8 @@ class TrustedPublisher:
                 kind="issue_comment",
                 idempotency_key=f"comment:{job.job_id}:stale",
                 payload={
-                    "body": "The default branch changed before publication. Run `/osa plan` again."
-                    f"\n\n<!-- osa-job:{job.job_id}:stale -->"
+                    "body": "The default branch changed before publication. Run `/osc-agent plan` again."
+                    f"\n\n<!-- osc-job:{job.job_id}:stale -->"
                 },
             ),
         )

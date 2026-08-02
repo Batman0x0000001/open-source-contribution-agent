@@ -1,6 +1,6 @@
 # 项目架构不变量矩阵
 
-本文记录 Open Source Contribution Agent `0.3.0` 由自动化测试保护的核心设计约束。
+本文记录 Open Source Contribution Agent `0.3.1` 由自动化测试保护的核心设计约束。
 
 | 编号 | 最小机制 | Python 对应 | 硬验证 |
 |---|---|---|---|

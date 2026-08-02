@@ -1,12 +1,12 @@
 [Unit]
-Description=OSA Agent Trusted Worker
+Description=OSC Agent Trusted Worker
 After=docker.service network-online.target
 Requires=docker.service
 
 [Service]
 Type=simple
-User=osa-worker
-Group=osa-shared
+User=osc-worker
+Group=osc-shared
 SupplementaryGroups=docker
 UMask=0007
 EnvironmentFile=/etc/osc-agent/worker.env

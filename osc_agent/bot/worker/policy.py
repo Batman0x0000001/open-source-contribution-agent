@@ -20,7 +20,7 @@ from osc_agent.runtime.tool import Tool
 
 
 class BotPermissionPolicy(PermissionPolicy):
-    """`/osa implement` 只授权仓库写入和隔离进程，不授权外部或破坏性动作。"""
+    """`/osc-agent implement` 只授权仓库写入和隔离进程，不授权外部或破坏性动作。"""
 
     def __init__(self, *, implementation_approved: bool) -> None:
         self.implementation_approved = implementation_approved

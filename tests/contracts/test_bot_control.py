@@ -49,7 +49,7 @@ def _settings(tmp_path: Path) -> BotControlSettings:
         workspace_root=tmp_path / "workspaces",
         repositories_config=repositories,
         worker_id="worker-1",
-        github_commit_name="OSA Bot",
+        github_commit_name="osc-agent",
         github_commit_email="bot@example.com",
         model_id="model",
     )
@@ -67,12 +67,17 @@ def _payload(body: str) -> dict[str, object]:
 
 
 def test_webhook_command_uses_exact_input() -> None:
-    assert parse_webhook_command(" /osa plan\n").action == "plan"
+    assert parse_webhook_command(" /osc-agent plan\n").action == "plan"
     job_id = str(uuid4())
-    assert parse_webhook_command(f"/osa implement {job_id}").job_id == job_id
-    assert parse_webhook_command("/OSA plan") is None
-    assert parse_webhook_command("/osa plan now") is None
-    assert parse_webhook_command("text /osa plan") is None
+    assert parse_webhook_command(f"/osc-agent implement {job_id}").job_id == job_id
+    assert parse_webhook_command(f"/osc-agent cancel {job_id}").job_id == job_id
+    assert parse_webhook_command("/osc-agent status").action == "status"
+    assert parse_webhook_command("/osc-agent retry").action == "retry"
+    assert parse_webhook_command("/osc-agent reply more context").message == "more context"
+    assert parse_webhook_command("/OSC-AGENT plan") is None
+    assert parse_webhook_command("/osc-agent plan now") is None
+    assert parse_webhook_command("text /osc-agent plan") is None
+    assert parse_webhook_command("/osc plan") is None
 
 
 def test_control_creates_plan_and_bound_implementation_approval(tmp_path: Path) -> None:
@@ -92,7 +97,7 @@ def test_control_creates_plan_and_bound_implementation_approval(tmp_path: Path) 
         store=store,
         github=github,
     )
-    job_id = asyncio.run(control.handle_issue_comment(_payload("/osa plan")))
+    job_id = asyncio.run(control.handle_issue_comment(_payload("/osc-agent plan")))
     job = store.get_job(job_id)
     assert job is not None and job.status == "queued_plan"
     assert job.image_id == IMAGE_ID
@@ -100,8 +105,8 @@ def test_control_creates_plan_and_bound_implementation_approval(tmp_path: Path) 
     assert contract is not None and contract.model_id == settings.model_id
     assert store.get_job_input(job_id)["trust"] == "untrusted_external"
     for comment_id in (41, 42):
-        status_payload = _payload("/osa status")
-        status_payload["comment"] = {"id": comment_id, "body": "/osa status"}
+        status_payload = _payload("/osc-agent status")
+        status_payload["comment"] = {"id": comment_id, "body": "/osc-agent status"}
         assert asyncio.run(control.handle_issue_comment(status_payload)) == "queued_plan"
     with store.connect() as connection:
         status_keys = connection.execute(
@@ -127,7 +132,7 @@ def test_control_creates_plan_and_bound_implementation_approval(tmp_path: Path) 
         event=JobEvent.PLAN_READY,
         plan_artifact_id=artifact_id,
     )
-    result = asyncio.run(control.handle_issue_comment(_payload(f"/osa implement {job_id}")))
+    result = asyncio.run(control.handle_issue_comment(_payload(f"/osc-agent implement {job_id}")))
     approved = store.get_job(result)
     assert approved is not None and approved.status == "queued_implementation"
     assert approved.approval_id is not None
@@ -153,7 +158,7 @@ def test_control_rejects_non_writer(tmp_path: Path) -> None:
         github=github,
     )
     with pytest.raises(PermissionError):
-        asyncio.run(control.handle_issue_comment(_payload("/osa plan")))
+        asyncio.run(control.handle_issue_comment(_payload("/osc-agent plan")))
 
 
 @pytest.mark.parametrize("status", ["completed", "stale", "dead_letter", "cancelled"])
