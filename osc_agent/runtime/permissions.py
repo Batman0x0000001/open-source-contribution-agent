@@ -22,7 +22,7 @@ class PermissionPolicy(Protocol):
 
 
 class DefaultPermissionPolicy:
-    """最小通用策略；业务范围由 capability 和 Tool 专属检查提供。"""
+    """最小通用策略；Capability 硬门禁由 ToolExecutor 统一执行。"""
 
     async def decide(
         self,
@@ -30,8 +30,6 @@ class DefaultPermissionPolicy:
         input: ContractModel,
         context: ToolContext,
     ) -> PermissionDecision:
-        if not context.capabilities.permits_tool(tool.name):
-            return Deny(reason=f"tool {tool.name} is outside the current capability scope")
         if (
             context.permissions.mode == "plan"
             and not tool.is_read_only(input)

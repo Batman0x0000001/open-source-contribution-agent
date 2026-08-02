@@ -97,14 +97,10 @@ def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -
     assert subagents.get("explore").definition.config.max_rounds == 8
     assert application._query_config.max_rounds == 30
     assert "agent" in application._capabilities.allowed_tools
-    assert "<available_skills>" in application._discovery_prompt
-    assert "open-source-contribution" in application._discovery_prompt
-    assert "When to use:" in application._discovery_prompt
-    assert "<available_agents>" in application._discovery_prompt
-    assert "- explore:" in application._discovery_prompt
-    assert "- verify:" in application._discovery_prompt
-    assert "<external_content_policy>" in application._discovery_prompt
-    assert "not user authorization" in application._discovery_prompt
+    assert not hasattr(application, "_discovery_prompt")
+    assert "open-source-contribution" in skill_tool.description
+    assert "explore" in agent_tool.description
+    assert "verify" in agent_tool.description
     assert [item.manifest.name for item in catalog.list()] == [
         "issue-planning",
         "open-source-contribution",
@@ -129,6 +125,33 @@ def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -
     assert "agent" in {
         schema["name"] for schema in registry.schemas(contribution_context)
     }
+
+
+def test_profile_capabilities_are_resolved_once_for_schema_and_execution(tmp_path: Path) -> None:
+    application = build_agent_application(
+        AgentApplicationConfig(
+            settings=Settings(model_id="test-model"),
+            repository_root=tmp_path,
+            profile=AgentProfile(
+                profile_id="read-only",
+                system_prompt="Read only.",
+                allowed_tools=frozenset({"read_file"}),
+            ),
+            model_gateway=CompletingGateway(),
+        )
+    )
+    context = tool_context(
+        session_id="restricted",
+        working_directory=str(tmp_path),
+        state_directory=str(tmp_path / ".state"),
+        capabilities=application._capabilities,
+    )
+
+    assert application._capabilities.allowed_tools == frozenset({"read_file"})
+    assert [
+        schema["name"]
+        for schema in application._runtime.dependencies.tool_executor.registry.schemas(context)
+    ] == ["read_file"]
 
 
 def test_cli_exposes_only_new_architecture_commands(tmp_path: Path) -> None:

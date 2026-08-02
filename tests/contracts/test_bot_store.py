@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from osc_agent.runtime.state import CapabilityScope
 
+import json
 from pathlib import Path
 import sqlite3
 from uuid import uuid4
@@ -98,7 +99,7 @@ def test_sqlite_session_store_replays_strict_event_chain(tmp_path: Path) -> None
     sessions = SqliteSessionStore(database)
     session_id = str(uuid4())
     metadata = SessionMetadata(
-        schema_version=5,
+        schema_version=6,
         session_id=session_id,
         workspace_root=str(tmp_path),
         model="model",
@@ -151,7 +152,7 @@ def test_plan_reply_is_exactly_once_and_atomically_appended(tmp_path: Path) -> N
     session_id = str(uuid4())
     sessions.create(
         SessionMetadata(
-            schema_version=5,
+            schema_version=6,
             session_id=session_id,
             workspace_root=str(tmp_path),
             model="model",
@@ -190,3 +191,69 @@ def test_plan_reply_is_exactly_once_and_atomically_appended(tmp_path: Path) -> N
     snapshot = sessions.load(session_id)
     assert snapshot is not None and len(snapshot.messages) == 1
     assert snapshot.messages[0].content[0].text == "answer"
+
+
+def test_sqlite_session_store_rejects_v5_metadata(tmp_path: Path) -> None:
+    store = BotStore(tmp_path / "bot.sqlite3")
+    store.initialize()
+    sessions = SqliteSessionStore(store)
+    sessions._append(
+        "legacy",
+        "metadata",
+        json.dumps(
+            {
+                "schema_version": 5,
+                "session_id": "legacy",
+                "workspace_root": str(tmp_path),
+                "model": "old",
+                "system_prompt": "old",
+            }
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Input should be 6"):
+        sessions.load("legacy")
+
+
+def test_plan_reply_does_not_recreate_a_missing_plan_session(tmp_path: Path) -> None:
+    store = BotStore(tmp_path / "bot.sqlite3")
+    store.initialize()
+    session_id = str(uuid4())
+    job = _job().model_copy(update={"plan_session_id": session_id})
+    store.create_job(job)
+    running = store.transition(
+        job_id=job.job_id,
+        expected_version=job.version,
+        status="running_plan",
+    )
+    blocked = store.transition(
+        job_id=job.job_id,
+        expected_version=running.version,
+        status="blocked_plan",
+    )
+    store.enqueue_plan_reply(
+        source_id="github:missing-session",
+        job=blocked,
+        body="answer",
+        prepare_event=OutboxEvent(
+            event_id="prepare-missing",
+            job_id=job.job_id,
+            kind="prepare",
+            idempotency_key="prepare-missing",
+            payload={"phase": "plan"},
+        ),
+        acknowledgement_event=OutboxEvent(
+            event_id="ack-missing",
+            job_id=job.job_id,
+            kind="issue_comment",
+            idempotency_key="ack-missing",
+            payload={"body": "received"},
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Plan Session does not exist"):
+        store.append_external_message_once(
+            source_id="github:missing-session",
+            session_id=session_id,
+            text="answer",
+        )

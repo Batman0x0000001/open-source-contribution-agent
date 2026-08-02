@@ -2,13 +2,13 @@
 
 一个采用统一 Runtime 设计的 Python Agent：入口 Skill、子 Agent 和 Tool 全部复用同一个 `AgentRuntime`，完整 Session transcript 是唯一恢复依据。
 
-> 当前项目与文档基线：`0.2.4`。
+> 当前项目与文档基线：`0.3.0`。
 
 > 当前版本定位为 Ubuntu Bot 优先、本地 CLI 仅用于调试。Bash 在 Linux Host 上执行，
 > 环境变量经过白名单过滤，但本地 CLI 没有 OS Sandbox；不要用它执行
 > 恶意或不可信仓库中的命令。
 
-`0.2.4` 提供可选的 GitHub App 服务端能力。它把 Webhook/发布凭据、Agent Worker 和无网络
+`0.3.0` 提供可选的 GitHub App 服务端能力。它把 Webhook/发布凭据、Agent Worker 和无网络
 Docker 仓库命令分成独立边界；该能力不会改变本地 CLI，也不会自动合并 PR。
 
 ## 架构
@@ -18,17 +18,20 @@ Typer CLI / Bot Worker
         ↓
 AgentApplicationConfig → AgentApplication.open_session
         ↓
-AgentConversation.submit(UserPrompt | SkillInput | None)
+AgentConversation.start(AgentInput) / resume(UserPrompt | None)
         ↓
 AgentRuntime.query → AgentRunState → ToolContext
         ├── AgentTool → code-only AgentRegistry → AgentRunner
         ↓
 ToolExecutor → Permission / Plan Mode → Hooks → ToolResult.state_changes
         ↓
-AgentRunState.apply → Session V5 / Git Workspace
+AgentRunState.apply → Session V6 / Git Workspace
 ```
 
 - Runtime 不知道 Contribution 阶段，也不存在固定 Workflow 状态机。
+- CLI 与 Bot 显式选择 Start/Resume；Runtime 在 Session lease 内验证创建或恢复条件。
+- V6 Session 固定创建时的模型、系统提示和有效 capability；V5 不兼容且不迁移。
+- 当前 Tool Schema 是能力展示的唯一权威，ToolExecutor 在权限策略之前执行 capability 硬门禁。
 - `open-source-contribution` 是一个 inline 入口 Skill，按需读取四份阶段资源。
 - Plan Mode 和 AskUserQuestion 提供方案审批与人工选择。
 - 仓库内 `AGENTS.md` 与 `CLAUDE.md` 会按目录层级注入；同层任务相关冲突由 Agent 询问用户。

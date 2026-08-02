@@ -1,4 +1,4 @@
-"""定义无重复运行字段的 Session V5 持久化模型。"""
+"""定义无重复运行字段的 Session V6 持久化模型。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from osc_agent.workspaces.models import WorktreeSession
 
 
 class SessionMetadata(FrozenContractModel):
-    schema_version: Literal[5]
+    schema_version: Literal[6]
     session_id: str = Field(min_length=1)
     workspace_root: str = Field(min_length=1)
     model: str = Field(min_length=1)

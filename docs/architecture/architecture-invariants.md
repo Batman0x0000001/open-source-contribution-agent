@@ -1,6 +1,6 @@
 # 项目架构不变量矩阵
 
-本文记录 Open Source Contribution Agent `0.2.4` 由自动化测试保护的核心设计约束。
+本文记录 Open Source Contribution Agent `0.3.0` 由自动化测试保护的核心设计约束。
 
 | 编号 | 最小机制 | Python 对应 | 硬验证 |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | T2 | 并发完成可乱序，StateChange 按调用顺序应用 | `tool_orchestration.py`、`AgentRunState.apply()` | 并发与串行测试 |
 | T3 | Tool 只适配模型协议，共享文件、Git 和进程能力位于 Tool 外部 | `tools/`、`workspaces/`、`processes/` | AST 依赖边界与核心注册表测试 |
 | C1 | Transcript 与模型 Projection 分离 | `SessionTranscript`、`ContextPipeline` | compact 不改变权威历史和 Tool 配对 |
-| R1 | Session V5 无平行运行字段，Transcript 驱动恢复 | `SessionMetadata`、`AgentRunState`、File/SQLite Store | V4 拒绝、V5 新建、追加与恢复 |
+| R1 | Session V6 无平行运行字段，Transcript 驱动恢复 | `SessionMetadata`、`AgentRunState`、File/SQLite Store | V5 拒绝、V6 新建、追加与恢复 |
 | S1 | Catalog 只发现 manifest，正文和资源延迟加载 | `SkillLoader`、`ReadSkillResourceTool` | 调用时读取与路径逃逸测试 |
 | S2 | 产品 Skill、SkillTool 共用准备器 | `AgentConversation`、`SkillTool`、`SkillPreparer` | composition 对象同一性测试 |
 | S3 | Skill 只注入当前 Conversation，不创建子模型循环 | `SkillPreparer`、`AgentTool` | Skills 禁止导入 Subagents 与旧 fork 路径测试 |
@@ -22,8 +22,10 @@
 | B1 | 所有产品入口共享 Agent 生命周期 | `AgentApplication`、`AgentConversation` | CLI/Worker 不直接构造 Query 参数 |
 | B3 | 仓库与 Profile 只在构建时绑定 | `AgentApplicationConfig` | 单轮输入不能覆盖仓库路径或 Profile |
 | B2 | 服务状态机不侵入 Agent Runtime | `BotJobStateMachine` | Runtime 不 import Bot，状态图自动校验 |
+| B4 | 产品入口显式选择 Start/Resume，Runtime 在 lease 内验证 Session 事实 | `AgentConversation`、`AgentRuntime` | CLI 严格恢复与 Bot crash-safe 分发测试 |
 | E1 | Runtime 与 Publisher 使用同一完成判定 | `CompletionEvaluator`、`CompletionStopHook` | 相同输入得到相同 blocking reasons |
 | X1 | Workspace、Process、Bot Domain/Control 不依赖 Runtime Context | 包依赖方向 | AST 边界测试 |
+| X2 | Capability 展示与执行使用同一持久状态 | `AgentRunState`、`ToolRegistry`、`ToolExecutor` | Schema 过滤与不可绕过执行门禁测试 |
 
 Bot 只持有 Plan/Approval/Implementation/Publish 的信任转换；分析、规划、实现和验证方法仍由
 Skill 驱动。Skill Prompt 不能替代 ExecutionContract、Docker、Artifact Tool 或 Publisher

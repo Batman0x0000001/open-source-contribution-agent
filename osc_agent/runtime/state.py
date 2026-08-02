@@ -133,7 +133,7 @@ StateChange: TypeAlias = Annotated[
 
 
 class AgentRunState(ContractModel):
-    """Session V5 持久化并在 Query 各轮之间传递的唯一运行状态。"""
+    """Session V6 持久化并在 Query 各轮之间传递的唯一运行状态。"""
 
     workspace: WorkspaceState
     permissions: PermissionState = Field(default_factory=PermissionState)

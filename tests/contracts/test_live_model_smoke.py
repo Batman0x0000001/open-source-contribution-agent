@@ -43,7 +43,7 @@ def test_opt_in_live_model_can_complete_one_runtime_turn(tmp_path: Path) -> None
     async def run():
         return [
             event
-            async for event in conversation.submit(
+            async for event in conversation.start(
                 UserPrompt(text="Reply with the single word READY.")
             )
         ]

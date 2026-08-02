@@ -108,6 +108,43 @@ def test_query_is_an_async_generator() -> None:
     assert inspect.isasyncgenfunction(AgentRuntime.query)
 
 
+def test_runtime_strictly_validates_start_and_resume_under_session_lease(tmp_path: Path) -> None:
+    store = FileSessionStore(tmp_path / "sessions")
+    store.create(
+        SessionMetadata(
+            schema_version=6,
+            session_id="existing",
+            workspace_root=str(tmp_path),
+            model="saved",
+        ),
+        agent_run_state(str(tmp_path)),
+    )
+    gateway = FakeGateway([])
+    agent = runtime(gateway, session_store=store)
+
+    with pytest.raises(ValueError, match="session already exists"):
+        asyncio.run(
+            collect(
+                agent,
+                StartQueryParams(
+                    session_id="existing",
+                    model="new",
+                    messages=[RuntimeMessage(role="user", content=[TextBlock(text="start")])],
+                    workspace_root=str(tmp_path),
+                ),
+            )
+        )
+    with pytest.raises(ValueError, match="unknown session"):
+        asyncio.run(
+            collect(
+                agent,
+                ResumeQueryParams(session_id="missing", workspace_root=str(tmp_path)),
+            )
+        )
+
+    assert gateway.requests == []
+
+
 def test_query_streams_text_and_completes() -> None:
     gateway = FakeGateway(
         [[
@@ -342,7 +379,7 @@ def test_resume_repairs_interrupted_tool_use_before_new_user_message(
     store = FileSessionStore(tmp_path / "sessions")
     store.create(
         SessionMetadata(
-            schema_version=5,
+            schema_version=6,
             session_id="interrupted",
             workspace_root=str(tmp_path),
             model="saved-model",

@@ -70,7 +70,7 @@ def run_agent(
     run_conversation(
         conversation=conversation,
         repository_root=repo,
-        initial_input=UserPrompt(text=task),
+        initial_events=conversation.start(UserPrompt(text=task)),
         once=once,
         quiet=quiet,
     )
@@ -96,7 +96,7 @@ def resume_session(
     assert session_id is not None
     agent_application = build_cli_application(
         repo,
-        build_general_profile(resume=True),
+        build_general_profile(),
         approval_handler=approve_tool,
         question_handler=ask_questions,
     )
@@ -105,7 +105,7 @@ def resume_session(
     run_conversation(
         conversation=conversation,
         repository_root=repo,
-        initial_input=UserPrompt(text=prompt) if prompt else None,
+        initial_events=conversation.resume(UserPrompt(text=prompt) if prompt else None),
         once=once,
         quiet=quiet,
     )
@@ -216,7 +216,7 @@ def _run_inline_skill(
         run_conversation(
             conversation=conversation,
             repository_root=repo,
-            initial_input=SkillInput(name=name, arguments=arguments),
+            initial_events=conversation.start(SkillInput(name=name, arguments=arguments)),
             once=once,
             quiet=quiet,
         )

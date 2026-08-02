@@ -1,10 +1,12 @@
 # 当前状态模型
 
-本文描述 Open Source Contribution Agent `0.2.4` 的持久化状态边界。Control 与 Worker 必须使用相同的状态模型；不支持不同状态模型的进程混跑或滚动升级。
+本文描述 Open Source Contribution Agent `0.3.0` 的持久化状态边界。Control 与 Worker 必须使用相同的状态模型；不支持不同状态模型的进程混跑或滚动升级。
 
-Runtime Session 使用 V5。Metadata 只保存 `session_id`、`workspace_root`、`model` 和
+Runtime Session 使用 V6。Metadata 只保存 `session_id`、`workspace_root`、`model` 和
 `system_prompt`；workspace、permissions、capabilities、completion requirements 与终态统一
-保存在 `AgentRunState`。JSONL 与 SQLite Store 使用相同记录模型。V4 不兼容且不会自动迁移。
+保存在 `AgentRunState`。JSONL 与 SQLite Store 使用相同记录模型。V5 不兼容且不会自动迁移。
+V6 system prompt 不再复制 Skill 或 Agent 发现列表；当前 Tool Schema 是可用能力的唯一模型可见
+权威。恢复使用持久化 capability，当前工具注册表只能让已删除或禁用的工具不可用，不能扩大权限。
 
 `ExecutionContract` 使用不可变的规范 JSON。它绑定仓库、GitHub App 安装、Issue、默认分支和 base SHA，以及 Issue 输入哈希、模型、Runtime、Agent profile、Skill、Tool allowlist、验证命令、拒绝路径、patch 限制、不可变 Docker image ID、容器资源和 PR 发布模式。Token、私钥、Secret、Prompt 和宿主绝对路径不属于契约字段。
 

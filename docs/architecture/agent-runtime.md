@@ -9,13 +9,13 @@ CLI / Bot Worker
     → AgentApplicationConfig
     → build_agent_application()
     → AgentApplication.open_session()
-    → AgentConversation.submit()
+    → AgentConversation.start() / resume()
     → AgentRuntime.query()
     → AgentRunState
     → ToolContext
     → ToolResult.state_changes
     → AgentRunState.apply()
-    → Session V5
+    → Session V6
 ```
 
 `application/agent.py` 是唯一 composition root，也是产品进入 Runtime 的唯一入口。CLI 与
@@ -39,8 +39,9 @@ Bot Worker 都不能构造 `StartQueryParams`、`ResumeQueryParams` 或直接调
 ## Application
 
 `application/agent.py` 从上到下依次包含产品配置、Application、Conversation 和组装函数。
-Application 直接持有 Conversation 所需的 Runtime、SessionStore、SkillPreparer、QueryConfig、
-capabilities 和 discovery prompt，不存在中间 `ApplicationGraph`。
+Application 直接持有 Conversation 所需的 Runtime、SessionStore、SkillPreparer、QueryConfig 和
+有效 capabilities，不存在中间 `ApplicationGraph`。CLI 与 Bot Worker 显式选择 Start 或
+Resume；Conversation 只翻译输入，Runtime 在 Session lease 内验证创建或恢复条件。
 
 Skill 的默认来源由 `skills/catalog.py` 构建，Provider 由 `providers/factory.py` 构建；doctor
 和只读查询不需要构造完整 Application。
@@ -54,16 +55,19 @@ completion requirements 与终态。
 Tool 只接收从状态投影出的只读 `ToolContext`。Tool 不修改上下文，而是返回有序
 `state_changes`。串行调用立即应用变化；并发调用可乱序完成，但变化始终按模型调用顺序应用。
 capability 和 completion requirement 只能收窄，合并规则只存在于 `AgentRunState.apply()`。
+Tool Schema 根据该状态展示能力，ToolExecutor 在 PermissionPolicy 之前执行相同 capability
+硬门禁。Skill 与 Agent 的发现信息只存在于对应 Tool description，不复制进 system prompt。
 
 Context projection 只改变发送给模型的视图，不能改变权威 transcript 或破坏
 `tool_use/tool_result` 配对。Reactive Compact、取消配对、预算和完成阻断仍由唯一 Query
 循环处理。
 
-## Session V5
+## Session V6
 
-V5 Metadata 只保存不可变身份：`session_id`、`workspace_root`、`model` 和 `system_prompt`。
+V6 Metadata 只保存不可变身份：`session_id`、`workspace_root`、`model` 和 `system_prompt`。
 当前 workspace、permissions、capabilities、completion requirements 与终态只保存在
-`AgentRunState`，不存在平行字段。File 与 SQLite Store 使用相同模型；V4 明确拒绝，不迁移。
+`AgentRunState`，不存在平行字段。File 与 SQLite Store 使用相同模型；V5 明确拒绝，不迁移。
+恢复始终使用持久化模型、系统提示和运行状态；当前 Profile 不能覆盖旧 Session。
 
 ## Completion
 

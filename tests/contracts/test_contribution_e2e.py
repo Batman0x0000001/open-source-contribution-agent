@@ -220,7 +220,7 @@ def test_contribution_skill_runs_through_plan_worktree_draft_and_resume(monkeypa
     async def run_contribution():
         return [
             event
-            async for event in conversation.submit(
+            async for event in conversation.start(
                 SkillInput(
                     name="open-source-contribution",
                     arguments={
@@ -234,9 +234,12 @@ def test_contribution_skill_runs_through_plan_worktree_draft_and_resume(monkeypa
     events = asyncio.run(run_contribution())
     assert isinstance(events[-1], RunCompleted), gateway.exhausted_feedback
     assert "Run focused tests before drafting." in gateway.requests[0].system_prompt
-    assert "- explore:" in gateway.requests[0].system_prompt
-    assert "- verify:" in gateway.requests[0].system_prompt
-    assert "agent" in {schema["name"] for schema in gateway.requests[0].tools}
+    assert "<available_agents>" not in gateway.requests[0].system_prompt
+    agent_schema = next(
+        schema for schema in gateway.requests[0].tools if schema["name"] == "agent"
+    )
+    assert "explore" in agent_schema["description"]
+    assert "verify" in agent_schema["description"]
     explore_requests = [
         request
         for request in gateway.requests
@@ -295,7 +298,7 @@ def test_contribution_skill_runs_through_plan_worktree_draft_and_resume(monkeypa
     async def resume():
         return [
             event
-            async for event in resumed_conversation.submit(None)
+            async for event in resumed_conversation.resume(None)
         ]
 
     resumed_events = asyncio.run(resume())

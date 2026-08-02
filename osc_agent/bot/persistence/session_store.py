@@ -1,4 +1,4 @@
-"""使用 Bot SQLite 数据库持久化 Runtime Session V5 记录。"""
+"""使用 Bot SQLite 数据库持久化 Runtime Session V6 记录。"""
 
 from __future__ import annotations
 

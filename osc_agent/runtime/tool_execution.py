@@ -62,6 +62,12 @@ class ToolExecutor:
         if isinstance(validation, ValidationFailure):
             return _error("TOOL_VALIDATION_FAILED", validation.reason)
 
+        if not context.capabilities.permits_tool(tool.name):
+            return _error(
+                "PERMISSION_DENIED",
+                f"tool {tool.name} is outside the current capability scope",
+            )
+
         permission = await self.permission_policy.decide(tool, parsed, context)
         generally_allowed_input = await self._resolve_permission(
             permission,

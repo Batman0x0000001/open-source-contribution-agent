@@ -382,7 +382,7 @@ class AgentRuntime:
         if store is not None:
             store.create(
                 SessionMetadata(
-                    schema_version=5,
+                    schema_version=6,
                     session_id=params.session_id,
                     workspace_root=workspace_root,
                     model=params.model,

@@ -26,8 +26,6 @@ class BotPermissionPolicy(PermissionPolicy):
         self.implementation_approved = implementation_approved
 
     async def decide(self, tool: Tool[ContractModel, ContractModel], input: ContractModel, context: ToolContext) -> PermissionDecision:
-        if not context.capabilities.permits_tool(tool.name):
-            return Deny(reason=f"tool {tool.name} is outside the bot capability scope")
         if context.permissions.mode == "plan" and not tool.is_read_only(input) and tool.name != "write_plan":
             return Deny(reason=f"tool {tool.name} is not allowed in plan mode")
         risk = tool.permission_risk(input)

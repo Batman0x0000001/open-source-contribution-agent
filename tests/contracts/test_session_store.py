@@ -1,4 +1,4 @@
-"""验证 File SessionStore 的 V5 追加、恢复、拒绝旧版本和 Lease。"""
+"""验证 File SessionStore 的 V6 追加、恢复、拒绝旧版本和 Lease。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from tests.runtime_factories import agent_run_state
 
 def metadata(session_id: str, root: Path) -> SessionMetadata:
     return SessionMetadata(
-        schema_version=5,
+        schema_version=6,
         session_id=session_id,
         workspace_root=str(root),
         model="test",
@@ -56,13 +56,13 @@ def test_session_identifier_cannot_escape_store(tmp_path: Path) -> None:
         FileSessionStore(tmp_path).load("../escape")
 
 
-def test_v4_session_is_explicitly_rejected(tmp_path: Path) -> None:
+def test_v5_session_is_explicitly_rejected(tmp_path: Path) -> None:
     (tmp_path / "legacy.jsonl").write_text(
-        '{"type":"metadata","metadata":{"schema_version":4,"session_id":"legacy",'
+        '{"type":"metadata","metadata":{"schema_version":5,"session_id":"legacy",'
         '"repository_root":"C:/repo","model":"old"}}\n',
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="V5 requires schema_version=5"):
+    with pytest.raises(ValueError, match="V6 requires schema_version=6"):
         FileSessionStore(tmp_path).load("legacy")
 
 

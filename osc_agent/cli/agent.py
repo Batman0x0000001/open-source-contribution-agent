@@ -15,7 +15,6 @@ from osc_agent.application import (
     AgentApplication,
     AgentApplicationConfig,
     AgentConversation,
-    AgentInput,
     AgentProfile,
     UserPrompt,
     build_agent_application,
@@ -36,13 +35,11 @@ from osc_agent.runtime.events import (
 from osc_agent.runtime.tool_models import ApprovalResponse, Ask
 
 
-def build_general_profile(*, resume: bool = False) -> AgentProfile:
-    prompt = (
-        "Continue the existing repository task from its authoritative transcript."
-        if resume
-        else "Use repository evidence and the smallest safe change that satisfies the task."
+def build_general_profile() -> AgentProfile:
+    return AgentProfile(
+        profile_id="local_debug",
+        system_prompt="Use repository evidence and the smallest safe change that satisfies the task.",
     )
-    return AgentProfile(profile_id="local_debug", system_prompt=prompt)
 
 
 def build_skill_profile(name: str) -> AgentProfile:
@@ -75,12 +72,12 @@ def run_conversation(
     *,
     conversation: AgentConversation,
     repository_root: Path,
-    initial_input: AgentInput | None,
+    initial_events: AsyncIterator[RuntimeEvent],
     once: bool,
     quiet: bool,
 ) -> None:
     interactive = not once and sys.stdin.isatty()
-    events = conversation.submit(initial_input)
+    events = initial_events
     while True:
         stopped = False
         try:
@@ -101,7 +98,7 @@ def run_conversation(
         if prompt == "/exit":
             return
         if prompt:
-            events = conversation.submit(UserPrompt(text=prompt))
+            events = conversation.resume(UserPrompt(text=prompt))
 
 
 async def approve_tool(decision: Ask) -> ApprovalResponse:

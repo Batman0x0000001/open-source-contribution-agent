@@ -156,11 +156,11 @@ class FileSessionStore:
                         and raw_record.get("type") == "metadata"
                         and (
                             not isinstance(raw_record.get("metadata"), dict)
-                            or raw_record["metadata"].get("schema_version") != 5
+                            or raw_record["metadata"].get("schema_version") != 6
                         )
                     ):
                         raise ValueError(
-                            "unsupported session schema version; V5 requires schema_version=5"
+                            "unsupported session schema version; V6 requires schema_version=6"
                         )
                     record = _RecordEnvelope.model_validate_json(
                         json.dumps({"record": raw_record}, ensure_ascii=False)

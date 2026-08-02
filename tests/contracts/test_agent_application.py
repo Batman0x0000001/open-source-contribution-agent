@@ -59,7 +59,6 @@ def _application(root: Path, *, existing=None, allowed_initial_skills=frozenset(
         skill_preparer=skill_preparer,  # type: ignore[arg-type]
         query_config=QueryConfig(),
         capabilities=CapabilityScope(allowed_tools=frozenset({"read_file", "grep"})),
-        discovery_prompt="discovery",
         repository_root=root,
         model="persisted-model",
         profile=AgentProfile(
@@ -79,27 +78,31 @@ async def _collect(events):
 def test_start_binds_repository_root_and_resolves_user_prompt(tmp_path: Path) -> None:
     application, runtime, _ = _application(tmp_path)
 
-    asyncio.run(_collect(application.open_session("new").submit(UserPrompt(text="task"))))
+    asyncio.run(_collect(application.open_session("new").start(UserPrompt(text="task"))))
 
     params = runtime.params[0]
     assert isinstance(params, StartQueryParams)
     assert params.workspace_root == str(tmp_path.resolve())
     assert params.messages[0].content[0].text == "task"
     assert params.model == "persisted-model"
+    assert "<external_content_policy>" in params.system_prompt
+    assert "Current Tool schemas are the authoritative description" in params.system_prompt
+    assert "<available_skills>" not in params.system_prompt
+    assert "<available_agents>" not in params.system_prompt
 
 
 def test_new_session_rejects_empty_input(tmp_path: Path) -> None:
     application, _, _ = _application(tmp_path)
 
     with pytest.raises(ValueError, match="new Agent Session"):
-        asyncio.run(_collect(application.open_session("new").submit(None)))
+        asyncio.run(_collect(application.open_session("new").start(None)))  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("input", [None, UserPrompt(text="follow up")])
 def test_existing_session_resumes_with_optional_prompt(tmp_path: Path, input) -> None:
     application, runtime, _ = _application(tmp_path, existing=object())
 
-    asyncio.run(_collect(application.open_session("existing").submit(input)))
+    asyncio.run(_collect(application.open_session("existing").resume(input)))
 
     params = runtime.params[0]
     assert isinstance(params, ResumeQueryParams)
@@ -107,12 +110,12 @@ def test_existing_session_resumes_with_optional_prompt(tmp_path: Path, input) ->
     assert len(params.messages) == (0 if input is None else 1)
 
 
-def test_existing_session_rejects_skill_input(tmp_path: Path) -> None:
+def test_resume_rejects_skill_input(tmp_path: Path) -> None:
     application, _, _ = _application(tmp_path, existing=object())
 
-    with pytest.raises(ValueError, match="can only start"):
+    with pytest.raises(ValueError, match="Resume accepts"):
         asyncio.run(
-            _collect(application.open_session("existing").submit(SkillInput(name="skill")))
+            _collect(application.open_session("existing").resume(SkillInput(name="skill")))  # type: ignore[arg-type]
         )
 
 
@@ -124,7 +127,7 @@ def test_skill_start_uses_shared_preparer_and_tightens_requirements(tmp_path: Pa
 
     asyncio.run(
         _collect(
-            application.open_session("skill").submit(
+            application.open_session("skill").start(
                 SkillInput(name="skill", arguments={"value": "x"})
             )
         )
@@ -145,7 +148,7 @@ def test_skill_start_requires_explicit_profile_authorization(tmp_path: Path) -> 
     with pytest.raises(ValueError, match="not allowed by Agent Profile"):
         asyncio.run(
             _collect(
-                application.open_session("skill").submit(SkillInput(name="hidden"))
+                application.open_session("skill").start(SkillInput(name="hidden"))
             )
         )
 

@@ -20,7 +20,7 @@ def _store_with_session(root: Path, *, session_id: str = "session-1") -> FileSes
     store = FileSessionStore(root)
     store.create(
         SessionMetadata(
-            schema_version=5,
+            schema_version=6,
             session_id=session_id,
             workspace_root=str(root),
             model="test-model",
@@ -42,7 +42,7 @@ def test_session_cli_hides_messages_by_default(monkeypatch, tmp_path: Path) -> N
     store = FileSessionStore(ApplicationStatePaths.for_repository(tmp_path).sessions)
     store.create(
         SessionMetadata(
-            schema_version=5,
+            schema_version=6,
             session_id="session-1",
             workspace_root=str(tmp_path),
             model="test-model",
@@ -107,11 +107,11 @@ def test_conversation_driver_reuses_session_for_follow_up(
         "osc_agent.cli.agent.typer.prompt",
         lambda *_args, **_kwargs: next(prompts),
     )
-    submitted = []
+    resumed = []
 
     class Conversation:
-        def submit(self, input=None):
-            submitted.append(input)
+        def resume(self, input=None):
+            resumed.append(input)
 
             async def events() -> AsyncIterator[RuntimeEvent]:
                 yield RunCompleted(transition=Complete(reason="end_turn"))
@@ -121,17 +121,18 @@ def test_conversation_driver_reuses_session_for_follow_up(
         def snapshot(self):
             return store.load("session-1")
 
+    conversation = Conversation()
     run_conversation(
-        conversation=Conversation(),  # type: ignore[arg-type]
+        conversation=conversation,  # type: ignore[arg-type]
         repository_root=tmp_path,
-        initial_input=None,
+        initial_events=conversation.resume(),
         once=False,
         quiet=True,
     )
 
-    assert len(submitted) == 2
-    assert submitted[0] is None
-    assert submitted[1].text == "follow up"
+    assert len(resumed) == 2
+    assert resumed[0] is None
+    assert resumed[1].text == "follow up"
 
 
 def test_resume_latest_resolves_repository_scoped_session(
@@ -145,7 +146,7 @@ def test_resume_latest_resolves_repository_scoped_session(
     store = session_store(tmp_path)
     store.create(
         SessionMetadata(
-            schema_version=5,
+            schema_version=6,
             session_id="latest-session",
             workspace_root=str(tmp_path),
             model="test",
@@ -157,7 +158,15 @@ def test_resume_latest_resolves_repository_scoped_session(
     class AgentApplication:
         def open_session(self, session_id):
             captured["opened_session_id"] = session_id
-            return object()
+            return Conversation()
+
+    class Conversation:
+        def resume(self, input=None):
+            captured["resume_input"] = input
+            return _completed_events()
+
+    async def _completed_events():
+        yield RunCompleted(transition=Complete(reason="done"))
 
     monkeypatch.setattr(
         "osc_agent.cli.app.build_cli_application",
@@ -175,4 +184,45 @@ def test_resume_latest_resolves_repository_scoped_session(
 
     assert result.exit_code == 0
     assert captured["opened_session_id"] == "latest-session"
-    assert captured["initial_input"] is None
+    assert captured["resume_input"] is None
+    assert "initial_events" in captured
+
+
+def test_explicit_resume_never_starts_an_unknown_session(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    class Conversation:
+        def start(self, _input):
+            calls.append("start")
+            raise AssertionError("resume command must not start a Session")
+
+        def resume(self, _input=None):
+            calls.append("resume")
+
+            async def events():
+                raise ValueError("unknown session: missing")
+                yield  # pragma: no cover
+
+            return events()
+
+        def snapshot(self):
+            return None
+
+    class AgentApplication:
+        def open_session(self, _session_id):
+            return Conversation()
+
+    monkeypatch.setattr(
+        "osc_agent.cli.app.build_cli_application",
+        lambda *_args, **_kwargs: AgentApplication(),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["resume", "--repo", str(tmp_path), "missing", "--prompt", "continue", "--once"],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ValueError)
+    assert "unknown session" in str(result.exception)
+    assert calls == ["resume"]

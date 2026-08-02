@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
@@ -13,6 +13,7 @@ from uuid import uuid4
 from osc_agent.application import (
     AgentApplication,
     AgentApplicationConfig,
+    AgentConversation,
     AgentProfile,
     SkillInput,
     build_agent_application,
@@ -31,7 +32,7 @@ from osc_agent.bot.worker.policy import BotPermissionPolicy, BotRepositoryPolicy
 from osc_agent.configuration import AgentSettings
 from osc_agent.processes.contracts import ProcessRunner
 from osc_agent.processes.runner import DisabledProcessRunner
-from osc_agent.runtime.events import RunCompleted, RunStopped
+from osc_agent.runtime.events import RunCompleted, RunStopped, RuntimeEvent
 from osc_agent.runtime.gateway import ModelGateway
 from osc_agent.subagents.builtins import build_explore_subagent
 
@@ -187,6 +188,17 @@ async def consume_runtime_events(
             pending.cancel()
         await asyncio.gather(pending, return_exceptions=True)
     return completed
+
+
+def _bot_session_events(
+    conversation: AgentConversation,
+    initial_input: SkillInput,
+) -> AsyncIterator[RuntimeEvent]:
+    """保留 Job 已分配 Session ID、但 Session 尚未落库时的崩溃恢复语义。"""
+
+    if conversation.snapshot() is None:
+        return conversation.start(initial_input)
+    return conversation.resume()
 
 
 def _build_plan_application(
@@ -355,16 +367,14 @@ class PlanJobExecutor:
                 session_id=session_id,
                 text=pending_reply[1],
             )
-        initial = None
-        if conversation.snapshot() is None:
-            initial = build_planning_skill_input(
-                job,
-                resolved.contract,
-                self.store.get_job_input(job.job_id),
-                skill_name=self.catalog.planning_skill_name,
-            )
+        initial = build_planning_skill_input(
+            job,
+            resolved.contract,
+            self.store.get_job_input(job.job_id),
+            skill_name=self.catalog.planning_skill_name,
+        )
         completed = await consume_runtime_events(
-            conversation.submit(initial),
+            _bot_session_events(conversation, initial),
             store=self.store,
             worker_id=self.bot_settings.worker_id,
             job_id=job.job_id,
@@ -483,15 +493,13 @@ class ImplementationJobExecutor:
                 expected_version=current.version,
                 implementation_session_id=session_id,
             )
-        initial_input = None
-        if conversation.snapshot() is None:
-            initial_input = build_implementation_skill_input(
-                job,
-                contract,
-                plan,
-                skill_name=self.catalog.implementation_skill_name,
-            )
-        query = conversation.submit(initial_input)
+        initial_input = build_implementation_skill_input(
+            job,
+            contract,
+            plan,
+            skill_name=self.catalog.implementation_skill_name,
+        )
+        query = _bot_session_events(conversation, initial_input)
         completed = await consume_runtime_events(
             query,
             store=self.store,

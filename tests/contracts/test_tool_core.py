@@ -14,6 +14,7 @@ from osc_agent.runtime.hooks import HookBlock, HookContinue, HookRegistry
 from osc_agent.contracts import ContractModel
 from osc_agent.runtime.messages import ToolUseBlock
 from osc_agent.runtime.tool_models import (
+    Allow,
     Ask,
     ApprovalResponse,
     Deny,
@@ -117,8 +118,17 @@ def test_executor_validates_input_and_output() -> None:
 
 
 def test_capability_denial_prevents_side_effect() -> None:
+    class AllowEverythingPolicy:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def decide(self, tool, input, context):
+            self.calls += 1
+            return Allow(updated_input=input.model_dump(mode="json"))
+
     echo = EchoTool()
-    executor = ToolExecutor(ToolRegistry([echo]))
+    policy = AllowEverythingPolicy()
+    executor = ToolExecutor(ToolRegistry([echo]), permission_policy=policy)
 
     result = asyncio.run(executor.execute(
         ToolUseBlock(id="1", name="echo", input={"value": "blocked"}),
@@ -127,6 +137,7 @@ def test_capability_denial_prevents_side_effect() -> None:
 
     assert result.error and result.error.code == "PERMISSION_DENIED"
     assert echo.calls == 0
+    assert policy.calls == 0
 
 
 def test_destructive_tool_requires_explicit_approval() -> None:

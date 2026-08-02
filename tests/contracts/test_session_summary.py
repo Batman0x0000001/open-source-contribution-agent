@@ -1,4 +1,4 @@
-"""验证 Session V5 摘要只使用成功的类型化 Tool 证据。"""
+"""验证 Session V6 摘要只使用成功的类型化 Tool 证据。"""
 
 from osc_agent.application.session_summary import build_session_summary
 from osc_agent.runtime.messages import RuntimeMessage, ToolResultBlock, ToolUseBlock
@@ -9,7 +9,7 @@ from tests.runtime_factories import agent_run_state
 def snapshot(messages=None) -> SessionSnapshot:
     return SessionSnapshot(
         metadata=SessionMetadata(
-            schema_version=5,
+            schema_version=6,
             session_id="session-1",
             workspace_root="C:/repo",
             model="test",
