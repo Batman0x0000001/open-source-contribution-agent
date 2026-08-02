@@ -2,41 +2,27 @@
 
 from __future__ import annotations
 
+from enum import Enum
+
 from statemachine import State, StateMachine
 from statemachine.exceptions import TransitionNotAllowed
 
 
-TRANSITIONS: tuple[tuple[str, str, str], ...] = (
-    ("queued_plan", "claim_plan", "running_plan"),
-    ("running_plan", "plan_ready", "waiting_approval"),
-    ("running_plan", "plan_blocked", "blocked_plan"),
-    ("blocked_plan", "reply_received", "queued_plan"),
-    ("waiting_approval", "implementation_approved", "queued_implementation"),
-    ("queued_implementation", "claim_implementation", "running_implementation"),
-    ("running_implementation", "implementation_ready", "ready_to_publish"),
-    ("ready_to_publish", "begin_publish", "publishing"),
-    ("publishing", "publish_complete", "completed"),
-    ("running_plan", "schedule_retry", "retry_wait"),
-    ("running_implementation", "schedule_retry", "retry_wait"),
-    ("publishing", "schedule_retry", "retry_wait"),
-    ("retry_wait", "resume_plan", "queued_plan"),
-    ("retry_wait", "resume_implementation", "queued_implementation"),
-    ("retry_wait", "resume_publish", "ready_to_publish"),
-    ("retry_wait", "exhaust_retries", "dead_letter"),
-    ("waiting_approval", "mark_stale", "stale"),
-    ("running_implementation", "mark_stale", "stale"),
-    ("ready_to_publish", "mark_stale", "stale"),
-    ("publishing", "mark_stale", "stale"),
-    ("queued_plan", "cancel", "cancelled"),
-    ("running_plan", "cancel", "cancelled"),
-    ("blocked_plan", "cancel", "cancelled"),
-    ("waiting_approval", "cancel", "cancelled"),
-    ("queued_implementation", "cancel", "cancelled"),
-    ("running_implementation", "cancel", "cancelled"),
-    ("ready_to_publish", "cancel", "cancelled"),
-    ("publishing", "cancel", "cancelled"),
-    ("retry_wait", "cancel", "cancelled"),
-)
+class JobEvent(str, Enum):
+    CLAIM_PLAN = "claim_plan"
+    PLAN_READY = "plan_ready"
+    PLAN_BLOCKED = "plan_blocked"
+    REPLY_RECEIVED = "reply_received"
+    IMPLEMENTATION_APPROVED = "implementation_approved"
+    CLAIM_IMPLEMENTATION = "claim_implementation"
+    IMPLEMENTATION_READY = "implementation_ready"
+    BEGIN_PUBLISH = "begin_publish"
+    PUBLISH_COMPLETE = "publish_complete"
+    SCHEDULE_RETRY = "schedule_retry"
+    RESUME_RETRY = "resume_retry"
+    EXHAUST_RETRIES = "exhaust_retries"
+    MARK_STALE = "mark_stale"
+    CANCEL = "cancel"
 
 
 class BotJobStateMachine(StateMachine):
@@ -91,31 +77,15 @@ class BotJobStateMachine(StateMachine):
     )
 
     @classmethod
-    def transition(cls, current: str, event: str, *, retry_phase: str | None = None) -> str:
+    def transition(cls, current: str, event: JobEvent, *, retry_phase: str | None = None) -> str:
         machine = cls(start_value=current)
-        trigger = event
-        if event == "resume_retry":
+        trigger = event.value
+        if event is JobEvent.RESUME_RETRY:
             if retry_phase not in {"plan", "implementation", "publish"}:
                 raise ValueError("BOT_RETRY_PHASE_REQUIRED")
             trigger = f"resume_{retry_phase}"
         try:
             getattr(machine, trigger)()
         except (AttributeError, ValueError, TransitionNotAllowed) as exc:
-            raise ValueError(f"BOT_INVALID_TRANSITION:{current}:{event}") from exc
+            raise ValueError(f"BOT_INVALID_TRANSITION:{current}:{event.value}") from exc
         return str(next(iter(machine.configuration)).value)
-
-    @classmethod
-    def mermaid(cls) -> str:
-        lines = ["stateDiagram-v2", "    [*] --> queued_plan"]
-        lines.extend(f"    {source} --> {target}: {event}" for source, event, target in TRANSITIONS)
-        lines.extend(
-            f"    {state} --> [*]"
-            for state in ("completed", "stale", "dead_letter", "cancelled")
-        )
-        return "\n".join(lines)
-
-    @classmethod
-    def transition_table(cls) -> str:
-        rows = ["| From | Event | To |", "|---|---|---|"]
-        rows.extend(f"| `{source}` | `{event}` | `{target}` |" for source, event, target in TRANSITIONS)
-        return "\n".join(rows)

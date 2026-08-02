@@ -158,23 +158,6 @@ def smoke_test() -> None:
         typer.echo(f"PASS\t{endpoint}\tHTTP 200")
 
 
-@app.command("render-state-machine")
-def render_state_machine(
-    check: Annotated[bool, typer.Option("--check")] = False,
-) -> None:
-    """Render or verify the Bot Job state-machine document."""
-
-    from osc_agent.bot.maintenance import render_state_machine as render_state_machine_document
-
-    try:
-        path = render_state_machine_document(check=check)
-    except (ValueError, OSError) as exc:
-        _operation_error("architecture", exc)
-        return
-    if not check:
-        typer.echo(str(path))
-
-
 def _render_doctor(results) -> None:
     for item in results:
         typer.echo(f"{item.status}\t{item.name}\t{item.message}")

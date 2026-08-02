@@ -8,6 +8,7 @@ from typing import Iterator
 from uuid import uuid4
 
 from osc_agent.bot.domain.jobs import utc_now
+from osc_agent.bot.persistence.session_records import SessionRecordType, append_session_record
 from osc_agent.bot.persistence.store import BotStore
 from osc_agent.runtime.messages import RuntimeMessage
 from osc_agent.runtime.session import (
@@ -148,19 +149,19 @@ class SqliteSessionStore(SessionStore):
         if self.load(session_id) is None:
             raise ValueError(f"unknown session: {session_id}")
 
-    def _append(self, session_id: str, record_type: str, payload_json: str) -> None:
+    def _append(
+        self,
+        session_id: str,
+        record_type: SessionRecordType,
+        payload_json: str,
+    ) -> None:
         with self.store.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                """SELECT sequence, event_id FROM session_records
-                   WHERE session_id=? ORDER BY sequence DESC LIMIT 1""",
-                (session_id,),
-            ).fetchone()
-            sequence = 1 if row is None else int(row[0]) + 1
-            previous = None if row is None else str(row[1])
-            connection.execute(
-                """INSERT INTO session_records(session_id, sequence, event_id, previous_event_id,
-                   record_type, payload_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)""",
-                (session_id, sequence, str(uuid4()), previous, record_type, payload_json, utc_now()),
+            append_session_record(
+                connection,
+                session_id=session_id,
+                record_type=record_type,
+                payload_json=payload_json,
+                require_existing=record_type != "metadata",
             )
             connection.commit()

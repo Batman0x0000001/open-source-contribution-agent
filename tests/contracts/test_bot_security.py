@@ -19,6 +19,7 @@ from osc_agent.bot.domain.jobs import BotJob
 from osc_agent.bot.domain.repositories import RepositoryBotConfig
 from osc_agent.bot.persistence.store import BotStore
 from osc_agent.bot.worker.docker_runner import DockerProcessRunner
+from osc_agent.processes.contracts import ProcessRequest
 
 
 IMAGE_ID = "sha256:" + "a" * 64
@@ -105,6 +106,61 @@ def test_docker_runner_rejects_mutable_image_and_non_linux(tmp_path: Path, monke
             job_id="job-id",
             docker_executable="docker",
         )
+
+
+def test_docker_runner_logs_the_process_invocation_id(tmp_path: Path, monkeypatch) -> None:
+    import osc_agent.bot.worker.docker_runner as runner_module
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self):
+            return b"ok", b""
+
+        def kill(self) -> None:
+            self.returncode = -1
+
+    async def create_process(*_args, **_kwargs):
+        return Process()
+
+    logged: dict[str, object] = {}
+    monkeypatch.setattr(runner_module.sys, "platform", "linux")
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", create_process)
+    monkeypatch.setattr(runner_module, "git_workspace_fingerprint", lambda **_kwargs: "fingerprint")
+    monkeypatch.setattr(runner_module, "git_snapshot", lambda **_kwargs: {"files": [], "patch": ""})
+    monkeypatch.setattr(
+        runner_module,
+        "log_event",
+        lambda _logger, _event, **fields: logged.update(fields),
+    )
+    repository = tmp_path / "jobs" / "job" / "implementation"
+    (repository / ".git").mkdir(parents=True)
+    runner = DockerProcessRunner(
+        workspace_root=tmp_path / "jobs",
+        image_id=IMAGE_ID,
+        repository_config=RepositoryBotConfig(
+            image=IMAGE_ID,
+            validation_commands=("python -m pytest",),
+        ),
+        job_id="job-id",
+        docker_executable="docker",
+    )
+
+    result = asyncio.run(
+        runner.run(
+            ProcessRequest(
+                invocation_id="tool-use-1",
+                executable="bash",
+                command="python -m pytest",
+                repo_root=str(repository),
+                timeout_seconds=30,
+                environment={},
+            )
+        )
+    )
+
+    assert result.exit_code == 0
+    assert logged["tool_use_id"] == "tool-use-1"
 
 
 def test_publisher_accepts_only_one_clean_commit_on_approved_base(tmp_path: Path) -> None:

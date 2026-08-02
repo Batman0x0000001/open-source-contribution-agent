@@ -15,6 +15,7 @@ from osc_agent.bot.domain.events import OutboxEvent
 from osc_agent.bot.domain.execution import BotApproval, ExecutionContract, plan_evidence_hash
 from osc_agent.bot.domain.jobs import BotJob
 from osc_agent.bot.domain.repositories import RepositoryBotCatalog, RepositoryBotConfig
+from osc_agent.bot.domain.state_machine import JobEvent
 from osc_agent.bot.persistence.store import BotStore
 
 
@@ -94,11 +95,13 @@ class BotControlService:
         if command.action == "retry":
             if job.status != "retry_wait":
                 raise ValueError("job is not waiting for retry")
-            target = {"plan": "queued_plan", "implementation": "queued_implementation", "publish": "ready_to_publish"}.get(job.retry_phase or "")
-            if target is None:
+            if job.retry_phase not in {"plan", "implementation", "publish"}:
                 raise ValueError("job retry phase is missing")
-            self.store.transition(
-                job_id=job.job_id, expected_version=job.version, status=target, retry_phase=None
+            self.store.apply_job_event(
+                job_id=job.job_id,
+                expected_version=job.version,
+                event=JobEvent.RESUME_RETRY,
+                retry_phase=None,
             )
             return job.job_id
         return self._cancel(job)
@@ -159,11 +162,11 @@ class BotControlService:
             raise ValueError("job is not waiting for implementation approval")
         _branch, current_sha = await self.github.repository_head(job.installation_id, job.repository_full_name)
         if current_sha != job.base_sha:
-            self.store.transition_with_outbox(
+            self.store.apply_job_event_with_outbox(
                 job_id=job.job_id,
                 expected_version=job.version,
-                status="stale",
-                event=OutboxEvent(
+                event=JobEvent.MARK_STALE,
+                outbox_event=OutboxEvent(
                     event_id=str(uuid4()),
                     job_id=job.job_id,
                     kind="issue_comment",
@@ -210,13 +213,13 @@ class BotControlService:
     def _cancel(self, job: BotJob) -> str:
         if job.status in {"completed", "cancelled"}:
             return job.status
-        self.store.transition_with_outbox(
+        self.store.apply_job_event_with_outbox(
             job_id=job.job_id,
             expected_version=job.version,
-            status="cancelled",
+            event=JobEvent.CANCEL,
             lease_owner=None,
             lease_until=None,
-            event=OutboxEvent(
+            outbox_event=OutboxEvent(
                 event_id=str(uuid4()),
                 job_id=job.job_id,
                 kind="issue_comment",
@@ -231,5 +234,4 @@ class BotControlService:
     def _comment_event(self, job: BotJob, suffix: str, body: str) -> OutboxEvent:
         return OutboxEvent(event_id=str(uuid4()), job_id=job.job_id, kind="issue_comment",
             idempotency_key=f"comment:{job.job_id}:{suffix}:{job.version}", payload={"body": body})
-
 

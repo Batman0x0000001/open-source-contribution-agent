@@ -101,11 +101,11 @@ def test_model_contract_mismatch_dead_letters_without_running_agent() -> None:
         def get_job(self, _job_id):
             return job
 
-        def transition_with_outbox(self, **changes):
+        def apply_job_event_with_outbox(self, **changes):
             transitions.append(("retry_wait", changes))
             return job.model_copy(update={"status": "retry_wait", "version": job.version + 1})
 
-        def transition(self, **changes):
+        def apply_job_event(self, **changes):
             transitions.append(("dead_letter", changes))
             return job.model_copy(update={"status": "dead_letter", "version": job.version + 2})
 

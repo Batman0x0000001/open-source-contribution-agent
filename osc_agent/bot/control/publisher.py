@@ -12,6 +12,7 @@ from osc_agent.bot.domain.events import OutboxEvent
 from osc_agent.bot.domain.execution import validate_implementation_approval
 from osc_agent.bot.domain.jobs import BotJob
 from osc_agent.bot.domain.repositories import RepositoryBotConfig
+from osc_agent.bot.domain.state_machine import JobEvent
 from osc_agent.bot.persistence.session_store import SqliteSessionStore
 from osc_agent.bot.persistence.store import BotStore
 from osc_agent.processes.policy import build_subprocess_environment
@@ -98,8 +99,11 @@ class TrustedPublisher:
         current = job
         branch = job.branch or f"osa/issue-{job.issue_number}-{job.job_id[:8]}"
         if current.status != "publishing":
-            current = self.store.transition(
-                job_id=current.job_id, expected_version=current.version, status="publishing", branch=branch
+            current = self.store.apply_job_event(
+                job_id=current.job_id,
+                expected_version=current.version,
+                event=JobEvent.BEGIN_PUBLISH,
+                branch=branch,
             )
         if current.commit_sha is None:
             current_head = (await self._git(["rev-parse", "HEAD"], workspace)).strip()
@@ -167,15 +171,15 @@ class TrustedPublisher:
             )
         else:
             number, url = found
-        completed = self.store.transition_with_outbox(
+        completed = self.store.apply_job_event_with_outbox(
             job_id=current.job_id,
             expected_version=current.version,
-            status="completed",
+            event=JobEvent.PUBLISH_COMPLETE,
             pull_request_number=number,
             pull_request_url=url,
             lease_owner=None,
             lease_until=None,
-            event=OutboxEvent(
+            outbox_event=OutboxEvent(
                 event_id=f"comment-{current.job_id}",
                 job_id=current.job_id,
                 kind="issue_comment",
@@ -190,11 +194,11 @@ class TrustedPublisher:
         return completed
 
     def _mark_stale(self, job: BotJob) -> BotJob:
-        return self.store.transition_with_outbox(
+        return self.store.apply_job_event_with_outbox(
             job_id=job.job_id,
             expected_version=job.version,
-            status="stale",
-            event=OutboxEvent(
+            event=JobEvent.MARK_STALE,
+            outbox_event=OutboxEvent(
                 event_id=f"stale-{job.job_id}-{job.version}",
                 job_id=job.job_id,
                 kind="issue_comment",

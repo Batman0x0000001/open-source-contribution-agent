@@ -24,6 +24,7 @@ from osc_agent.bot.domain.events import OutboxEvent
 from osc_agent.bot.domain.execution import ExecutionContract, validate_implementation_approval
 from osc_agent.bot.domain.jobs import BotJob
 from osc_agent.bot.domain.repositories import RepositoryBotCatalog, RepositoryBotConfig
+from osc_agent.bot.domain.state_machine import JobEvent
 from osc_agent.bot.persistence.session_store import SqliteSessionStore
 from osc_agent.bot.persistence.store import BotStore
 from osc_agent.bot.worker.artifact_tools import SubmitDeliveryDraftTool, SubmitIssuePlanTool
@@ -358,7 +359,8 @@ class PlanJobExecutor:
         conversation = application.open_session(session_id)
         if job.plan_session_id is None:
             current = self.store.get_job(job.job_id)
-            assert current is not None
+            if current is None:
+                raise ValueError("Plan Job disappeared before its Session ID was persisted")
             self.store.update_job_fields(current.job_id, expected_version=current.version, plan_session_id=session_id)
         pending_reply = self.store.pending_plan_reply(job.job_id)
         if pending_reply is not None:
@@ -387,21 +389,22 @@ class PlanJobExecutor:
 
     def _finish_plan(self, job_id, artifact_id, plan) -> None:
         current = self.store.get_job(job_id)
-        assert current is not None
-        if current.status not in {"running_plan", "queued_plan"}:
+        if current is None:
+            raise ValueError("Plan Job disappeared before completion")
+        if current.status != "running_plan":
             return
-        status = "waiting_approval" if plan.status == "ready" else "blocked_plan"
+        event = JobEvent.PLAN_READY if plan.status == "ready" else JobEvent.PLAN_BLOCKED
         body = (
             f"{plan.plan_markdown}\n\nJob ID: `{current.job_id}`\nBase: `{current.base_sha}`"
             if plan.status == "ready"
             else "Planning is blocked:\n\n"
             + "\n".join(f"- {item}" for item in plan.unresolved_questions)
         )
-        self.store.transition_with_outbox(
+        self.store.apply_job_event_with_outbox(
             job_id=current.job_id,
             expected_version=current.version,
-            status=status,
-            event=_comment_event(current.job_id, "plan", body),
+            event=event,
+            outbox_event=_comment_event(current.job_id, "plan", body),
             plan_artifact_id=artifact_id,
             lease_owner=None,
             lease_until=None,
@@ -447,8 +450,9 @@ class ImplementationJobExecutor:
         config, contract, workspace = resolved.repository, resolved.contract, resolved.workspace
         approval = self.store.get_approval(job.approval_id or "")
         plan = self.store.get_plan_artifact(job.plan_artifact_id or "")
+        if plan is None:
+            raise ValueError("Implementation Job has no approved Plan artifact")
         validate_implementation_approval(approval, plan)
-        assert plan is not None
         session_id = job.implementation_session_id or str(uuid4())
         if job.implementation_session_id is not None:
             persisted = self.sessions.load(job.implementation_session_id)
@@ -487,7 +491,8 @@ class ImplementationJobExecutor:
         conversation = app.open_session(session_id)
         if job.implementation_session_id is None:
             current = self.store.get_job(job.job_id)
-            assert current is not None
+            if current is None:
+                raise ValueError("Implementation Job disappeared before its Session ID was persisted")
             self.store.update_job_fields(
                 current.job_id,
                 expected_version=current.version,
@@ -513,16 +518,17 @@ class ImplementationJobExecutor:
 
     def _finish_implementation(self, job_id: str) -> None:
         current = self.store.get_job(job_id)
-        assert current is not None
-        if current.status not in {"running_implementation", "queued_implementation"}:
+        if current is None:
+            raise ValueError("Implementation Job disappeared before completion")
+        if current.status != "running_implementation":
             return
-        self.store.transition_with_outbox(
+        self.store.apply_job_event_with_outbox(
             job_id=current.job_id,
             expected_version=current.version,
-            status="ready_to_publish",
+            event=JobEvent.IMPLEMENTATION_READY,
             lease_owner=None,
             lease_until=None,
-            event=OutboxEvent(
+            outbox_event=OutboxEvent(
                 event_id=str(uuid4()),
                 job_id=current.job_id,
                 kind="publish",
@@ -539,10 +545,10 @@ class ImplementationJobExecutor:
         current = self.store.get_job(job_id)
         if current is None or current.status in {"completed", "stale", "dead_letter", "cancelled"}:
             return
-        self.store.transition(
+        self.store.apply_job_event(
             job_id=job_id,
             expected_version=current.version,
-            status="cancelled",
+            event=JobEvent.CANCEL,
             error_code="REPOSITORY_POLICY_VIOLATION",
             error_message=reason[:1_000],
             lease_owner=None,

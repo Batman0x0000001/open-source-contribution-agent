@@ -13,6 +13,7 @@ import pytest
 
 from osc_agent.bot.domain.events import OutboxEvent
 from osc_agent.bot.domain.jobs import BotJob
+from osc_agent.bot.domain.state_machine import JobEvent
 from osc_agent.bot.persistence.session_store import SqliteSessionStore
 from osc_agent.bot.persistence.store import BotStore
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
@@ -60,6 +61,20 @@ def test_sqlite_job_delivery_version_and_claim(tmp_path: Path) -> None:
     store.create_job(job)
     with pytest.raises(ValueError, match="VERSION_CONFLICT"):
         store.update_job_fields(job.job_id, expected_version=99, error_code="failed")
+    for field, value in (
+        ("status", "completed"),
+        ("version", 99),
+        ("updated_at", "never"),
+    ):
+        with pytest.raises(ValueError, match="RESERVED_FIELDS"):
+            store.update_job_fields(job.job_id, expected_version=job.version, **{field: value})
+    with pytest.raises(ValueError, match="RESERVED_FIELDS"):
+        store.apply_job_event(
+            job_id=job.job_id,
+            expected_version=job.version,
+            event=JobEvent.CLAIM_PLAN,
+            status="running_plan",
+        )
     assert store.claim_job("worker") is None  # Workspace 尚未由可信 Control 准备。
     prepared = store.update_job_fields(
         job.job_id,
@@ -73,6 +88,17 @@ def test_sqlite_job_delivery_version_and_claim(tmp_path: Path) -> None:
     assert claimed.status == "running_plan"
     assert claimed.lease_owner == "worker"
     assert claimed.version == prepared.version + 1
+
+    expired = store.update_job_fields(
+        job.job_id,
+        expected_version=claimed.version,
+        lease_until="2000-01-01T00:00:00+00:00",
+    )
+    reclaimed = store.claim_job("worker-2", phase="plan")
+    assert reclaimed is not None
+    assert reclaimed.status == "running_plan"
+    assert reclaimed.plan_attempts == expired.plan_attempts + 1
+    assert reclaimed.lease_owner == "worker-2"
 
     progressed = store.record_progress(job.job_id, "plan:model_request_started")
     assert progressed.last_progress_event == "plan:model_request_started"
@@ -164,12 +190,23 @@ def test_plan_reply_is_exactly_once_and_atomically_appended(tmp_path: Path) -> N
     )
     job = _job().model_copy(update={"plan_session_id": session_id, "plan_workspace_ready": True})
     store.create_job(job)
-    running = store.transition(job_id=job.job_id, expected_version=job.version, status="running_plan")
-    blocked = store.transition_with_outbox(
-        job_id=job.job_id, expected_version=running.version, status="blocked_plan",
-        event=OutboxEvent(event_id="blocked-comment", job_id=job.job_id, kind="issue_comment",
-                          idempotency_key="blocked-comment", payload={"body": "question"}),
+    running = store.apply_job_event(
+        job_id=job.job_id, expected_version=job.version, event=JobEvent.CLAIM_PLAN
     )
+    blocked = store.apply_job_event_with_outbox(
+        job_id=job.job_id, expected_version=running.version, event=JobEvent.PLAN_BLOCKED,
+        outbox_event=OutboxEvent(event_id="blocked-comment", job_id=job.job_id, kind="issue_comment",
+                                 idempotency_key="blocked-comment", payload={"body": "question"}),
+    )
+    with store.connect() as connection:
+        payload = connection.execute(
+            "SELECT payload_json FROM job_events WHERE job_id=? AND event_type='JobBlocked'",
+            (job.job_id,),
+        ).fetchone()
+    assert payload is not None
+    assert json.loads(payload[0])["job_event"] == JobEvent.PLAN_BLOCKED.value
+    with pytest.raises(ValueError, match="CLEANUP_CONFLICT"):
+        store.delete_terminal_job(blocked.job_id, expected_version=blocked.version)
     assert store.enqueue_plan_reply(
         source_id="github:123", job=blocked, body="answer",
         prepare_event=OutboxEvent(event_id="prepare-reply", job_id=job.job_id, kind="prepare",
@@ -221,15 +258,15 @@ def test_plan_reply_does_not_recreate_a_missing_plan_session(tmp_path: Path) -> 
     session_id = str(uuid4())
     job = _job().model_copy(update={"plan_session_id": session_id})
     store.create_job(job)
-    running = store.transition(
+    running = store.apply_job_event(
         job_id=job.job_id,
         expected_version=job.version,
-        status="running_plan",
+        event=JobEvent.CLAIM_PLAN,
     )
-    blocked = store.transition(
+    blocked = store.apply_job_event(
         job_id=job.job_id,
         expected_version=running.version,
-        status="blocked_plan",
+        event=JobEvent.PLAN_BLOCKED,
     )
     store.enqueue_plan_reply(
         source_id="github:missing-session",
@@ -257,3 +294,4 @@ def test_plan_reply_does_not_recreate_a_missing_plan_session(tmp_path: Path) -> 
             session_id=session_id,
             text="answer",
         )
+    assert store.pending_plan_reply(job.job_id) == ("github:missing-session", "answer")

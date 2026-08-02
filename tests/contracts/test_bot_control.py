@@ -13,6 +13,7 @@ from osc_agent.bot.control.commands import parse_webhook_command
 from osc_agent.bot.control.handler import BotControlService
 from osc_agent.bot.domain.artifacts import IssuePlanArtifact
 from osc_agent.bot.domain.repositories import RepositoryBotCatalog, RepositoryBotConfig
+from osc_agent.bot.domain.state_machine import JobEvent
 from osc_agent.bot.persistence.store import BotStore
 
 
@@ -105,13 +106,13 @@ def test_control_creates_plan_and_bound_implementation_approval(tmp_path: Path) 
         plan_markdown="approved plan",
     )
     artifact_id = store.save_artifact(job_id, plan)
-    running = store.transition(
-        job_id=job_id, expected_version=job.version, status="running_plan"
+    running = store.apply_job_event(
+        job_id=job_id, expected_version=job.version, event=JobEvent.CLAIM_PLAN
     )
-    store.transition(
+    store.apply_job_event(
         job_id=job_id,
         expected_version=running.version,
-        status="waiting_approval",
+        event=JobEvent.PLAN_READY,
         plan_artifact_id=artifact_id,
     )
     result = asyncio.run(control.handle_issue_comment(_payload(f"/osa implement {job_id}")))

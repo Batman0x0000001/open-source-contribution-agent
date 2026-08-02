@@ -129,7 +129,7 @@ class DockerProcessRunner(ProcessRunner):
             "process_git_fingerprint",
             service="worker",
             job_id=self.job_id,
-            tool_use_id=tool_id,
+            tool_use_id=request.invocation_id,
             fingerprint_before=fingerprint_before,
             fingerprint_after=fingerprint_after,
             duration_ms=result.duration_ms,

@@ -14,7 +14,7 @@ from osc_agent.bot.domain.artifacts import DeliveryDraft, IssuePlanArtifact
 from osc_agent.bot.domain.events import OutboxEvent
 from osc_agent.bot.domain.execution import BotApproval, ExecutionContract
 from osc_agent.bot.domain.jobs import BotJob, JobStatus, utc_now
-from osc_agent.bot.domain.state_machine import BotJobStateMachine
+from osc_agent.bot.domain.state_machine import BotJobStateMachine, JobEvent
 from osc_agent.bot.persistence.schema import (
     APPLICATION_VERSION,
     SCHEMA,
@@ -22,6 +22,7 @@ from osc_agent.bot.persistence.schema import (
     SCHEMA_MIGRATION_VERSION,
     STATE_MODEL_REVISION,
 )
+from osc_agent.bot.persistence.session_records import append_session_record
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
 
 
@@ -232,8 +233,9 @@ class BotStore:
             if inserted.rowcount == 0:
                 connection.rollback()
                 return False
+            target = BotJobStateMachine.transition(job.status, JobEvent.REPLY_RECEIVED)
             updated = job.model_copy(update={
-                "status": "queued_plan", "version": job.version + 1, "updated_at": utc_now(),
+                "status": target, "version": job.version + 1, "updated_at": utc_now(),
                 "lease_owner": None, "lease_until": None,
                 "plan_workspace_ready": False,
             })
@@ -255,7 +257,8 @@ class BotStore:
             connection.execute(
                 "INSERT INTO job_events(event_id, job_id, event_type, payload_json, created_at) VALUES(?, ?, ?, ?, ?)",
                 (str(uuid4()), job.job_id, "PlanReplyReceived",
-                 json.dumps({"source_id": source_id, "from": job.status, "to": updated.status}, sort_keys=True),
+                 json.dumps({"source_id": source_id, "from": job.status, "to": updated.status,
+                             "job_event": JobEvent.REPLY_RECEIVED.value}, sort_keys=True),
                  utc_now()),
             )
             connection.commit()
@@ -293,18 +296,17 @@ class BotStore:
             if inbox[0] == "consumed":
                 connection.rollback()
                 return False
-            row = connection.execute(
-                """SELECT sequence, event_id FROM session_records
-                   WHERE session_id=? ORDER BY sequence DESC LIMIT 1""", (session_id,),
-            ).fetchone()
-            if row is None:
-                raise ValueError("Plan Session does not exist")
-            connection.execute(
-                """INSERT INTO session_records(session_id, sequence, event_id, previous_event_id,
-                   record_type, payload_json, created_at) VALUES(?, ?, ?, ?, 'message', ?, ?)""",
-                (session_id, int(row[0]) + 1, str(uuid4()), str(row[1]),
-                 message.model_dump_json(), utc_now()),
-            )
+            try:
+                append_session_record(
+                    connection,
+                    session_id=session_id,
+                    record_type="message",
+                    payload_json=message.model_dump_json(),
+                    require_existing=True,
+                )
+            except ValueError as exc:
+                raise ValueError("Plan Session does not exist") from exc
+
             changed = connection.execute(
                 """UPDATE bot_inbox_messages SET status='consumed', consumed_at=?
                    WHERE source_id=? AND status='pending'""", (utc_now(), source_id),
@@ -327,6 +329,7 @@ class BotStore:
         if current.version != expected_version:
             raise ValueError("BOT_JOB_VERSION_CONFLICT")
         update = dict(changes)
+        _validate_job_changes(update)
         update["version"] = current.version + 1
         update["updated_at"] = utc_now()
         updated = BotJob.model_validate(
@@ -353,12 +356,12 @@ class BotStore:
                 raise ValueError("BOT_JOB_VERSION_CONFLICT")
         return updated
 
-    def transition(
+    def apply_job_event(
         self,
         *,
         job_id: str,
         expected_version: int,
-        status: JobStatus,
+        event: JobEvent,
         **changes: object,
     ) -> BotJob:
         """Atomically validate and persist a state transition plus its audit event."""
@@ -366,7 +369,12 @@ class BotStore:
         current = self.get_job(job_id)
         if current is None or current.version != expected_version:
             raise ValueError("BOT_JOB_VERSION_CONFLICT")
-        _validate_transition(current.status, status, retry_phase=current.retry_phase)
+        _validate_job_changes(changes)
+        status = BotJobStateMachine.transition(
+            current.status,
+            event,
+            retry_phase=current.retry_phase,
+        )
         updated = BotJob.model_validate({
             **current.model_dump(mode="json"), **changes, "status": status,
             "version": current.version + 1, "updated_at": utc_now(),
@@ -383,8 +391,9 @@ class BotStore:
                 raise ValueError("BOT_JOB_VERSION_CONFLICT")
             connection.execute(
                 "INSERT INTO job_events(event_id, job_id, event_type, payload_json, created_at) VALUES(?, ?, ?, ?, ?)",
-                (str(uuid4()), job_id, _status_event(status),
-                 json.dumps({"from": current.status, "to": status}, sort_keys=True), utc_now()),
+                (str(uuid4()), job_id, _audit_event_type(event),
+                 json.dumps({"from": current.status, "to": status, "job_event": event.value},
+                            sort_keys=True), utc_now()),
             )
             connection.commit()
         return updated
@@ -436,10 +445,15 @@ class BotStore:
                 connection.rollback()
                 return None
             job = BotJob.model_validate_json(row[0])
+            claim_event: JobEvent | None = None
+            if job.status == "queued_plan":
+                claim_event = JobEvent.CLAIM_PLAN
+            elif job.status == "queued_implementation":
+                claim_event = JobEvent.CLAIM_IMPLEMENTATION
             running_status: JobStatus = (
-                "running_plan"
-                if job.status in {"queued_plan", "running_plan"}
-                else "running_implementation"
+                BotJobStateMachine.transition(job.status, claim_event)
+                if claim_event is not None
+                else job.status
             )
             updated = job.model_copy(
                 update={
@@ -472,7 +486,12 @@ class BotStore:
             connection.execute(
                 "INSERT INTO job_events(event_id, job_id, event_type, payload_json, created_at) VALUES(?, ?, ?, ?, ?)",
                 (str(uuid4()), job.job_id, "SessionStarted",
-                 json.dumps({"from": job.status, "to": running_status}, sort_keys=True), utc_now()),
+                 json.dumps({
+                     "from": job.status,
+                     "to": running_status,
+                     "job_event": claim_event.value if claim_event is not None else None,
+                     "reclaimed": claim_event is None,
+                 }, sort_keys=True), utc_now()),
             )
             connection.commit()
         return updated
@@ -530,11 +549,15 @@ class BotStore:
             raise ValueError("BOT_JOB_VERSION_CONFLICT")
         if approval.job_id != job_id or outbox_event.job_id != job_id:
             raise ValueError("approval transaction contains a mismatched job id")
-        _validate_transition(current.status, "queued_implementation", retry_phase=current.retry_phase)
+        target = BotJobStateMachine.transition(
+            current.status,
+            JobEvent.IMPLEMENTATION_APPROVED,
+            retry_phase=current.retry_phase,
+        )
         updated = BotJob.model_validate(
             {
                 **current.model_dump(mode="json"),
-                "status": "queued_implementation",
+                "status": target,
                 "approval_id": approval.approval_id,
                 "implementation_workspace_path": None,
                 "implementation_workspace_ready": False,
@@ -586,7 +609,8 @@ class BotStore:
             )
             for event_type, payload in (
                 ("ApprovalRecorded", {"approval_id": approval.approval_id}),
-                ("JobStatusChanged", {"from": current.status, "to": updated.status}),
+                ("JobStatusChanged", {"from": current.status, "to": updated.status,
+                                      "job_event": JobEvent.IMPLEMENTATION_APPROVED.value}),
             ):
                 connection.execute(
                     "INSERT INTO job_events(event_id, job_id, event_type, payload_json, created_at) VALUES(?, ?, ?, ?, ?)",
@@ -677,21 +701,26 @@ class BotStore:
         except sqlite3.IntegrityError:
             return False
 
-    def transition_with_outbox(
+    def apply_job_event_with_outbox(
         self,
         *,
         job_id: str,
         expected_version: int,
-        status: JobStatus,
-        event: OutboxEvent,
+        event: JobEvent,
+        outbox_event: OutboxEvent,
         **changes: object,
     ) -> BotJob:
         current = self.get_job(job_id)
         if current is None or current.version != expected_version:
             raise ValueError("BOT_JOB_VERSION_CONFLICT")
-        if event.job_id != job_id:
+        if outbox_event.job_id != job_id:
             raise ValueError("outbox event belongs to a different job")
-        _validate_transition(current.status, status, retry_phase=current.retry_phase)
+        _validate_job_changes(changes)
+        status = BotJobStateMachine.transition(
+            current.status,
+            event,
+            retry_phase=current.retry_phase,
+        )
         updated = BotJob.model_validate(
             {
                 **current.model_dump(mode="json"),
@@ -724,14 +753,14 @@ class BotStore:
                 """INSERT OR IGNORE INTO outbox_events(event_id, job_id, kind, idempotency_key,
                    status, attempts, next_attempt_at, event_json) VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    event.event_id,
-                    event.job_id,
-                    event.kind,
-                    event.idempotency_key,
-                    event.status,
-                    event.attempts,
-                    event.next_attempt_at,
-                    event.model_dump_json(),
+                    outbox_event.event_id,
+                    outbox_event.job_id,
+                    outbox_event.kind,
+                    outbox_event.idempotency_key,
+                    outbox_event.status,
+                    outbox_event.attempts,
+                    outbox_event.next_attempt_at,
+                    outbox_event.model_dump_json(),
                 ),
             )
             connection.execute(
@@ -739,8 +768,9 @@ class BotStore:
                 (
                     str(uuid4()),
                     job_id,
-                    _status_event(status),
-                    json.dumps({"from": current.status, "to": status}, sort_keys=True),
+                    _audit_event_type(event),
+                    json.dumps({"from": current.status, "to": status, "job_event": event.value},
+                               sort_keys=True),
                     utc_now(),
                 ),
             )
@@ -817,7 +847,7 @@ class BotStore:
         if job is None:
             return
         if job.version != expected_version or job.status not in {
-            "completed", "blocked_plan", "stale", "dead_letter", "cancelled"
+            "completed", "stale", "dead_letter", "cancelled"
         }:
             raise ValueError("BOT_JOB_CLEANUP_CONFLICT")
         session_ids = [
@@ -897,42 +927,20 @@ class BotStore:
                 yield connection
         finally:
             connection.close()
-def _status_event(status: JobStatus) -> str:
+
+
+def _audit_event_type(event: JobEvent) -> str:
     return {
-        "blocked_plan": "JobBlocked",
-        "ready_to_publish": "DeliveryReady",
-        "publishing": "PublishStarted",
-        "completed": "JobCompleted",
-        "dead_letter": "JobFailed",
-        "cancelled": "JobCancelled",
-    }.get(status, "JobStatusChanged")
+        JobEvent.PLAN_BLOCKED: "JobBlocked",
+        JobEvent.IMPLEMENTATION_READY: "DeliveryReady",
+        JobEvent.BEGIN_PUBLISH: "PublishStarted",
+        JobEvent.PUBLISH_COMPLETE: "JobCompleted",
+        JobEvent.EXHAUST_RETRIES: "JobFailed",
+        JobEvent.CANCEL: "JobCancelled",
+    }.get(event, "JobStatusChanged")
 
 
-def _validate_transition(current: str, target: str, *, retry_phase: str | None) -> None:
-    if current == target:
-        return
-    event = {
-        ("queued_plan", "running_plan"): "claim_plan",
-        ("running_plan", "waiting_approval"): "plan_ready",
-        ("running_plan", "blocked_plan"): "plan_blocked",
-        ("blocked_plan", "queued_plan"): "reply_received",
-        ("waiting_approval", "queued_implementation"): "implementation_approved",
-        ("queued_implementation", "running_implementation"): "claim_implementation",
-        ("running_implementation", "ready_to_publish"): "implementation_ready",
-        ("ready_to_publish", "publishing"): "begin_publish",
-        ("publishing", "completed"): "publish_complete",
-    }.get((current, target))
-    if target == "cancelled":
-        event = "cancel"
-    elif target == "stale":
-        event = "mark_stale"
-    elif target == "retry_wait":
-        event = "schedule_retry"
-    elif target == "dead_letter" and current == "retry_wait":
-        event = "exhaust_retries"
-    elif current == "retry_wait":
-        event = "resume_retry"
-    if event is None or BotJobStateMachine.transition(current, event, retry_phase=retry_phase) != target:
-        raise ValueError(f"BOT_INVALID_TRANSITION:{current}:{target}")
-
-
+def _validate_job_changes(changes: dict[str, object]) -> None:
+    reserved = {"status", "version", "updated_at"}.intersection(changes)
+    if reserved:
+        raise ValueError(f"BOT_JOB_RESERVED_FIELDS:{','.join(sorted(reserved))}")

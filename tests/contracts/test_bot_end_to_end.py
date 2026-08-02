@@ -161,7 +161,7 @@ def test_plan_worker_never_resolves_docker_image(monkeypatch, tmp_path: Path) ->
         def get_job(self, _job_id):
             return job
 
-        def transition_with_outbox(self, **changes):
+        def apply_job_event_with_outbox(self, **changes):
             self.transitioned = changes
 
     async def must_not_resolve(_image: str) -> str:
@@ -211,10 +211,10 @@ def test_bot_entrypoint_exposes_only_bot_service_and_operations() -> None:
         "archive-state",
         "reset-state",
         "smoke-test",
-        "render-state-machine",
     ):
         assert command in result.output
     assert "contribute" not in result.output
+    assert "render-state-machine" not in result.output
 
 
 def test_bot_maintenance_settings_do_not_require_github_credentials(tmp_path: Path) -> None:

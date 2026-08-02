@@ -8,9 +8,8 @@
 2. 阅读 [`architecture/bot-first.md`](architecture/bot-first.md) 建立生产组件全景。
 3. 阅读 [`architecture/agent-runtime.md`](architecture/agent-runtime.md) 理解统一 Agent Runtime。
 4. 阅读 [`architecture/tools.md`](architecture/tools.md) 理解 Tool adapter 与共享能力边界。
-5. 阅读 [`architecture/bot-job-state-machine.md`](architecture/bot-job-state-machine.md) 理解 Job 状态流。
-6. 阅读 [`architecture/current-state-schema.md`](architecture/current-state-schema.md) 理解 SQLite 和 ExecutionContract。
-7. 阅读 [`operations/observability.md`](operations/observability.md) 了解健康检查、指标和故障处理。
+5. 阅读 [`architecture/current-state-schema.md`](architecture/current-state-schema.md) 理解 SQLite 和 ExecutionContract。
+6. 阅读 [`operations/observability.md`](operations/observability.md) 了解健康检查、指标和故障处理。
 
 ## 架构约束
 
@@ -18,4 +17,4 @@
 - [`architecture/non-goals.md`](architecture/non-goals.md)：当前明确不实现的能力。
 - [`architecture/adr-auto-merge.md`](architecture/adr-auto-merge.md)：禁止自动合并 PR 的安全决策。
 
-`bot-job-state-machine.md` 由 `osc-agent-bot render-state-machine` 生成，不应手工修改。Ubuntu 安装、升级、权限和 Nginx 配置见 [`deploy/ubuntu/README.md`](../deploy/ubuntu/README.md)。
+Ubuntu 安装、升级、权限和 Nginx 配置见 [`deploy/ubuntu/README.md`](../deploy/ubuntu/README.md)。

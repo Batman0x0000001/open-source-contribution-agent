@@ -77,7 +77,7 @@ class OutboxProcessor:
                         job.issue_number,
                         rendered,
                     )
-            else:
+            elif event.kind == "publish":
                 if job.status == "completed" and job.pull_request_url is not None:
                     self.store.complete_outbox(event.event_id)
                     return True
@@ -85,6 +85,8 @@ class OutboxProcessor:
                 if config is None:
                     raise TerminalOutboxError("repository configuration disappeared before publish")
                 await self.publisher.publish(job, config)
+            else:
+                raise TerminalOutboxError(f"unknown outbox kind: {event.kind}")
         except TerminalOutboxError as exc:
             self.store.dead_letter_outbox(event.event_id, str(exc))
             return True

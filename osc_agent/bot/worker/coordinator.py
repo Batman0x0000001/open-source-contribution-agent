@@ -8,6 +8,7 @@ from uuid import uuid4
 from osc_agent.bot.config import BotWorkerSettings
 from osc_agent.bot.domain.events import OutboxEvent
 from osc_agent.bot.domain.repositories import RepositoryBotCatalog
+from osc_agent.bot.domain.state_machine import JobEvent
 from osc_agent.bot.persistence.session_store import SqliteSessionStore
 from osc_agent.bot.persistence.store import BotStore
 from osc_agent.bot.worker.agent_jobs import (
@@ -73,12 +74,12 @@ class BotWorker:
             current = self.store.get_job(job.job_id)
             if current is not None and current.status in {"running_plan", "running_implementation"}:
                 retry_phase = "plan" if current.status == "running_plan" else "implementation"
-                retrying = self.store.transition_with_outbox(
+                retrying = self.store.apply_job_event_with_outbox(
                     job_id=current.job_id,
                     expected_version=current.version,
-                    status="retry_wait",
+                    event=JobEvent.SCHEDULE_RETRY,
                     retry_phase=retry_phase,
-                    event=self._comment_event(
+                    outbox_event=self._comment_event(
                         current.job_id,
                         "model-contract-mismatch",
                         "The Bot job cannot run because its approved model contract no longer matches the Worker configuration.",
@@ -88,21 +89,21 @@ class BotWorker:
                     lease_owner=None,
                     lease_until=None,
                 )
-                self.store.transition(
+                self.store.apply_job_event(
                     job_id=retrying.job_id,
                     expected_version=retrying.version,
-                    status="dead_letter",
+                    event=JobEvent.EXHAUST_RETRIES,
                 )
         except Exception as exc:
             current = self.store.get_job(job.job_id)
             if current is not None and current.status not in {"cancelled", "completed", "stale"}:
                 retry_phase = "plan" if current.status == "running_plan" else "implementation"
-                retrying = self.store.transition_with_outbox(
+                retrying = self.store.apply_job_event_with_outbox(
                     job_id=current.job_id,
                     expected_version=current.version,
-                    status="retry_wait",
+                    event=JobEvent.SCHEDULE_RETRY,
                     retry_phase=retry_phase,
-                    event=self._comment_event(
+                    outbox_event=self._comment_event(
                         current.job_id,
                         "failed",
                         "The bot job failed inside the trusted worker. Review server audit logs before retrying.",
@@ -118,10 +119,10 @@ class BotWorker:
                     else retrying.implementation_attempts
                 )
                 if attempts >= 3:
-                    self.store.transition(
+                    self.store.apply_job_event(
                         job_id=retrying.job_id,
                         expected_version=retrying.version,
-                        status="dead_letter",
+                        event=JobEvent.EXHAUST_RETRIES,
                     )
         return True
 
