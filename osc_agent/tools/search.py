@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 import shutil
-import subprocess
 
 from pydantic import Field
 
@@ -21,6 +19,7 @@ from osc_agent.runtime.tool_models import (
 )
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.processes.policy import build_subprocess_environment
+from osc_agent.processes.runner import run_arguments
 from osc_agent.workspaces.path_policy import normalize_repo_relative_path, safe_repo_path
 from osc_agent.workspaces.instructions import RepositoryInstructionResolver
 
@@ -89,7 +88,7 @@ class GrepTool(BaseTool[GrepInput, GrepOutput]):
         state = self.instructions.activate_for_path(
             root, input.path, context.workspace.instruction_state
         )
-        result = await asyncio.to_thread(self._search, root, input)
+        result = await self._search(root, input)
         if isinstance(result, ToolError):
             return ToolResult(
                 error=result,
@@ -100,8 +99,8 @@ class GrepTool(BaseTool[GrepInput, GrepOutput]):
             state_changes=(InstructionsActivated(state=state),),
         )
 
-    def _search(self, root: Path, input: GrepInput) -> dict[str, object] | ToolError:
-        arguments = [self.executable, "--json", "--color", "never"]
+    async def _search(self, root: Path, input: GrepInput) -> dict[str, object] | ToolError:
+        arguments = ["--json", "--color", "never"]
         if not input.case_sensitive:
             arguments.append("--ignore-case")
         if input.context_lines:
@@ -112,21 +111,20 @@ class GrepTool(BaseTool[GrepInput, GrepOutput]):
         if local_ignore.is_file():
             arguments.extend(["--ignore-file", str(local_ignore)])
         arguments.extend(["--", input.pattern, input.path])
-        try:
-            completed = subprocess.run(
-                arguments,
-                cwd=root,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-                shell=False,
-                env=build_subprocess_environment(),
+        completed = await run_arguments(
+            self.executable,
+            arguments,
+            repo_root=root,
+            timeout_seconds=30,
+            environment=build_subprocess_environment(),
+        )
+        if completed.termination_reason in {"timeout", "os_error", "cancelled"}:
+            return ToolError(
+                code="GREP_FAILED",
+                message=completed.output or completed.termination_reason,
+                retryable=True,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return ToolError(code="GREP_FAILED", message=str(exc), retryable=True)
-        if completed.returncode not in {0, 1}:
+        if completed.exit_code not in {0, 1}:
             return ToolError(
                 code="GREP_FAILED",
                 message=(completed.stderr or "ripgrep failed").strip(),

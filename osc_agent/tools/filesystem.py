@@ -115,7 +115,7 @@ class WriteFileTool(BaseTool[WriteFileInput, WriteFileOutput]):
     def __init__(self, instructions: RepositoryInstructionResolver | None = None) -> None:
         self.instructions = instructions or RepositoryInstructionResolver()
 
-    def is_destructive(self, input: WriteFileInput) -> bool:
+    def requires_approval(self, input: WriteFileInput) -> bool:
         # 创建或覆盖文件都必须经过统一 Permission pipeline。
         return True
 
@@ -198,7 +198,7 @@ class EditFileTool(BaseTool[EditFileInput, EditFileOutput]):
     def __init__(self, instructions: RepositoryInstructionResolver | None = None) -> None:
         self.instructions = instructions or RepositoryInstructionResolver()
 
-    def is_destructive(self, input: EditFileInput) -> bool:
+    def requires_approval(self, input: EditFileInput) -> bool:
         return True
 
     def permission_risk(self, input: EditFileInput) -> str:

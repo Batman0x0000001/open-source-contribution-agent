@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
-import yaml
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
+from osc_agent.configuration.source import load_config_section
 from osc_agent.runtime.gateway import RetryPolicy
 from osc_agent.contracts import FrozenContractModel
 from osc_agent.runtime.query_models import QueryConfig
 
 
 class AgentExecutionConfig(FrozenContractModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
     max_rounds: int = Field(ge=1, le=100)
     max_total_tokens: int = Field(ge=1)
     deadline_seconds: int = Field(ge=1)
@@ -27,16 +24,12 @@ class AgentExecutionConfig(FrozenContractModel):
 
 
 class AgentConfigs(FrozenContractModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
     main: AgentExecutionConfig
     explore: AgentExecutionConfig
     verify: AgentExecutionConfig
 
 
 class ModelRetryConfig(FrozenContractModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
     max_attempts: int = Field(ge=1, le=10)
     base_seconds: float = Field(ge=0, le=60)
     max_seconds: float = Field(ge=0, le=300)
@@ -52,8 +45,6 @@ class ModelRetryConfig(FrozenContractModel):
 
 
 class RuntimeConfig(FrozenContractModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
     agents: AgentConfigs
     model_retry: ModelRetryConfig
 
@@ -63,13 +54,9 @@ def default_runtime_config_path() -> Path:
 
 
 def load_runtime_config(path: Path) -> RuntimeConfig:
-    try:
-        raw: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        raise ValueError(f"unable to read runtime config {path}: {exc}") from exc
-    if isinstance(raw, dict) and "runtime" in raw:
-        unknown = set(raw) - {"runtime", "repositories"}
-        if unknown:
-            raise ValueError(f"unknown production config sections: {', '.join(sorted(unknown))}")
-        raw = raw["runtime"]
+    raw = load_config_section(
+        path,
+        section="runtime",
+        source_name="runtime",
+    )
     return RuntimeConfig.model_validate(raw)

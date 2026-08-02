@@ -15,7 +15,7 @@ from osc_agent.bot.domain.events import OutboxEvent
 from osc_agent.bot.domain.execution import BotApproval, ExecutionContract, plan_evidence_hash
 from osc_agent.bot.domain.jobs import BotJob
 from osc_agent.bot.domain.repositories import RepositoryBotCatalog, RepositoryBotConfig
-from osc_agent.bot.domain.state_machine import JobEvent
+from osc_agent.bot.domain.state_machine import BotJobStateMachine, JobEvent
 from osc_agent.bot.persistence.store import BotStore
 
 
@@ -90,7 +90,13 @@ class BotControlService:
             )
             return job.job_id
         if command.action == "status":
-            self.store.enqueue_outbox(self._comment_event(job, "status", f"Job `{job.job_id}` is `{job.status}`."))
+            self.store.enqueue_outbox(
+                self._comment_event(
+                    job,
+                    f"status:{parsed.comment_id}",
+                    f"Job `{job.job_id}` is `{job.status}`.",
+                )
+            )
             return job.status
         if command.action == "retry":
             if job.status != "retry_wait":
@@ -211,8 +217,10 @@ class BotControlService:
         return updated.job_id
 
     def _cancel(self, job: BotJob) -> str:
-        if job.status in {"completed", "cancelled"}:
+        if BotJobStateMachine.is_terminal(job.status):
             return job.status
+        if job.status == "publishing":
+            raise ValueError("job publication has started and can no longer be cancelled")
         self.store.apply_job_event_with_outbox(
             job_id=job.job_id,
             expected_version=job.version,
@@ -234,4 +242,3 @@ class BotControlService:
     def _comment_event(self, job: BotJob, suffix: str, body: str) -> OutboxEvent:
         return OutboxEvent(event_id=str(uuid4()), job_id=job.job_id, kind="issue_comment",
             idempotency_key=f"comment:{job.job_id}:{suffix}:{job.version}", payload={"body": body})
-

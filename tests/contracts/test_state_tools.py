@@ -41,4 +41,4 @@ def test_tool_result_is_scoped_to_owning_session(tmp_path: Path) -> None:
     )
 
     assert owned.data["content"] == "full result"
-    assert foreign.error and foreign.error.code == "TOOL_EXECUTION_FAILED"
+    assert foreign.error and foreign.error.code == "TOOL_RESULT_NOT_FOUND"

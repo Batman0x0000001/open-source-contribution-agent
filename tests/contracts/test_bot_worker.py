@@ -7,9 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 from osc_agent.bot.domain.jobs import BotJob
 from osc_agent.bot.persistence.store import BotStore
 from osc_agent.bot.worker.agent_jobs import (
+    BotJobLeaseLost,
     BotModelContractMismatch,
     ImplementationJobExecutor,
     consume_runtime_events,
@@ -41,7 +44,7 @@ def _job(*, status: str = "running_implementation") -> BotJob:
 
 
 def test_runtime_progress_is_redacted_and_throttled() -> None:
-    job = _job(status="running_plan")
+    job = _job(status="running_plan").model_copy(update={"lease_owner": "worker"})
 
     class Store:
         progress: list[str] = []
@@ -49,7 +52,7 @@ def test_runtime_progress_is_redacted_and_throttled() -> None:
         def get_job(self, _job_id):
             return job
 
-        def record_progress(self, _job_id, event_type):
+        def record_progress(self, _job_id, _worker_id, event_type):
             self.progress.append(event_type)
             return job
 
@@ -62,9 +65,11 @@ def test_runtime_progress_is_redacted_and_throttled() -> None:
         yield RunCompleted(transition=Complete(reason="done"))
 
     store = Store()
+    sessions = SimpleNamespace(renew_lease=lambda _session_id: None)
     completed = asyncio.run(
         consume_runtime_events(
-            events(), store=store, worker_id="worker", job_id=job.job_id, phase="plan"
+            events(), store=store, sessions=sessions, session_id="session",
+            worker_id="worker", job_id=job.job_id, phase="plan"
         )
     )
 
@@ -76,10 +81,11 @@ def test_runtime_progress_is_redacted_and_throttled() -> None:
 def test_repository_policy_violation_immediately_terminates_job(tmp_path: Path) -> None:
     store = BotStore(tmp_path / "bot.sqlite3")
     store.initialize()
-    job = _job()
+    job = _job().model_copy(update={"lease_owner": "worker"})
     store.create_job(job)
     executor = object.__new__(ImplementationJobExecutor)
     executor.store = store  # type: ignore[assignment]
+    executor.bot_settings = SimpleNamespace(worker_id="worker")  # type: ignore[assignment]
 
     executor._terminate_repository_policy(job.job_id, "protected path")
 
@@ -91,7 +97,7 @@ def test_repository_policy_violation_immediately_terminates_job(tmp_path: Path) 
 
 
 def test_model_contract_mismatch_dead_letters_without_running_agent() -> None:
-    job = _job(status="running_plan")
+    job = _job(status="running_plan").model_copy(update={"lease_owner": "worker"})
     transitions: list[tuple[str, dict[str, object]]] = []
 
     class Store:
@@ -121,6 +127,60 @@ def test_model_contract_mismatch_dead_letters_without_running_agent() -> None:
     assert asyncio.run(worker.run_once("plan")) is True
     assert [status for status, _ in transitions] == ["retry_wait", "dead_letter"]
     assert transitions[0][1]["error_code"] == "BOT_MODEL_CONTRACT_MISMATCH"
+
+
+def test_reclaimed_worker_does_not_schedule_retry_or_complete() -> None:
+    claimed = _job(status="running_plan").model_copy(update={"lease_owner": "worker-1"})
+    reclaimed = claimed.model_copy(
+        update={"lease_owner": "worker-2", "version": claimed.version + 1}
+    )
+    transitions: list[dict[str, object]] = []
+
+    class Store:
+        def claim_job(self, _worker_id, phase=None):
+            return claimed
+
+        def get_job(self, _job_id):
+            return reclaimed
+
+        def apply_job_event_with_outbox(self, **changes):
+            transitions.append(changes)
+
+    worker = object.__new__(BotWorker)
+    worker.store = Store()  # type: ignore[assignment]
+    worker.bot_settings = SimpleNamespace(worker_id="worker-1")  # type: ignore[assignment]
+
+    async def fail(_job):
+        raise RuntimeError("old worker resumed after lease expiry")
+
+    worker.plan_executor = SimpleNamespace(execute=fail)  # type: ignore[assignment]
+
+    assert asyncio.run(worker.run_once("plan")) is True
+    assert transitions == []
+
+
+def test_runtime_stream_stops_when_job_lease_is_reclaimed() -> None:
+    job = _job(status="running_plan").model_copy(update={"lease_owner": "worker-2"})
+
+    class Store:
+        def get_job(self, _job_id):
+            return job
+
+    async def events():
+        yield ModelRequestStarted(session_id="session", round_number=1)
+
+    with pytest.raises(BotJobLeaseLost, match="reclaimed"):
+        asyncio.run(
+            consume_runtime_events(
+                events(),
+                store=Store(),  # type: ignore[arg-type]
+                sessions=SimpleNamespace(renew_lease=lambda _session_id: None),
+                session_id="session",
+                worker_id="worker-1",
+                job_id=job.job_id,
+                phase="plan",
+            )
+        )
 
 
 def test_worker_uses_independent_phase_slots_and_graceful_shutdown(

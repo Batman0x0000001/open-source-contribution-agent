@@ -112,3 +112,21 @@ def test_shared_and_control_packages_do_not_import_runtime_context() -> None:
         if module.startswith(("osc_agent.runtime.state", "osc_agent.runtime.hooks"))
     ]
     assert not violations
+
+
+def test_production_yaml_document_has_one_reader() -> None:
+    source = (
+        PROJECT_ROOT / "osc_agent" / "configuration" / "source.py"
+    ).read_text(encoding="utf-8")
+    runtime_config = (
+        PROJECT_ROOT / "osc_agent" / "configuration" / "runtime.py"
+    ).read_text(encoding="utf-8")
+    bot_config = (PROJECT_ROOT / "osc_agent" / "bot" / "config.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "yaml.safe_load(" in source
+    assert "load_config_section(" in runtime_config
+    assert "load_config_section(" in bot_config
+    assert "yaml.safe_load(" not in runtime_config
+    assert "yaml.safe_load(" not in bot_config

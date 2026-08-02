@@ -112,7 +112,6 @@ def build_verify_subagent(*, model: str, config: QueryConfig) -> SubagentRegistr
         model=model,
         capabilities=CapabilityScope(allowed_tools=VERIFY_TOOLS),
         config=config,
-        context_policy="minimal",
     )
     return SubagentRegistration(
         definition=definition,

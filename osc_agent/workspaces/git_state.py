@@ -15,6 +15,10 @@ from osc_agent.processes.policy import build_subprocess_environment
 MAX_GIT_OUTPUT_CHARS = 50_000
 
 
+class GitCommandError(ValueError):
+    """Git capability failed before it could produce a valid domain result."""
+
+
 def _run_git(
     repo_root: Path,
     arguments: list[str],
@@ -43,15 +47,17 @@ def _run_git(
             },
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return f"Error: {exc}"
+        raise GitCommandError(str(exc)) from exc
     stdout = (completed.stdout or "").strip("\r\n")
     if completed.returncode != 0:
         detail = "\n".join(
             part for part in (stdout, (completed.stderr or "").strip("\r\n")) if part
         )
-        return f"Error: git command failed with exit code {completed.returncode}: {detail}"[
-            :MAX_GIT_OUTPUT_CHARS
-        ]
+        raise GitCommandError(
+            f"git command failed with exit code {completed.returncode}: {detail}"[
+                :MAX_GIT_OUTPUT_CHARS
+            ]
+        )
     output = stdout or "(no output)"
     return output if max_chars is None else output[:max_chars]
 
@@ -66,6 +72,20 @@ def git_diff(*, repo_root: Path) -> str:
 
 def git_log(*, repo_root: Path, limit: int = 5) -> str:
     return _run_git(repo_root, ["log", f"-{min(max(limit, 1), 50)}", "--oneline"])
+
+
+def git_remote_origin(*, repo_root: Path) -> str | None:
+    """返回仓库根目录的 origin；非仓库、子目录或未配置 origin 时返回 None。"""
+
+    root = repo_root.resolve()
+    try:
+        top_level = _require_git(root, ["rev-parse", "--show-toplevel"])
+        if Path(top_level).resolve() != root:
+            return None
+        origin = _require_git(root, ["config", "--get", "remote.origin.url"])
+    except (GitCommandError, OSError):
+        return None
+    return origin if origin != "(no output)" else None
 
 
 def git_workspace_fingerprint(*, repo_root: Path) -> str:
@@ -291,8 +311,6 @@ def _require_git(
     max_chars: int | None = MAX_GIT_OUTPUT_CHARS,
 ) -> str:
     output = _run_git(repo_root, arguments, max_chars=max_chars)
-    if output.startswith("Error: "):
-        raise ValueError(output.removeprefix("Error: "))
     if output == "(no output)":
         return "" if empty_ok else output
     return output

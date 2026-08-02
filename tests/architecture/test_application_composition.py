@@ -297,3 +297,30 @@ def test_application_composition_does_not_name_bot_artifact_tools() -> None:
 
     assert "submit_issue_plan" not in source
     assert "submit_delivery_draft" not in source
+
+
+def test_application_and_doctor_share_the_default_subagent_set() -> None:
+    application = (
+        PROJECT_ROOT / "osc_agent" / "application" / "agent.py"
+    ).read_text(encoding="utf-8")
+    doctor = (PROJECT_ROOT / "osc_agent" / "cli" / "doctor.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "build_default_subagents" in application
+    assert "build_default_subagents" in doctor
+    assert "build_explore_subagent" not in doctor
+    assert "build_verify_subagent" not in doctor
+
+
+def test_session_summary_rendering_has_one_cli_owner() -> None:
+    driver = (PROJECT_ROOT / "osc_agent" / "cli" / "agent.py").read_text(
+        encoding="utf-8"
+    )
+    sessions = (PROJECT_ROOT / "osc_agent" / "cli" / "sessions.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "render_session_summary(" in driver
+    assert "def render_session_summary(" not in driver
+    assert "def render_session_summary(" in sessions

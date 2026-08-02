@@ -5,7 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 
-from osc_agent.workspaces.git_state import git_snapshot, git_status, git_workspace_fingerprint
+from osc_agent.workspaces.git_state import (
+    git_remote_origin,
+    git_snapshot,
+    git_status,
+    git_workspace_fingerprint,
+)
 
 
 def _initialize_repository(root: Path) -> None:
@@ -29,3 +34,15 @@ def test_git_state_reports_snapshot_and_stable_fingerprint(tmp_path: Path) -> No
     assert snapshot["files"][0]["path"] == "tracked.txt"
     assert git_workspace_fingerprint(repo_root=tmp_path) != baseline
 
+
+def test_git_remote_origin_is_owned_by_workspace_git_capability(
+    tmp_path: Path,
+) -> None:
+    _initialize_repository(tmp_path)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:acme/project.git"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    assert git_remote_origin(repo_root=tmp_path) == "git@github.com:acme/project.git"

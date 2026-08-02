@@ -46,7 +46,7 @@ class EnterWorktreeTool(BaseTool[EnterWorktreeInput, WorktreeOutput]):
         self.manager = manager
         self.instructions = instructions or RepositoryInstructionResolver()
 
-    def is_destructive(self, input: EnterWorktreeInput) -> bool:
+    def requires_approval(self, input: EnterWorktreeInput) -> bool:
         return True
 
     def permission_risk(self, input: EnterWorktreeInput) -> str:
@@ -105,7 +105,7 @@ class ExitWorktreeTool(BaseTool[ExitWorktreeInput, WorktreeOutput]):
         self.manager = manager
         self.instructions = instructions or RepositoryInstructionResolver()
 
-    def is_destructive(self, input: ExitWorktreeInput) -> bool:
+    def requires_approval(self, input: ExitWorktreeInput) -> bool:
         return input.action in {"remove", "discard"}
 
     def permission_risk(self, input: ExitWorktreeInput) -> str:

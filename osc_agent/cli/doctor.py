@@ -21,7 +21,7 @@ from osc_agent.contracts import FrozenContractModel
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
 from osc_agent.runtime.session_store import FileSessionStore
 from osc_agent.application.state_paths import ApplicationStatePaths
-from osc_agent.subagents.builtins import build_explore_subagent, build_verify_subagent
+from osc_agent.subagents.builtins import build_default_subagents
 from osc_agent.subagents.registry import SubagentRegistry
 from osc_agent.processes.policy import (
     build_subprocess_environment,
@@ -130,22 +130,19 @@ async def run_doctor(
     if settings.model_id:
         try:
             registry = SubagentRegistry(
-                [
-                    build_explore_subagent(
+                list(
+                    build_default_subagents(
                         model=settings.model_id,
-                        config=settings.runtime.agents.explore.to_query_config(),
-                    ),
-                    build_verify_subagent(
-                        model=settings.model_id,
-                        config=settings.runtime.agents.verify.to_query_config(),
-                    ),
-                ]
+                        explore_config=settings.runtime.agents.explore.to_query_config(),
+                        verify_config=settings.runtime.agents.verify.to_query_config(),
+                    )
+                )
             )
             results.append(
                 DiagnosticResult(
                     name="agents",
                     status="PASS",
-                    message=f"{len(registry.list())} built-in Agent(s) registered",
+                    message=f"{len(registry.list())} built-in Agent definition(s) validated",
                 )
             )
         except Exception as exc:  # noqa: BLE001

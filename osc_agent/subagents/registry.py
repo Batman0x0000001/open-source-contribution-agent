@@ -28,6 +28,8 @@ class SubagentRegistration:
             raise ValueError("subagent name must be canonical")
         if self.definition.capabilities.allowed_tools is None:
             raise ValueError("subagent capabilities must explicitly enumerate allowed tools")
+        if "agent" in self.definition.capabilities.allowed_tools:
+            raise ValueError("subagent cannot declare recursive agent capability")
         contracts = (ContractModel, FrozenContractModel)
         if not issubclass(self.input_model, contracts):
             raise TypeError("subagent input_model must be a strict contract")
@@ -62,3 +64,17 @@ class SubagentRegistry:
 
     def list(self) -> list[SubagentRegistration]:
         return [self._registrations[name] for name in sorted(self._registrations)]
+
+    def validate_allowed_tools(self, known_tools: set[str]) -> None:
+        for registration in self.list():
+            allowed_tools = registration.definition.capabilities.allowed_tools
+            if allowed_tools is None:
+                raise ValueError(
+                    "subagent capabilities must explicitly enumerate allowed tools"
+                )
+            unknown = sorted(allowed_tools - known_tools)
+            if unknown:
+                raise ValueError(
+                    f"subagent {registration.definition.name} references unknown tools: "
+                    + ", ".join(unknown)
+                )

@@ -12,6 +12,7 @@ from osc_agent.bot.domain.state_machine import JobEvent
 from osc_agent.bot.persistence.session_store import SqliteSessionStore
 from osc_agent.bot.persistence.store import BotStore
 from osc_agent.bot.worker.agent_jobs import (
+    BotJobLeaseLost,
     BotModelContractMismatch,
     ImplementationJobExecutor,
     PlanJobExecutor,
@@ -70,14 +71,21 @@ class BotWorker:
                 if resolved_image_id != job.image_id:
                     raise ValueError("configured immutable Docker image does not match the local image")
                 await self.implementation_executor.execute(job)
+        except BotJobLeaseLost:
+            return True
         except BotModelContractMismatch as exc:
             current = self.store.get_job(job.job_id)
-            if current is not None and current.status in {"running_plan", "running_implementation"}:
+            if (
+                current is not None
+                and current.lease_owner == self.bot_settings.worker_id
+                and current.status in {"running_plan", "running_implementation"}
+            ):
                 retry_phase = "plan" if current.status == "running_plan" else "implementation"
                 retrying = self.store.apply_job_event_with_outbox(
                     job_id=current.job_id,
                     expected_version=current.version,
                     event=JobEvent.SCHEDULE_RETRY,
+                    required_lease_owner=self.bot_settings.worker_id,
                     retry_phase=retry_phase,
                     outbox_event=self._comment_event(
                         current.job_id,
@@ -96,12 +104,17 @@ class BotWorker:
                 )
         except Exception as exc:
             current = self.store.get_job(job.job_id)
-            if current is not None and current.status not in {"cancelled", "completed", "stale"}:
+            if (
+                current is not None
+                and current.lease_owner == self.bot_settings.worker_id
+                and current.status in {"running_plan", "running_implementation"}
+            ):
                 retry_phase = "plan" if current.status == "running_plan" else "implementation"
                 retrying = self.store.apply_job_event_with_outbox(
                     job_id=current.job_id,
                     expected_version=current.version,
                     event=JobEvent.SCHEDULE_RETRY,
+                    required_lease_owner=self.bot_settings.worker_id,
                     retry_phase=retry_phase,
                     outbox_event=self._comment_event(
                         current.job_id,

@@ -35,7 +35,9 @@ class BotJobWorkspacePreparer:
         if not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
             staging = target.parent / f".{phase}.preparing-{uuid4().hex}"
-            token = await self.github.installation_token(job.installation_id, contents="read")
+            token = await self.github.installation_token(
+                job.installation_id, purpose="repository_read"
+            )
             env = build_subprocess_environment()
             env.update(
                 {

@@ -87,3 +87,19 @@ def test_external_skill_directory_cannot_escape_loader_root(tmp_path: Path) -> N
     assert discovery.descriptors == ()
     assert discovery.diagnostics[0].code == "INVALID_SKILL_MANIFEST"
     assert "escapes" in discovery.diagnostics[0].message
+
+
+def test_lazy_body_read_rechecks_the_skill_root(tmp_path: Path) -> None:
+    root = tmp_path / "skills"
+    path = _write_skill(root, "review", body="safe")
+    descriptor = SkillLoader(root, source="project").discover().descriptors[0]
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside", encoding="utf-8")
+    path.unlink()
+    try:
+        os.symlink(outside, path)
+    except OSError as exc:
+        pytest.skip(f"file symlinks are unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="escapes"):
+        asyncio.run(SkillLoader.read_body(descriptor))

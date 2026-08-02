@@ -139,7 +139,6 @@ def build_explore_subagent(*, model: str, config: QueryConfig) -> SubagentRegist
         model=model,
         capabilities=CapabilityScope(allowed_tools=EXPLORE_TOOLS),
         config=config,
-        context_policy="minimal",
     )
     return SubagentRegistration(
         definition=definition,

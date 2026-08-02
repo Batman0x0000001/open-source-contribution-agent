@@ -1,8 +1,8 @@
 """定义 Bot SQLite Schema 及其兼容版本。"""
 
-SCHEMA_EPOCH = 3
+SCHEMA_EPOCH = 4
 SCHEMA_MIGRATION_VERSION = 3
-STATE_MODEL_REVISION = "bot-job-v3-session-v5"
+STATE_MODEL_REVISION = "bot-job-v3-session-v6"
 APPLICATION_VERSION = "0.3.0"
 
 

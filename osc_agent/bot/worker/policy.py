@@ -29,7 +29,7 @@ class BotPermissionPolicy(PermissionPolicy):
         if context.permissions.mode == "plan" and not tool.is_read_only(input) and tool.name != "write_plan":
             return Deny(reason=f"tool {tool.name} is not allowed in plan mode")
         risk = tool.permission_risk(input)
-        if tool.is_destructive(input):
+        if tool.requires_approval(input):
             if self.implementation_approved and risk in {"write", "process"}:
                 return Allow(updated_input=input.model_dump(mode="json"))
             return Deny(reason=f"bot policy denies unapproved {risk} tool call {tool.name}")

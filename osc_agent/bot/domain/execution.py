@@ -10,7 +10,8 @@ from typing import Literal
 from pydantic import Field, field_serializer
 
 from osc_agent.bot.domain.artifacts import IssuePlanArtifact
-from osc_agent.bot.domain.jobs import utc_now
+from osc_agent.bot.domain.jobs import BotJob, utc_now
+from osc_agent.bot.domain.repositories import RepositoryBotConfig
 from osc_agent.contracts import ContractModel, FrozenContractModel
 
 
@@ -39,7 +40,7 @@ class ExecutionContract(FrozenContractModel):
     issue_input_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     provider: Literal["anthropic"] = "anthropic"
     model_id: str
-    runtime_revision: str = "bot-job-v3-session-v5"
+    runtime_revision: str = "bot-runtime-session-v6"
     plan_profile_revision: str = "bot-plan-v1"
     implementation_profile_revision: str = "bot-implementation-v1"
     planning_skill_name: Literal["issue-planning"] = "issue-planning"
@@ -73,6 +74,43 @@ class ExecutionContract(FrozenContractModel):
             separators=(",", ":"),
         )
         return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def validate_job_contract(job: BotJob, contract: ExecutionContract) -> None:
+    """验证 Job 的所有安全相关身份字段仍与不可变执行合同一致。"""
+
+    if (
+        contract.contract_hash != job.execution_contract_hash
+        or contract.repository_id != job.repository_id
+        or contract.repository_full_name != job.repository_full_name
+        or contract.installation_id != job.installation_id
+        or contract.issue_number != job.issue_number
+        or contract.base_branch != job.base_branch
+        or contract.base_sha != job.base_sha
+        or contract.issue_input_hash != job.issue_input_hash
+        or contract.image_id != job.image_id
+    ):
+        raise ValueError("Bot Job does not match its execution contract")
+
+
+def repository_config_from_contract(
+    contract: ExecutionContract,
+) -> RepositoryBotConfig:
+    """从已批准合同恢复执行策略；当前 Catalog 只负责启用或撤销。"""
+
+    return RepositoryBotConfig(
+        enabled=True,
+        image=contract.image_id,
+        validation_commands=contract.validation_commands,
+        denied_paths=contract.denied_paths,
+        max_changed_files=contract.max_changed_files,
+        max_patch_bytes=contract.max_patch_bytes,
+        command_timeout_seconds=contract.command_timeout_seconds,
+        container_cpus=contract.container_cpus,
+        container_memory=contract.container_memory,
+        container_pids=contract.container_pids,
+        pull_request_mode=contract.pull_request_mode,
+    )
 
 
 def plan_evidence_hash(plan: IssuePlanArtifact) -> str:

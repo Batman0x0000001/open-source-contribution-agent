@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 from osc_agent.runtime.context import ContextPipeline, GatewayContextSummarizer, SessionTranscript
-from osc_agent.runtime.session_store import MemoryToolResultStore
+from osc_agent.runtime.session_store import FileToolResultStore, MemoryToolResultStore
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
 from osc_agent.runtime.query_models import QueryConfig
@@ -47,6 +47,30 @@ def test_projection_compacts_without_mutating_authoritative_transcript(tmp_path:
     assert transcript_result.content == original
     assert "Tool result persisted" in str(projection_result.content)
     assert store.read(session_id="session-1", result_id="call-1")
+
+
+def test_repeated_projection_reuses_the_same_persisted_tool_result(tmp_path: Path) -> None:
+    transcript = SessionTranscript(
+        session_id="session-1",
+        messages=[
+            message("assistant", ToolUseBlock(id="call-1", name="read", input={})),
+            message("user", ToolResultBlock(tool_use_id="call-1", content="x" * 1_000)),
+        ],
+    )
+    result_root = tmp_path / "tool-results"
+    pipeline = ContextPipeline(tool_result_store=FileToolResultStore(result_root))
+
+    first = asyncio.run(
+        pipeline.project(transcript, config=QueryConfig(max_tool_result_chars=100))
+    )
+    second = asyncio.run(
+        pipeline.project(transcript, config=QueryConfig(max_tool_result_chars=100))
+    )
+
+    assert first.messages[-1].content[0].content == second.messages[-1].content[0].content
+    assert [path.name for path in (result_root / "session-1").iterdir()] == [
+        "call-1.txt"
+    ]
 
 
 def test_auto_compact_preserves_tool_use_result_pair() -> None:

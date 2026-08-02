@@ -15,16 +15,21 @@ from osc_agent.application import (
     AgentApplicationConfig,
     AgentConversation,
     AgentProfile,
-    SkillInput,
+    ProductSkillInput,
     build_agent_application,
 )
 from osc_agent.bot.config import BotWorkerSettings
 from osc_agent.bot.domain.artifacts import IssuePlanArtifact
 from osc_agent.bot.domain.events import OutboxEvent
-from osc_agent.bot.domain.execution import ExecutionContract, validate_implementation_approval
+from osc_agent.bot.domain.execution import (
+    ExecutionContract,
+    repository_config_from_contract,
+    validate_implementation_approval,
+    validate_job_contract,
+)
 from osc_agent.bot.domain.jobs import BotJob
 from osc_agent.bot.domain.repositories import RepositoryBotCatalog, RepositoryBotConfig
-from osc_agent.bot.domain.state_machine import JobEvent
+from osc_agent.bot.domain.state_machine import BotJobStateMachine, JobEvent
 from osc_agent.bot.persistence.session_store import SqliteSessionStore
 from osc_agent.bot.persistence.store import BotStore
 from osc_agent.bot.worker.artifact_tools import SubmitDeliveryDraftTool, SubmitIssuePlanTool
@@ -40,6 +45,10 @@ from osc_agent.subagents.builtins import build_explore_subagent
 
 class BotModelContractMismatch(ValueError):
     """执行合同绑定的模型与 Worker 实际模型不一致。"""
+
+
+class BotJobLeaseLost(ValueError):
+    """当前 Worker 已不再拥有 Job 或 Runtime Session Lease。"""
 
 
 @dataclass(frozen=True)
@@ -64,22 +73,10 @@ def _resolve_job_context(
     ready = job.plan_workspace_ready if planning else job.implementation_workspace_ready
     if configured is None or not configured.enabled or contract is None or not workspace_value or not ready:
         raise ValueError("job has no enabled repository configuration or prepared workspace")
-    _validate_contract_binding(job, contract)
+    validate_job_contract(job, contract)
     if not settings.model_id or contract.model_id != settings.model_id:
         raise BotModelContractMismatch("execution contract model does not match the configured Worker model")
-    repository = type(configured)(
-        enabled=True,
-        image=contract.image_id,
-        validation_commands=contract.validation_commands,
-        denied_paths=contract.denied_paths,
-        max_changed_files=contract.max_changed_files,
-        max_patch_bytes=contract.max_patch_bytes,
-        command_timeout_seconds=contract.command_timeout_seconds,
-        container_cpus=contract.container_cpus,
-        container_memory=contract.container_memory,
-        container_pids=contract.container_pids,
-        pull_request_mode=contract.pull_request_mode,
-    )
+    repository = repository_config_from_contract(contract)
     workspace = Path(workspace_value).resolve()
     if not workspace.is_relative_to(bot_settings.workspace_root.resolve()):
         raise ValueError("prepared workspace escapes the bot workspace root")
@@ -90,12 +87,10 @@ def build_planning_skill_input(
     job: BotJob,
     contract: ExecutionContract,
     issue_evidence: Mapping[str, object],
-    *,
-    skill_name: str,
-) -> SkillInput:
-    _validate_contract_binding(job, contract)
-    return SkillInput(
-        name=skill_name,
+) -> ProductSkillInput:
+    validate_job_contract(job, contract)
+    return ProductSkillInput(
+        name=contract.planning_skill_name,
         arguments={
             "issue_evidence": dict(issue_evidence),
             "base_sha": job.base_sha,
@@ -108,14 +103,12 @@ def build_implementation_skill_input(
     job: BotJob,
     contract: ExecutionContract,
     plan: IssuePlanArtifact,
-    *,
-    skill_name: str,
-) -> SkillInput:
-    _validate_contract_binding(job, contract)
+) -> ProductSkillInput:
+    validate_job_contract(job, contract)
     if plan.base_sha != job.base_sha or plan.execution_contract_hash != job.execution_contract_hash:
         raise ValueError("approved plan does not match the Bot Job contract")
-    return SkillInput(
-        name=skill_name,
+    return ProductSkillInput(
+        name=contract.implementation_skill_name,
         arguments={
             "repo_url": f"https://github.com/{job.repository_full_name}",
             "goal": f"Implement approved plan for issue #{job.issue_number}",
@@ -130,21 +123,12 @@ def build_implementation_skill_input(
     )
 
 
-def _validate_contract_binding(job: BotJob, contract: ExecutionContract) -> None:
-    if (
-        contract.contract_hash != job.execution_contract_hash
-        or contract.repository_id != job.repository_id
-        or contract.repository_full_name != job.repository_full_name
-        or contract.base_sha != job.base_sha
-        or contract.issue_input_hash != job.issue_input_hash
-    ):
-        raise ValueError("Bot Job does not match its execution contract")
-
-
 async def consume_runtime_events(
     events,
     *,
     store: BotStore,
+    sessions: SqliteSessionStore,
+    session_id: str,
     worker_id: str,
     job_id: str,
     phase: Literal["plan", "implementation"],
@@ -158,12 +142,19 @@ async def consume_runtime_events(
         while True:
             done, _ = await asyncio.wait({pending}, timeout=5)
             current = store.get_job(job_id)
-            if current is None or current.status == "cancelled":
+            if (
+                current is None
+                or current.status == "cancelled"
+                or current.lease_owner != worker_id
+            ):
                 pending.cancel()
                 await asyncio.gather(pending, return_exceptions=True)
-                raise ValueError("bot job was cancelled while the Agent was running")
+                raise BotJobLeaseLost(
+                    "bot job was cancelled or reclaimed while the Agent was running"
+                )
             if monotonic() - last_heartbeat >= 20:
                 store.heartbeat(job_id, worker_id)
+                sessions.renew_lease(session_id)
                 last_heartbeat = monotonic()
             if not done:
                 continue
@@ -177,7 +168,7 @@ async def consume_runtime_events(
                 or now - last_progress >= 5
                 or isinstance(event, (RunCompleted, RunStopped))
             ):
-                store.record_progress(job_id, f"{phase}:{event.type}")
+                store.record_progress(job_id, worker_id, f"{phase}:{event.type}")
                 last_progress = now
             if isinstance(event, RunCompleted):
                 completed = True
@@ -193,7 +184,7 @@ async def consume_runtime_events(
 
 def _bot_session_events(
     conversation: AgentConversation,
-    initial_input: SkillInput,
+    initial_input: ProductSkillInput,
 ) -> AsyncIterator[RuntimeEvent]:
     """保留 Job 已分配 Session ID、但 Session 尚未落库时的崩溃恢复语义。"""
 
@@ -237,6 +228,7 @@ def _build_plan_application(
                 SubmitIssuePlanTool(
                     store,
                     job_id=job.job_id,
+                    worker_id=bot_settings.worker_id,
                     base_sha=job.base_sha,
                     execution_contract_hash=job.execution_contract_hash,
                 ),
@@ -304,6 +296,7 @@ def _build_implementation_application(
                 SubmitDeliveryDraftTool(
                     store,
                     job_id=job.job_id,
+                    worker_id=bot_settings.worker_id,
                     issue_number=job.issue_number,
                     base_sha=job.base_sha,
                     execution_contract_hash=job.execution_contract_hash,
@@ -361,7 +354,12 @@ class PlanJobExecutor:
             current = self.store.get_job(job.job_id)
             if current is None:
                 raise ValueError("Plan Job disappeared before its Session ID was persisted")
-            self.store.update_job_fields(current.job_id, expected_version=current.version, plan_session_id=session_id)
+            self.store.update_job_fields(
+                current.job_id,
+                expected_version=current.version,
+                required_lease_owner=self.bot_settings.worker_id,
+                plan_session_id=session_id,
+            )
         pending_reply = self.store.pending_plan_reply(job.job_id)
         if pending_reply is not None:
             self.store.append_external_message_once(
@@ -373,11 +371,12 @@ class PlanJobExecutor:
             job,
             resolved.contract,
             self.store.get_job_input(job.job_id),
-            skill_name=self.catalog.planning_skill_name,
         )
         completed = await consume_runtime_events(
             _bot_session_events(conversation, initial),
             store=self.store,
+            sessions=self.sessions,
+            session_id=session_id,
             worker_id=self.bot_settings.worker_id,
             job_id=job.job_id,
             phase="plan",
@@ -387,7 +386,12 @@ class PlanJobExecutor:
             raise ValueError("planning Session ended without a strict plan artifact")
         self._finish_plan(job.job_id, *artifact)
 
-    def _finish_plan(self, job_id, artifact_id, plan) -> None:
+    def _finish_plan(
+        self,
+        job_id: str,
+        artifact_id: str,
+        plan: IssuePlanArtifact,
+    ) -> None:
         current = self.store.get_job(job_id)
         if current is None:
             raise ValueError("Plan Job disappeared before completion")
@@ -404,6 +408,7 @@ class PlanJobExecutor:
             job_id=current.job_id,
             expected_version=current.version,
             event=event,
+            required_lease_owner=self.bot_settings.worker_id,
             outbox_event=_comment_event(current.job_id, "plan", body),
             plan_artifact_id=artifact_id,
             lease_owner=None,
@@ -468,7 +473,7 @@ class ImplementationJobExecutor:
             image_id=job.image_id,
             repository_config=config,
             job_id=job.job_id,
-            cancel_check=lambda: self._job_cancelled(job.job_id),
+            cancel_check=lambda: self._job_should_stop(job.job_id),
             policy_violation_callback=lambda reason: self._terminate_repository_policy(
                 job.job_id, reason
             ),
@@ -496,18 +501,20 @@ class ImplementationJobExecutor:
             self.store.update_job_fields(
                 current.job_id,
                 expected_version=current.version,
+                required_lease_owner=self.bot_settings.worker_id,
                 implementation_session_id=session_id,
             )
         initial_input = build_implementation_skill_input(
             job,
             contract,
             plan,
-            skill_name=self.catalog.implementation_skill_name,
         )
         query = _bot_session_events(conversation, initial_input)
         completed = await consume_runtime_events(
             query,
             store=self.store,
+            sessions=self.sessions,
+            session_id=session_id,
             worker_id=self.bot_settings.worker_id,
             job_id=job.job_id,
             phase="implementation",
@@ -526,6 +533,7 @@ class ImplementationJobExecutor:
             job_id=current.job_id,
             expected_version=current.version,
             event=JobEvent.IMPLEMENTATION_READY,
+            required_lease_owner=self.bot_settings.worker_id,
             lease_owner=None,
             lease_until=None,
             outbox_event=OutboxEvent(
@@ -537,18 +545,23 @@ class ImplementationJobExecutor:
             ),
         )
 
-    def _job_cancelled(self, job_id: str) -> bool:
+    def _job_should_stop(self, job_id: str) -> bool:
         job = self.store.get_job(job_id)
-        return job is None or job.status == "cancelled"
+        return (
+            job is None
+            or job.status == "cancelled"
+            or job.lease_owner != self.bot_settings.worker_id
+        )
 
     def _terminate_repository_policy(self, job_id: str, reason: str) -> None:
         current = self.store.get_job(job_id)
-        if current is None or current.status in {"completed", "stale", "dead_letter", "cancelled"}:
+        if current is None or BotJobStateMachine.is_terminal(current.status):
             return
         self.store.apply_job_event(
             job_id=job_id,
             expected_version=current.version,
             event=JobEvent.CANCEL,
+            required_lease_owner=self.bot_settings.worker_id,
             error_code="REPOSITORY_POLICY_VIOLATION",
             error_message=reason[:1_000],
             lease_owner=None,

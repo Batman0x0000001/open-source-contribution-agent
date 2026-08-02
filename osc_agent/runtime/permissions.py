@@ -36,7 +36,7 @@ class DefaultPermissionPolicy:
             and tool.name != "write_plan"
         ):
             return Deny(reason=f"tool {tool.name} is not allowed in plan mode")
-        if tool.is_destructive(input):
+        if tool.requires_approval(input):
             return Ask(
                 tool_name=tool.name,
                 prompt=f"Allow {tool.permission_risk(input)} tool call {tool.name}?",

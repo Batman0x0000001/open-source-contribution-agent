@@ -7,7 +7,6 @@ from typing import Literal
 from pydantic import Field
 
 from osc_agent.contracts import FrozenContractModel
-from osc_agent.runtime.messages import RuntimeMessage
 from osc_agent.runtime.query_models import QueryConfig
 from osc_agent.runtime.state import CapabilityScope
 
@@ -19,14 +18,12 @@ class SubagentDefinition(FrozenContractModel):
     model: str | None = None
     capabilities: CapabilityScope
     config: QueryConfig = Field(default_factory=QueryConfig)
-    context_policy: Literal["minimal", "fork"] = "minimal"
 
 
 class SubagentRequest(FrozenContractModel):
     prompt: str = Field(min_length=1)
     working_directory: str = Field(min_length=1)
     caller_capabilities: CapabilityScope = Field(default_factory=CapabilityScope)
-    parent_messages: tuple[RuntimeMessage, ...] = ()
 
 
 class SubagentRunResult(FrozenContractModel):
@@ -34,3 +31,4 @@ class SubagentRunResult(FrozenContractModel):
     status: Literal["completed", "failed", "cancelled"]
     output: str = ""
     error: str | None = None
+    workspace_fingerprint: str | None = None

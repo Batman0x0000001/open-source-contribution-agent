@@ -148,13 +148,26 @@ class AgentRuntime:
                 return
 
             progress.round_count += 1
-            projection = await self.dependencies.context_pipeline.project(
-                transcript,
-                config=params.config,
-                runtime_context=tool_context,
-                instruction_resolver=self.dependencies.instruction_resolver,
-                force_reason=force_compact_reason,
-            )
+            try:
+                projection = await self.dependencies.context_pipeline.project(
+                    transcript,
+                    config=params.config,
+                    runtime_context=tool_context,
+                    instruction_resolver=self.dependencies.instruction_resolver,
+                    force_reason=force_compact_reason,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - Context 边界异常必须形成终态。
+                yield _stopped(
+                    run,
+                    Failed(
+                        error_code="CONTEXT_PROJECTION_FAILED",
+                        reason=str(exc) or type(exc).__name__,
+                        retryable=False,
+                    ),
+                )
+                return
             progress.input_tokens += projection.summary_input_tokens
             progress.output_tokens += projection.summary_output_tokens
             force_compact_reason = None
@@ -248,7 +261,9 @@ class AgentRuntime:
                 return
 
             run.append(completed.message)
-            yield AssistantMessageCompleted(message=completed.message)
+            yield AssistantMessageCompleted(
+                message=completed.message.model_copy(deep=True)
+            )
             progress.input_tokens += completed.input_tokens
             progress.output_tokens += completed.output_tokens
 
@@ -268,10 +283,23 @@ class AgentRuntime:
                         ),
                     )
                     return
-                stop_result = await self.dependencies.tool_executor.hooks.run_stop(
-                    StopHookPayload(messages=transcript.snapshot()),
-                    tool_context,
-                )
+                try:
+                    stop_result = await self.dependencies.tool_executor.hooks.run_stop(
+                        StopHookPayload(messages=transcript.snapshot()),
+                        tool_context,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - 完成门禁异常必须失败关闭。
+                    yield _stopped(
+                        run,
+                        Failed(
+                            error_code="STOP_HOOK_FAILED",
+                            reason=str(exc) or type(exc).__name__,
+                            retryable=False,
+                        ),
+                    )
+                    return
                 if stop_result.blocking_reasons:
                     reasons = tuple(stop_result.blocking_reasons)
                     progress.stop_block_count = (
@@ -305,7 +333,7 @@ class AgentRuntime:
                 progress.last_tool_signature = signature
 
             for call in tool_calls:
-                yield ToolRequested(call=call)
+                yield ToolRequested(call=call.model_copy(deep=True))
 
             results: dict[str, ToolResult] = {}
             try:
@@ -324,7 +352,7 @@ class AgentRuntime:
                         results[update.tool_use_id] = update.result
                         yield ToolCompleted(
                             tool_use_id=update.tool_use_id,
-                            result=update.result,
+                            result=update.result.model_copy(deep=True),
                         )
                     else:
                         raise TypeError(

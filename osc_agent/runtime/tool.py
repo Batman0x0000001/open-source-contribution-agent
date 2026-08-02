@@ -35,7 +35,7 @@ class Tool(Protocol[InputT, OutputT]):
 
     def is_concurrency_safe(self, input: InputT) -> bool: ...
 
-    def is_destructive(self, input: InputT) -> bool: ...
+    def requires_approval(self, input: InputT) -> bool: ...
 
     def permission_risk(self, input: InputT) -> str: ...
 
@@ -81,8 +81,8 @@ class BaseTool(Generic[InputT, OutputT]):
     def is_concurrency_safe(self, input: InputT) -> bool:
         return False
 
-    def is_destructive(self, input: InputT) -> bool:
-        return False
+    def requires_approval(self, input: InputT) -> bool:
+        return not self.is_read_only(input)
 
     def permission_risk(self, input: InputT) -> str:
         return "destructive"

@@ -54,6 +54,11 @@ class OutboxProcessor:
             return True
         try:
             if event.kind == "prepare":
+                config = self.catalog.repositories.get(job.repository_full_name)
+                if config is None or not config.enabled:
+                    raise TerminalOutboxError(
+                        "repository configuration is disabled or missing"
+                    )
                 phase = event.payload.get("phase")
                 if phase not in {"plan", "implementation"}:
                     raise TerminalOutboxError("prepare outbox has invalid phase")
@@ -82,9 +87,11 @@ class OutboxProcessor:
                     self.store.complete_outbox(event.event_id)
                     return True
                 config = self.catalog.repositories.get(job.repository_full_name)
-                if config is None:
-                    raise TerminalOutboxError("repository configuration disappeared before publish")
-                await self.publisher.publish(job, config)
+                if config is None or not config.enabled:
+                    raise TerminalOutboxError(
+                        "repository configuration is disabled or missing"
+                    )
+                await self.publisher.publish(job)
             else:
                 raise TerminalOutboxError(f"unknown outbox kind: {event.kind}")
         except TerminalOutboxError as exc:

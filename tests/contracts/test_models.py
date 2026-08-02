@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
-from tests.runtime_factories import tool_context
-
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from osc_agent.completion.models import CompletionRequirements
-from osc_agent.runtime.state import CapabilityScope
+from osc_agent.runtime.state import AgentRunState, CapabilityScope
 from osc_agent.contracts import FrozenContractModel
 from osc_agent.runtime.query_models import QueryConfig
 from osc_agent.runtime.tool_models import (
     Allow,
     PermissionDecision,
     ToolResult,
+)
+from osc_agent.workspaces.models import (
+    FileObservation,
+    RepositoryInstructionState,
+    WorktreeSession,
 )
 
 
@@ -54,6 +57,54 @@ def test_frozen_base_is_itself_strict() -> None:
 
     with pytest.raises(ValidationError, match="int_type"):
         Sample.model_validate({"count": "1"})
+
+
+def test_tool_context_cannot_mutate_authoritative_workspace_state() -> None:
+    state = AgentRunState.start(
+        workspace_root="repository",
+        capabilities=CapabilityScope(),
+        completion_requirements=CompletionRequirements(),
+        instruction_state=RepositoryInstructionState(active_paths=("AGENTS.md",)),
+    )
+    state.workspace.file_observations["a.py"] = FileObservation(
+        path="a.py",
+        content_hash="before",
+        mtime_ns=1,
+        complete=True,
+    )
+
+    context = state.tool_context(session_id="session", state_directory="state")
+    context.workspace.file_observations["a.py"] = FileObservation(
+        path="a.py",
+        content_hash="after",
+        mtime_ns=2,
+        complete=True,
+    )
+
+    assert context.workspace is not state.workspace
+    assert state.workspace.file_observations["a.py"].content_hash == "before"
+    with pytest.raises(ValidationError, match="frozen_instance"):
+        context.workspace.instruction_state.active_paths = ("CLAUDE.md",)
+
+
+def test_workspace_value_records_are_frozen() -> None:
+    worktree = WorktreeSession(
+        path="worktree",
+        original_working_directory="repository",
+        branch="branch",
+        base_commit="commit",
+    )
+    observation = FileObservation(
+        path="a.py",
+        content_hash="hash",
+        mtime_ns=1,
+        complete=True,
+    )
+
+    with pytest.raises(ValidationError, match="frozen_instance"):
+        worktree.branch = "changed"
+    with pytest.raises(ValidationError, match="frozen_instance"):
+        observation.complete = False
 
 
 def test_child_capabilities_can_only_narrow_the_caller_scope() -> None:

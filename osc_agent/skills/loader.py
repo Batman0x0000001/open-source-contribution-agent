@@ -75,7 +75,7 @@ class SkillLoader:
 
     @staticmethod
     async def read_body(descriptor: SkillDescriptor) -> str:
-        return await asyncio.to_thread(_read_body, Path(descriptor.path))
+        return await asyncio.to_thread(_read_body, descriptor)
 
 
 def _read_frontmatter(path: Path) -> object:
@@ -94,7 +94,11 @@ def _read_frontmatter(path: Path) -> object:
     return yaml.safe_load("".join(lines)) or {}
 
 
-def _read_body(path: Path) -> str:
+def _read_body(descriptor: SkillDescriptor) -> str:
+    root = Path(descriptor.root).resolve(strict=True)
+    path = Path(descriptor.path).resolve(strict=True)
+    if not path.is_relative_to(root) or not path.is_file():
+        raise ValueError(f"skill path escapes loader root: {descriptor.path}")
     with path.open("r", encoding="utf-8") as handle:
         if handle.readline().strip() != "---":
             raise ValueError(f"skill has no frontmatter: {path}")

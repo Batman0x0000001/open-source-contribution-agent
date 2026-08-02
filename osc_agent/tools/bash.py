@@ -13,8 +13,6 @@ from pydantic import Field
 
 from osc_agent.contracts import ContractModel
 from osc_agent.runtime.tool_models import (
-    Allow,
-    PermissionDecision,
     ToolError,
     ToolResult,
     ValidationFailure,
@@ -30,8 +28,6 @@ from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
 DEFAULT_TIMEOUT_SECONDS = 120
-READ_ONLY_COMMANDS = {"rg"}
-READ_ONLY_GIT_COMMANDS = {"diff", "log", "show", "status"}
 _HARD_DENY = (
     re.compile(r"(^|[;&|]\s*)\s*(sudo|su|mount|umount|shutdown|reboot|systemctl)\b", re.I),
     re.compile(r"\brm\s+(?:-[A-Za-z]*r[A-Za-z]*f|-[A-Za-z]*f[A-Za-z]*r)\s+/(?:\s|$)", re.I),
@@ -79,7 +75,7 @@ class BashTool(BaseTool[BashInput, BashOutput]):
     def is_concurrency_safe(self, input: BashInput) -> bool:
         return self.is_read_only(input)
 
-    def is_destructive(self, input: BashInput) -> bool:
+    def requires_approval(self, input: BashInput) -> bool:
         return not self.is_read_only(input)
 
     def permission_risk(self, input: BashInput) -> str:
@@ -100,11 +96,6 @@ class BashTool(BaseTool[BashInput, BashOutput]):
         except ValueError as exc:
             return ValidationFailure(reason=f"Bash parse failed: {exc}")
         return ValidationSuccess()
-
-    async def check_permissions(
-        self, input: BashInput, context: ToolContext
-    ) -> PermissionDecision:
-        return Allow(updated_input=input.model_dump(mode="json"))
 
     async def call(self, input: BashInput, context: ToolContext) -> ToolResult:
         result = await self.process_runner.run(
@@ -159,4 +150,4 @@ def is_read_only_command(command: str) -> bool:
     executable = Path(tokens[0]).name.casefold()
     if executable == "rg":
         return not any(arg in {"--pre", "--follow", "-L"} or arg.startswith("--pre=") for arg in tokens[1:])
-    return executable == "git" and len(tokens) >= 2 and tokens[1].casefold() in READ_ONLY_GIT_COMMANDS
+    return False

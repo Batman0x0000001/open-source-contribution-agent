@@ -7,6 +7,10 @@ from tests.runtime_factories import tool_context
 import asyncio
 from pathlib import Path
 
+import pytest
+
+import osc_agent.tools.search as search_module
+from osc_agent.processes.contracts import CommandResult
 from osc_agent.runtime.messages import ToolUseBlock
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
@@ -78,3 +82,59 @@ def test_grep_rejects_path_escape_and_option_injection(tmp_path: Path) -> None:
 
     assert escaped.error and escaped.error.code == "TOOL_VALIDATION_FAILED"
     assert injected.error and injected.error.code == "TOOL_VALIDATION_FAILED"
+
+
+def test_grep_uses_the_cancellable_trusted_argument_runner(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    requests = []
+
+    async def run_arguments(executable, arguments, **kwargs):
+        requests.append((executable, arguments, kwargs))
+        return CommandResult(
+            command="rg",
+            exit_code=0,
+            stdout=(
+                '{"type":"match","data":{"path":{"text":"visible.txt"},'
+                '"lines":{"text":"needle\\n"},"line_number":1}}\n'
+            ),
+            duration_ms=1,
+        )
+
+    monkeypatch.setattr(search_module, "run_arguments", run_arguments)
+    tool = GrepTool(executable="trusted-rg")
+
+    result = asyncio.run(
+        tool.call(tool.input_model(pattern="needle"), context(tmp_path))
+    )
+
+    assert result.error is None
+    assert result.data["matches"][0]["path"] == "visible.txt"
+    assert requests[0][0] == "trusted-rg"
+    assert requests[0][2]["repo_root"] == tmp_path
+
+
+def test_grep_propagates_trusted_runner_cancellation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    started = asyncio.Event()
+
+    async def run_arguments(*args, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(search_module, "run_arguments", run_arguments)
+    tool = GrepTool(executable="trusted-rg")
+
+    async def exercise() -> None:
+        task = asyncio.create_task(
+            tool.call(tool.input_model(pattern="needle"), context(tmp_path))
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())

@@ -7,14 +7,19 @@ from pathlib import Path
 
 import pytest
 
-from osc_agent.application import AgentProfile, SkillInput, UserPrompt
+from osc_agent.application import (
+    AgentProfile,
+    ProductSkillInput,
+    UserPrompt,
+    UserSkillInput,
+)
 from osc_agent.application.agent import AgentApplication
 from osc_agent.completion.models import CompletionRequirements
 from osc_agent.runtime.state import CapabilityScope
 from osc_agent.runtime.events import Complete, RunCompleted
 from osc_agent.runtime.query_models import QueryConfig, ResumeQueryParams, StartQueryParams
 
-from osc_agent.skills.models import PreparedSkill
+from osc_agent.skills.models import PreparedSkill, SkillPreparationFailure
 
 
 class RecordingRuntime:
@@ -40,6 +45,11 @@ class SkillPreparer:
 
     async def prepare(self, request):
         self.invocations.append(request)
+        if request.name == "product-only" and request.trigger == "user":
+            return SkillPreparationFailure(
+                name=request.name,
+                error="skill is not available for user invocation",
+            )
         return PreparedSkill(
             name=request.name,
             prompt="rendered skill",
@@ -110,12 +120,16 @@ def test_existing_session_resumes_with_optional_prompt(tmp_path: Path, input) ->
     assert len(params.messages) == (0 if input is None else 1)
 
 
-def test_resume_rejects_skill_input(tmp_path: Path) -> None:
+def test_resume_rejects_user_skill_input(tmp_path: Path) -> None:
     application, _, _ = _application(tmp_path, existing=object())
 
     with pytest.raises(ValueError, match="Resume accepts"):
         asyncio.run(
-            _collect(application.open_session("existing").resume(SkillInput(name="skill")))  # type: ignore[arg-type]
+            _collect(
+                application.open_session("existing").resume(
+                    UserSkillInput(name="skill")
+                )
+            )  # type: ignore[arg-type]
         )
 
 
@@ -128,7 +142,7 @@ def test_skill_start_uses_shared_preparer_and_tightens_requirements(tmp_path: Pa
     asyncio.run(
         _collect(
             application.open_session("skill").start(
-                SkillInput(name="skill", arguments={"value": "x"})
+                ProductSkillInput(name="skill", arguments={"value": "x"})
             )
         )
     )
@@ -148,9 +162,48 @@ def test_skill_start_requires_explicit_profile_authorization(tmp_path: Path) -> 
     with pytest.raises(ValueError, match="not allowed by Agent Profile"):
         asyncio.run(
             _collect(
-                application.open_session("skill").start(SkillInput(name="hidden"))
+                application.open_session("skill").start(
+                    UserSkillInput(name="hidden")
+                )
             )
         )
 
     assert runtime.params == []
     assert skill_preparer.invocations == []
+
+
+def test_user_skill_input_enforces_user_invocation_policy(tmp_path: Path) -> None:
+    application, runtime, skill_preparer = _application(
+        tmp_path,
+        allowed_initial_skills=frozenset({"product-only"}),
+    )
+
+    with pytest.raises(ValueError, match="not available for user invocation"):
+        asyncio.run(
+            _collect(
+                application.open_session("skill").start(
+                    UserSkillInput(name="product-only")
+                )
+            )
+        )
+
+    assert skill_preparer.invocations[0].trigger == "user"
+    assert runtime.params == []
+
+
+def test_product_skill_input_uses_product_invocation_policy(tmp_path: Path) -> None:
+    application, runtime, skill_preparer = _application(
+        tmp_path,
+        allowed_initial_skills=frozenset({"product-only"}),
+    )
+
+    asyncio.run(
+        _collect(
+            application.open_session("skill").start(
+                ProductSkillInput(name="product-only")
+            )
+        )
+    )
+
+    assert skill_preparer.invocations[0].trigger == "product"
+    assert len(runtime.params) == 1

@@ -7,10 +7,15 @@ from pathlib import Path
 import sys
 
 import pytest
+from pydantic import ValidationError
 
-from osc_agent.processes.contracts import CommandKind, ProcessRequest
+from osc_agent.processes.contracts import CommandKind, CommandResult, ProcessRequest
 from osc_agent.processes.policy import build_subprocess_environment, classify_command
-from osc_agent.processes.runner import DisabledProcessRunner, HostProcessRunner
+from osc_agent.processes.runner import (
+    DisabledProcessRunner,
+    HostProcessRunner,
+    run_arguments,
+)
 
 
 def _request(root: Path, command: str, *, timeout: float = 5) -> ProcessRequest:
@@ -39,6 +44,17 @@ def test_process_policy_filters_secrets_and_classifies_commands() -> None:
     assert classify_command("python -m pytest") == CommandKind.TEST
     assert classify_command("npm run build") == CommandKind.BUILD
     assert classify_command("python script.py") == CommandKind.OTHER
+
+
+def test_command_result_uses_the_shared_strict_contract() -> None:
+    with pytest.raises(ValidationError, match="int_type"):
+        CommandResult.model_validate(
+            {
+                "command": "test",
+                "exit_code": "0",
+                "duration_ms": 1,
+            }
+        )
 
 
 def test_disabled_and_host_runners_share_one_contract(tmp_path: Path) -> None:
@@ -74,4 +90,37 @@ def test_host_runner_propagates_cancellation_after_cleanup(tmp_path: Path) -> No
         with pytest.raises(asyncio.CancelledError):
             await task
 
+    asyncio.run(cancel())
+
+
+def test_trusted_argument_runner_supports_argv_and_cancellation(
+    tmp_path: Path,
+) -> None:
+    completed = asyncio.run(
+        run_arguments(
+            sys.executable,
+            ("-c", "print('argv-ok')"),
+            repo_root=tmp_path,
+            timeout_seconds=5,
+            environment=build_subprocess_environment(),
+        )
+    )
+
+    async def cancel() -> None:
+        task = asyncio.create_task(
+            run_arguments(
+                sys.executable,
+                ("-c", "import time; time.sleep(5)"),
+                repo_root=tmp_path,
+                timeout_seconds=5,
+                environment=build_subprocess_environment(),
+            )
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert completed.exit_code == 0
+    assert completed.stdout.strip() == "argv-ok"
     asyncio.run(cancel())

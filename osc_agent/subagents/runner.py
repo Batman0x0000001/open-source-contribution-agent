@@ -16,7 +16,12 @@ from osc_agent.runtime.query_models import StartQueryParams
 from osc_agent.runtime.query import AgentRuntime
 from osc_agent.runtime.state import CapabilityScope
 from osc_agent.subagents.models import SubagentDefinition, SubagentRequest, SubagentRunResult
-from osc_agent.subagents.registry import SubagentRegistry
+from osc_agent.subagents.registry import SubagentRegistration, SubagentRegistry
+from osc_agent.subagents.workspace_guard import (
+    SubagentWorkspaceError,
+    capture_workspace_fingerprint,
+    verify_workspace_unchanged,
+)
 
 
 class SubagentRunner:
@@ -36,20 +41,51 @@ class SubagentRunner:
         self.registry = registry
         self.default_model = default_model
         self.session_id_factory = session_id_factory or (lambda: str(uuid4()))
+        self._semaphores: dict[str, asyncio.Semaphore] = {}
 
     async def run(self, name: str, request: SubagentRequest) -> SubagentRunResult:
         registration = self.registry.get(name)
         if registration is None:
             raise KeyError(f"unknown subagent definition: {name}")
-        return await self.run_definition(registration.definition, request)
+        semaphore = self._semaphores.setdefault(
+            name,
+            asyncio.Semaphore(registration.max_parallel),
+        )
+        async with semaphore:
+            return await self._run_registered(registration, request)
 
-    async def run_definition(
+    async def _run_registered(
         self,
-        definition: SubagentDefinition,
+        registration: SubagentRegistration,
         request: SubagentRequest,
     ) -> SubagentRunResult:
-        session_id = self.session_id_factory()
-        return await self._execute(session_id, definition, request)
+        before = None
+        if registration.read_only:
+            before = await capture_workspace_fingerprint(request.working_directory)
+        try:
+            result = await self._execute(
+                self.session_id_factory(),
+                registration.definition,
+                request,
+            )
+        except asyncio.CancelledError as exc:
+            if before is not None:
+                try:
+                    await verify_workspace_unchanged(before, request.working_directory)
+                except SubagentWorkspaceError as guard_error:
+                    exc.add_note(f"{guard_error.code}: {guard_error}")
+            raise
+        except Exception:
+            if before is not None:
+                await verify_workspace_unchanged(before, request.working_directory)
+            raise
+        if before is None:
+            return result
+        fingerprint = await verify_workspace_unchanged(
+            before,
+            request.working_directory,
+        )
+        return result.model_copy(update={"workspace_fingerprint": fingerprint})
 
     async def _execute(
         self,
@@ -57,7 +93,9 @@ class SubagentRunner:
         definition: SubagentDefinition,
         request: SubagentRequest,
     ) -> SubagentRunResult:
-        messages = self._resolve_messages(definition, request)
+        messages = [
+            RuntimeMessage(role="user", content=[TextBlock(text=request.prompt)])
+        ]
         capabilities = self._resolve_capabilities(definition, request)
         output: list[str] = []
         try:
@@ -90,20 +128,6 @@ class SubagentRunner:
         )
 
     @staticmethod
-    def _resolve_messages(
-        definition: SubagentDefinition,
-        request: SubagentRequest,
-    ) -> list[RuntimeMessage]:
-        if definition.context_policy == "fork":
-            if not request.parent_messages:
-                raise ValueError("fork subagent requires parent_messages")
-            messages = [message.model_copy(deep=True) for message in request.parent_messages]
-        else:
-            messages = []
-        messages.append(RuntimeMessage(role="user", content=[TextBlock(text=request.prompt)]))
-        return messages
-
-    @staticmethod
     def _resolve_capabilities(
         definition: SubagentDefinition,
         request: SubagentRequest,
@@ -111,5 +135,6 @@ class SubagentRunner:
         allowed_tools = definition.capabilities.allowed_tools
         if allowed_tools is None:
             raise ValueError("subagent capabilities must explicitly enumerate allowed tools")
-        bounded_definition = CapabilityScope(allowed_tools=allowed_tools - {"agent"})
-        return request.caller_capabilities.intersect(bounded_definition)
+        return request.caller_capabilities.intersect(
+            CapabilityScope(allowed_tools=allowed_tools)
+        )

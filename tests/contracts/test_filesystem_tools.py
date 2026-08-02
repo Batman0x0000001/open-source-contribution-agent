@@ -293,5 +293,5 @@ def test_new_nested_instruction_blocks_first_write_and_activates_context(
 
     assert result.error and result.error.code == "REPOSITORY_INSTRUCTIONS_DISCOVERED"
     updated = apply_tool_result(context(tmp_path), result)
-    assert updated.workspace.instruction_state.active_paths == ["src/AGENTS.md"]
+    assert updated.workspace.instruction_state.active_paths == ("src/AGENTS.md",)
     assert not (nested / "new.py").exists()

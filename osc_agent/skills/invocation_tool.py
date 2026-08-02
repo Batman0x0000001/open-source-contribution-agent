@@ -26,8 +26,7 @@ class SkillToolInput(ContractModel):
 
 class SkillToolOutput(ContractModel):
     skill: str
-    # completed 保留在 Tool wire contract 中，当前 inline-only 实现不会再生成该状态。
-    status: Literal["inline", "completed", "failed"]
+    status: Literal["inline", "failed"]
     output: JsonValue = None
     error: str | None = None
 
@@ -39,6 +38,10 @@ class SkillTool(BaseTool[SkillToolInput, SkillToolOutput]):
 
     def __init__(self, preparer: SkillPreparer) -> None:
         self.preparer = preparer
+
+    def requires_approval(self, input: SkillToolInput) -> bool:
+        # Skill 只能收窄能力和完成要求，不扩大当前 Session 权限。
+        return False
 
     @property
     def description(self) -> str:

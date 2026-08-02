@@ -94,6 +94,7 @@ def test_execution_contract_hash_is_canonical_and_secret_free() -> None:
     first = ExecutionContract.model_validate(values)
     second = ExecutionContract.model_validate(dict(reversed(list(values.items()))))
     assert first.contract_hash == second.contract_hash
+    assert first.runtime_revision == "bot-runtime-session-v6"
     assert "secret" not in first.model_dump_json().lower()
 
 

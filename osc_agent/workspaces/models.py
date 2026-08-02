@@ -4,10 +4,10 @@ from typing import Literal
 
 from pydantic import Field
 
-from osc_agent.contracts import ContractModel, FrozenContractModel
+from osc_agent.contracts import FrozenContractModel
 
 
-class WorktreeSession(ContractModel):
+class WorktreeSession(FrozenContractModel):
     path: str = Field(min_length=1)
     original_working_directory: str = Field(min_length=1)
     branch: str = Field(min_length=1)
@@ -22,11 +22,11 @@ class InstructionDocument(FrozenContractModel):
     content: str = Field(min_length=1)
 
 
-class RepositoryInstructionState(ContractModel):
-    active_paths: list[str] = Field(default_factory=list)
+class RepositoryInstructionState(FrozenContractModel):
+    active_paths: tuple[str, ...] = ()
 
 
-class FileObservation(ContractModel):
+class FileObservation(FrozenContractModel):
     path: str = Field(min_length=1)
     content_hash: str = Field(min_length=1)
     mtime_ns: int = Field(ge=0)

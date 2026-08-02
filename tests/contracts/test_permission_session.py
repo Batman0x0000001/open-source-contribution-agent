@@ -35,7 +35,7 @@ class MutateTool(BaseTool[MutateInput, MutateOutput]):
     input_model = MutateInput
     output_model = MutateOutput
 
-    def is_destructive(self, input: MutateInput) -> bool:
+    def requires_approval(self, input: MutateInput) -> bool:
         return True
 
     def permission_risk(self, input: MutateInput) -> str:

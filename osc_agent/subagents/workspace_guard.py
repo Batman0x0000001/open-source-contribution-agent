@@ -5,41 +5,41 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from osc_agent.runtime.state import ToolContext
-from osc_agent.runtime.tool_models import ToolError, ToolResult
 from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
-async def capture_workspace_fingerprint(context: ToolContext) -> str | ToolResult:
+class SubagentWorkspaceError(RuntimeError):
+    def __init__(self, *, code: str, message: str, fingerprint: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.fingerprint = fingerprint
+
+
+async def capture_workspace_fingerprint(working_directory: str) -> str:
     try:
         return await asyncio.to_thread(
             git_workspace_fingerprint,
-            repo_root=Path(context.workspace.working_directory),
+            repo_root=Path(working_directory),
         )
     except (OSError, ValueError) as exc:
-        return _error(
-            "AGENT_READ_ONLY_GUARD_FAILED",
-            f"unable to verify read-only Agent workspace: {exc}",
-        )
+        raise SubagentWorkspaceError(
+            code="AGENT_READ_ONLY_GUARD_FAILED",
+            message=f"unable to verify read-only Agent workspace: {exc}",
+        ) from exc
 
 
 async def verify_workspace_unchanged(
-    before: str | ToolResult | None,
-    context: ToolContext,
-) -> tuple[ToolResult | None, str | None]:
-    after = await capture_workspace_fingerprint(context)
-    if isinstance(after, ToolResult):
-        return after, None
+    before: str,
+    working_directory: str,
+) -> str:
+    after = await capture_workspace_fingerprint(working_directory)
     if before != after:
-        return (
-            _error(
-                "AGENT_READ_ONLY_VIOLATION",
-                "read-only Agent changed Git-visible repository state; changes were preserved for inspection",
+        raise SubagentWorkspaceError(
+            code="AGENT_READ_ONLY_VIOLATION",
+            message=(
+                "read-only Agent changed Git-visible repository state; "
+                "changes were preserved for inspection"
             ),
-            after,
+            fingerprint=after,
         )
-    return None, after
-
-
-def _error(code: str, message: str) -> ToolResult:
-    return ToolResult(error=ToolError(code=code, message=message))
+    return after

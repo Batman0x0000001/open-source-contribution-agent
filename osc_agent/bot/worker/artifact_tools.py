@@ -31,9 +31,10 @@ class SubmitIssuePlanTool(BaseTool[SubmitIssuePlanInput, SubmitIssuePlanOutput])
     input_model = SubmitIssuePlanInput
     output_model = SubmitIssuePlanOutput
 
-    def __init__(self, store: BotStore, *, job_id: str, base_sha: str, execution_contract_hash: str = "0" * 64) -> None:
+    def __init__(self, store: BotStore, *, job_id: str, worker_id: str, base_sha: str, execution_contract_hash: str = "0" * 64) -> None:
         self.store = store
         self.job_id = job_id
+        self.worker_id = worker_id
         self.base_sha = base_sha
         self.execution_contract_hash = execution_contract_hash
 
@@ -46,7 +47,12 @@ class SubmitIssuePlanTool(BaseTool[SubmitIssuePlanInput, SubmitIssuePlanOutput])
         if input.execution_contract_hash != self.execution_contract_hash:
             return ToolResult(error=ToolError(code="PLAN_CONTRACT_MISMATCH", message="plan execution contract differs from the job"))
         artifact = IssuePlanArtifact.model_validate(input.model_dump(mode="json"))
-        artifact_id = await asyncio.to_thread(self.store.save_artifact, self.job_id, artifact)
+        artifact_id = await asyncio.to_thread(
+            self.store.save_artifact,
+            self.job_id,
+            artifact,
+            required_lease_owner=self.worker_id,
+        )
         return ToolResult(data={"artifact_id": artifact_id, "status": artifact.status})
 
 
@@ -65,9 +71,10 @@ class SubmitDeliveryDraftTool(BaseTool[SubmitDeliveryDraftInput, SubmitDeliveryD
     input_model = SubmitDeliveryDraftInput
     output_model = SubmitDeliveryDraftOutput
 
-    def __init__(self, store: BotStore, *, job_id: str, issue_number: int, base_sha: str, execution_contract_hash: str = "0" * 64) -> None:
+    def __init__(self, store: BotStore, *, job_id: str, worker_id: str, issue_number: int, base_sha: str, execution_contract_hash: str = "0" * 64) -> None:
         self.store = store
         self.job_id = job_id
+        self.worker_id = worker_id
         self.issue_number = issue_number
         self.base_sha = base_sha
         self.execution_contract_hash = execution_contract_hash
@@ -87,5 +94,10 @@ class SubmitDeliveryDraftTool(BaseTool[SubmitDeliveryDraftInput, SubmitDeliveryD
         if input.snapshot_fingerprint != fingerprint:
             return ToolResult(error=ToolError(code="DELIVERY_FINGERPRINT_MISMATCH", message="delivery draft is not bound to the current workspace"))
         artifact = DeliveryDraft.model_validate(input.model_dump(mode="json"))
-        artifact_id = await asyncio.to_thread(self.store.save_artifact, self.job_id, artifact)
+        artifact_id = await asyncio.to_thread(
+            self.store.save_artifact,
+            self.job_id,
+            artifact,
+            required_lease_owner=self.worker_id,
+        )
         return ToolResult(data={"artifact_id": artifact_id, "workspace_fingerprint": fingerprint})

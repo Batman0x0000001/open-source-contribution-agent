@@ -13,7 +13,7 @@ import pytest
 from osc_agent.application import (
     AgentApplicationConfig,
     AgentProfile,
-    SkillInput,
+    UserSkillInput,
     build_agent_application,
 )
 from tests.settings_factory import make_agent_settings as Settings
@@ -221,7 +221,7 @@ def test_contribution_skill_runs_through_plan_worktree_draft_and_resume(monkeypa
         return [
             event
             async for event in conversation.start(
-                SkillInput(
+                UserSkillInput(
                     name="open-source-contribution",
                     arguments={
                         "repo_url": "https://github.com/example/project",

@@ -6,7 +6,7 @@ from pydantic import Field
 
 from osc_agent.contracts import ContractModel
 from osc_agent.runtime.state import ToolContext
-from osc_agent.runtime.tool_models import ToolResult
+from osc_agent.runtime.tool_models import ToolError, ToolResult
 from osc_agent.runtime.session_store import ToolResultStore
 from osc_agent.runtime.tool import BaseTool
 
@@ -33,5 +33,13 @@ class ReadToolResultTool(BaseTool[ReadToolResultInput, ReadToolResultOutput]):
         return True
 
     async def call(self, input: ReadToolResultInput, context: ToolContext) -> ToolResult:
-        content = self.store.read(session_id=context.session_id, result_id=input.result_id)
+        try:
+            content = self.store.read(
+                session_id=context.session_id,
+                result_id=input.result_id,
+            )
+        except ValueError as exc:
+            return ToolResult(
+                error=ToolError(code="TOOL_RESULT_NOT_FOUND", message=str(exc))
+            )
         return ToolResult(data={"result_id": input.result_id, "content": content})

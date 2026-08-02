@@ -62,12 +62,20 @@ def _processor(
     publisher=object(),
     catalog: RepositoryBotCatalog | None = None,
 ) -> OutboxProcessor:
+    default_catalog = RepositoryBotCatalog(
+        repositories={
+            "owner/repo": RepositoryBotConfig(
+                image="sha256:" + "a" * 64,
+                validation_commands=("python -m pytest",),
+            )
+        }
+    )
     return OutboxProcessor(
         store=store,
         github=github,
         preparer=preparer,
         publisher=publisher,
-        catalog=catalog or RepositoryBotCatalog(repositories={}),
+        catalog=catalog or default_catalog,
     )
 
 
@@ -89,6 +97,38 @@ def test_terminal_outbox_error_is_dead_lettered() -> None:
     store = Store()
     assert asyncio.run(_processor(store, Preparer()).run_once()) is True
     assert store.dead is True and store.failed is False
+
+
+@pytest.mark.parametrize("kind", ["prepare", "publish"])
+def test_disabled_repository_revokes_workspace_and_publish_events(kind: str) -> None:
+    class SideEffect:
+        async def prepare(self, _job, _phase):
+            raise AssertionError("disabled repository must not prepare a workspace")
+
+        async def publish(self, _job):
+            raise AssertionError("disabled repository must not publish")
+
+    store = Store()
+    store.event = _event().model_copy(update={"kind": kind})
+    catalog = RepositoryBotCatalog(
+        repositories={
+            "owner/repo": RepositoryBotConfig(
+                enabled=False,
+                image="sha256:" + "a" * 64,
+                validation_commands=("python -m pytest",),
+            )
+        }
+    )
+
+    assert asyncio.run(
+        _processor(
+            store,
+            SideEffect(),
+            publisher=SideEffect(),
+            catalog=catalog,
+        ).run_once()
+    ) is True
+    assert store.dead is True and store.completed is False
 
 
 def test_unclassified_handler_and_failure_record_errors_propagate() -> None:
@@ -126,7 +166,7 @@ def test_publish_outbox_is_explicitly_routed() -> None:
     class Publisher:
         called = False
 
-        async def publish(self, _job, _config):
+        async def publish(self, _job):
             self.called = True
 
     store = Store()
@@ -171,7 +211,7 @@ def test_issue_comment_outbox_is_explicitly_routed() -> None:
 
 def test_unknown_outbox_kind_is_dead_lettered_without_publishing() -> None:
     class Publisher:
-        async def publish(self, _job, _config):
+        async def publish(self, _job):
             raise AssertionError("unknown outbox kind must not publish")
 
     store = Store()

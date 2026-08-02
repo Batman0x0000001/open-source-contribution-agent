@@ -37,6 +37,24 @@ def test_job_state_machine_rejects_invalid_transition() -> None:
         BotJobStateMachine.transition("queued_plan", JobEvent.PUBLISH_COMPLETE)
 
 
+def test_terminal_statuses_have_one_authoritative_definition() -> None:
+    expected = {"completed", "stale", "dead_letter", "cancelled"}
+    assert {
+        str(state.value) for state in BotJobStateMachine.states if state.final
+    } == expected
+    assert all(BotJobStateMachine.is_terminal(status) for status in expected)
+    assert not BotJobStateMachine.is_terminal("publishing")
+
+
+def test_publication_is_not_cancellable_after_begin_publish() -> None:
+    with pytest.raises(ValueError, match="BOT_INVALID_TRANSITION"):
+        BotJobStateMachine.transition("publishing", JobEvent.CANCEL)
+    assert (
+        BotJobStateMachine.transition("ready_to_publish", JobEvent.CANCEL)
+        == "cancelled"
+    )
+
+
 def test_retry_requires_bound_phase_and_terminal_exhaustion() -> None:
     assert BotJobStateMachine.transition(
         "retry_wait", JobEvent.RESUME_RETRY, retry_phase="implementation"

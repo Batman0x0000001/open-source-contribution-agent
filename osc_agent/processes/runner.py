@@ -7,6 +7,7 @@ from collections.abc import Mapping
 import os
 from pathlib import Path
 import shutil
+import shlex
 import signal
 import subprocess
 import time
@@ -46,18 +47,57 @@ async def run_command(
     timeout_seconds: int | float,
     environment: Mapping[str, str],
 ) -> CommandResult:
+    shell_name = Path(executable).stem.casefold()
+    shell_arguments = (
+        ["--noprofile", "--norc", "-c", command]
+        if shell_name == "bash"
+        else ["-c", command]
+    )
+    return await _run_process(
+        executable,
+        shell_arguments,
+        display_command=command,
+        repo_root=repo_root,
+        timeout_seconds=timeout_seconds,
+        environment=environment,
+    )
+
+
+async def run_arguments(
+    executable: str,
+    arguments: tuple[str, ...] | list[str],
+    *,
+    repo_root: Path,
+    timeout_seconds: int | float,
+    environment: Mapping[str, str],
+) -> CommandResult:
+    """运行由受信任代码构造的 argv，并复用统一的超时与进程树清理。"""
+
+    return await _run_process(
+        executable,
+        list(arguments),
+        display_command=shlex.join((executable, *arguments)),
+        repo_root=repo_root,
+        timeout_seconds=timeout_seconds,
+        environment=environment,
+    )
+
+
+async def _run_process(
+    executable: str,
+    arguments: list[str],
+    *,
+    display_command: str,
+    repo_root: Path,
+    timeout_seconds: int | float,
+    environment: Mapping[str, str],
+) -> CommandResult:
     started = time.perf_counter()
     try:
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-        shell_name = Path(executable).stem.casefold()
-        shell_arguments = (
-            ["--noprofile", "--norc", "-c", command]
-            if shell_name == "bash"
-            else ["-c", command]
-        )
         process = await asyncio.create_subprocess_exec(
             executable,
-            *shell_arguments,
+            *arguments,
             cwd=repo_root,
             env=dict(environment),
             creationflags=creationflags,
@@ -78,7 +118,7 @@ async def run_command(
             if cleanup_error:
                 detail += f"; process-tree cleanup warning: {cleanup_error}"
             return CommandResult(
-                command=command,
+                command=display_command,
                 exit_code=-1,
                 stderr=detail,
                 duration_ms=int((time.perf_counter() - started) * 1000),
@@ -88,7 +128,7 @@ async def run_command(
         stderr = stderr_bytes.decode("utf-8", errors="replace")
         reason = None if process.returncode == 0 else "nonzero_exit"
         return CommandResult(
-            command=command,
+            command=display_command,
             exit_code=process.returncode or 0,
             stdout=stdout,
             stderr=stderr,
@@ -97,7 +137,7 @@ async def run_command(
         )
     except OSError as exc:
         return CommandResult(
-            command=command,
+            command=display_command,
             exit_code=-3,
             stderr=str(exc),
             duration_ms=int((time.perf_counter() - started) * 1000),

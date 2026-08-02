@@ -43,7 +43,13 @@ class MemoryToolResultStore:
 
     def persist(self, *, session_id: str, tool_use_id: str, content: str) -> str:
         result_id = tool_use_id
-        self._values[(session_id, result_id)] = content
+        key = (session_id, result_id)
+        existing = self._values.get(key)
+        if existing is not None and existing != content:
+            raise ValueError(
+                "tool result identity already exists with different content"
+            )
+        self._values[key] = content
         return result_id
 
     def read(self, *, session_id: str, result_id: str) -> str:
@@ -295,10 +301,12 @@ class FileToolResultStore:
         directory = self.root / _safe_name(session_id)
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{_safe_name(tool_use_id)}.txt"
-        suffix = 1
-        while path.exists():
-            path = directory / f"{_safe_name(tool_use_id)}-{suffix}.txt"
-            suffix += 1
+        if path.exists():
+            if path.read_text(encoding="utf-8") != content:
+                raise ValueError(
+                    "tool result identity already exists with different content"
+                )
+            return path.stem
         path.write_text(content, encoding="utf-8")
         return path.stem
 

@@ -48,9 +48,3 @@ def repo_path_matches(path: str, pattern: str) -> bool:
     return candidate.match(normalized_pattern) or (
         normalized_pattern.startswith("**/") and candidate.match(normalized_pattern[3:])
     )
-
-
-def repo_path_is_within(path: str, directory: str) -> bool:
-    return normalize_repo_relative_path(path).startswith(
-        f"{normalize_repo_relative_path(directory, field_name='directory')}/"
-    )

@@ -96,3 +96,17 @@ def test_only_product_invocation_can_receive_product_tools(tmp_path: Path) -> No
     assert isinstance(product, PreparedSkill)
     assert user.capabilities.allowed_tools == {"read_file"}
     assert product.capabilities.allowed_tools == {"read_file", "submit_artifact"}
+
+
+def test_absent_product_tool_cannot_expand_the_caller_capability(tmp_path: Path) -> None:
+    _write_skill(tmp_path)
+    preparer = SkillPreparer(SkillCatalog([SkillLoader(tmp_path, source="builtin")]))
+
+    product = asyncio.run(
+        preparer.prepare(
+            _request(trigger="product", allowed_tools={"read_file"})
+        )
+    )
+
+    assert isinstance(product, PreparedSkill)
+    assert product.capabilities.allowed_tools == {"read_file"}

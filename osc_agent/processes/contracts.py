@@ -5,8 +5,6 @@ from __future__ import annotations
 from enum import Enum
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict
-
 from osc_agent.contracts import FrozenContractModel
 
 
@@ -18,8 +16,7 @@ class CommandKind(str, Enum):
     OTHER = "other"
 
 
-class CommandResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+class CommandResult(FrozenContractModel):
     command: str
     exit_code: int
     stdout: str = ""

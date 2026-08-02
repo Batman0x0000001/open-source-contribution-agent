@@ -61,6 +61,7 @@ async def run_tools(
         if batch.concurrency_safe:
             results: dict[int, ToolResult] = {}
             post_hook_failures: dict[int, PostToolUseHookError] = {}
+            emitted: set[int] = set()
 
             async def execute_indexed(
                 index: int,
@@ -87,10 +88,37 @@ async def run_tools(
                     results[index] = result
                     if post_hook_failure is not None:
                         post_hook_failures[index] = post_hook_failure
+                    emitted.add(index)
                     yield ToolResultAvailable(
                         tool_use_id=batch.calls[index].id,
                         result=result,
                     )
+            except asyncio.CancelledError:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                settled = await asyncio.gather(*tasks, return_exceptions=True)
+                for outcome in settled:
+                    if not isinstance(outcome, tuple):
+                        continue
+                    index, result, post_hook_failure = outcome
+                    results[index] = result
+                    if post_hook_failure is not None:
+                        post_hook_failures[index] = post_hook_failure
+                    if index not in emitted:
+                        emitted.add(index)
+                        yield ToolResultAvailable(
+                            tool_use_id=batch.calls[index].id,
+                            result=result,
+                        )
+                for index in range(len(batch.calls)):
+                    if index in results:
+                        current_state = current_state.apply_all(
+                            results[index].state_changes
+                        )
+                if results:
+                    yield ToolBatchStateCommitted(agent_state=current_state)
+                raise
             finally:
                 for task in tasks:
                     if not task.done():

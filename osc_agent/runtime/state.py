@@ -177,7 +177,7 @@ class AgentRunState(ContractModel):
             tool_use_id=tool_use_id,
             state_directory=state_directory,
             transcript_messages=tuple(transcript_messages),
-            workspace=self.workspace,
+            workspace=self.workspace.model_copy(deep=True),
             permissions=self.permissions,
             capabilities=self.capabilities,
             completion_requirements=self.completion_requirements,
@@ -208,9 +208,11 @@ class AgentRunState(ContractModel):
                 change.state
                 if change.replace
                 else RepositoryInstructionState(
-                    active_paths=sorted(
-                        set(workspace.instruction_state.active_paths)
-                        | set(change.state.active_paths)
+                    active_paths=tuple(
+                        sorted(
+                            set(workspace.instruction_state.active_paths)
+                            | set(change.state.active_paths)
+                        )
                     )
                 )
             )

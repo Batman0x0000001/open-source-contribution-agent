@@ -7,6 +7,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from osc_agent.application import UserSkillInput
 from osc_agent.cli.app import app
 from osc_agent.cli.agent import run_conversation
 from osc_agent.runtime.events import Complete, RunCompleted, RuntimeEvent
@@ -85,6 +86,48 @@ def test_non_tty_run_requires_explicit_task(tmp_path: Path) -> None:
 
     assert result.exit_code != 0
     assert "task is required when stdin is not a TTY" in result.output
+
+
+def test_skill_run_passes_user_skill_input_to_application(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured = {}
+
+    class Conversation:
+        def start(self, input):
+            captured["input"] = input
+            return _completed_events()
+
+    class AgentApplication:
+        def open_session(self, _session_id):
+            return Conversation()
+
+    async def _completed_events():
+        yield RunCompleted(transition=Complete(reason="done"))
+
+    def unexpected_catalog_build(*_args, **_kwargs):
+        raise AssertionError(
+            "skill run must delegate invocation validation to Application"
+        )
+
+    monkeypatch.setattr(
+        "osc_agent.cli.app.build_cli_application",
+        lambda *_args, **_kwargs: AgentApplication(),
+    )
+    monkeypatch.setattr(
+        "osc_agent.cli.app.build_skill_catalog",
+        unexpected_catalog_build,
+    )
+    monkeypatch.setattr("osc_agent.cli.app.run_conversation", lambda **_kwargs: None)
+
+    result = CliRunner().invoke(
+        app,
+        ["skill", "run", "open-source-contribution", "--repo", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert isinstance(captured["input"], UserSkillInput)
 
 
 def test_local_cli_has_no_bot_deploy_or_architecture_commands() -> None:

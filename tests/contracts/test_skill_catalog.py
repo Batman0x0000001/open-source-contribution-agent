@@ -100,3 +100,31 @@ def test_unknown_external_tool_skips_skill_but_builtin_fails(tmp_path: Path) -> 
     catalog = SkillCatalog([SkillLoader(builtin, source="builtin")])
     with pytest.raises(ValueError, match="unknown allowed_tools"):
         catalog.validate_allowed_tools({"read_file"})
+
+
+def test_product_tools_are_optional_for_the_current_application(tmp_path: Path) -> None:
+    external = tmp_path / "external"
+    _write_skill(
+        external,
+        "external",
+        "external",
+        flags="product_tools: [missing]\n",
+    )
+    catalog = SkillCatalog([SkillLoader(external, source="project")])
+
+    catalog.validate_allowed_tools({"read_file"})
+
+    assert catalog.get("external") is not None
+    assert catalog.diagnostics() == []
+
+    builtin = tmp_path / "builtin"
+    _write_skill(
+        builtin,
+        "builtin",
+        "builtin",
+        flags="product_tools: [missing]\n",
+    )
+    catalog = SkillCatalog([SkillLoader(builtin, source="builtin")])
+    catalog.validate_allowed_tools({"read_file"})
+
+    assert catalog.get("builtin") is not None

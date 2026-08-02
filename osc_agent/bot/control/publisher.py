@@ -9,16 +9,19 @@ import shutil
 from osc_agent.bot.config import BotControlSettings
 from osc_agent.bot.control.github import GitHubControlClient, basic_git_auth_header
 from osc_agent.bot.domain.events import OutboxEvent
-from osc_agent.bot.domain.execution import validate_implementation_approval
+from osc_agent.bot.domain.execution import (
+    ExecutionContract,
+    repository_config_from_contract,
+    validate_implementation_approval,
+    validate_job_contract,
+)
 from osc_agent.bot.domain.jobs import BotJob
-from osc_agent.bot.domain.repositories import RepositoryBotConfig
 from osc_agent.bot.domain.state_machine import JobEvent
 from osc_agent.bot.persistence.session_store import SqliteSessionStore
 from osc_agent.bot.persistence.store import BotStore
 from osc_agent.processes.policy import build_subprocess_environment
 from osc_agent.workspaces.git_state import git_snapshot, git_workspace_fingerprint
 from osc_agent.completion.evaluator import CompletionEvaluation, CompletionEvaluator
-from osc_agent.completion.models import CompletionRequirements
 from osc_agent.workspaces.path_policy import repo_path_matches
 
 
@@ -33,22 +36,17 @@ class TrustedPublisher:
         if not self.git:
             raise ValueError("Git executable was not found")
 
-    async def publish(self, job: BotJob, config: RepositoryBotConfig) -> BotJob:
+    async def publish(self, job: BotJob) -> BotJob:
         if job.status not in {"ready_to_publish", "publishing"}:
             raise ValueError("job is not ready for trusted publication")
         workspace_value = job.implementation_workspace_path
         if not workspace_value or not job.approval_id:
             raise ValueError("publish job is missing workspace or approval")
         contract = self.store.get_execution_contract(job.execution_contract_hash)
-        if contract is None or contract.contract_hash != job.execution_contract_hash:
+        if contract is None:
             raise ValueError("publish job execution contract is missing or corrupted")
-        if (
-            contract.base_sha != job.base_sha
-            or contract.issue_input_hash != job.issue_input_hash
-            or contract.pull_request_mode != config.pull_request_mode
-            or contract.image_id != job.image_id
-        ):
-            raise ValueError("repository configuration or Job drifted from the execution contract")
+        validate_job_contract(job, contract)
+        policy = repository_config_from_contract(contract)
         approval = self.store.get_approval(job.approval_id)
         plan = self.store.get_plan_artifact(job.plan_artifact_id or "")
         validate_implementation_approval(approval, plan)
@@ -60,11 +58,11 @@ class TrustedPublisher:
             raise ValueError("DeliveryDraft does not match the execution contract")
         await self._verify_repository_metadata(job, workspace)
         branch_base, remote_sha = await self.github.repository_head(job.installation_id, job.repository_full_name)
-        if remote_sha != job.base_sha:
+        if remote_sha != job.base_sha or branch_base != job.base_branch:
             return self._mark_stale(job)
         head = (await self._git(["rev-parse", "HEAD"], workspace)).strip()
         if job.commit_sha is None and head == job.base_sha:
-            await self._verify_completion(job, config, workspace)
+            await self._verify_completion(job, contract, workspace)
             fingerprint = git_workspace_fingerprint(repo_root=workspace)
             if fingerprint != draft.snapshot_fingerprint:
                 raise ValueError("workspace fingerprint differs from DeliveryDraft")
@@ -81,15 +79,15 @@ class TrustedPublisher:
             raise ValueError("workspace HEAD differs from the approved base")
         snapshot = git_snapshot(repo_root=workspace, base_commit=job.base_sha)
         files = [str(item["path"]) for item in snapshot["files"]]
-        if not files or len(files) > config.max_changed_files:
+        if not files or len(files) > policy.max_changed_files:
             raise ValueError("final changed file count violates repository policy")
-        if len(str(snapshot["patch"]).encode()) > config.max_patch_bytes:
+        if len(str(snapshot["patch"]).encode()) > policy.max_patch_bytes:
             raise ValueError("final patch exceeds repository policy")
         for value in files:
             path = PurePosixPath(value.replace("\\", "/"))
             if path.is_absolute() or ".." in path.parts:
                 raise ValueError(f"publisher rejected invalid changed path: {value}")
-            if any(repo_path_matches(path.as_posix(), pattern) for pattern in config.denied_paths):
+            if any(repo_path_matches(path.as_posix(), pattern) for pattern in policy.denied_paths):
                 raise ValueError(f"publisher rejected protected path: {value}")
             candidate = workspace.joinpath(*path.parts)
             if candidate.exists() and (
@@ -141,9 +139,11 @@ class TrustedPublisher:
             current.installation_id,
             current.repository_full_name,
         )
-        if latest_sha != current.base_sha or latest_base != branch_base:
+        if latest_sha != current.base_sha or latest_base != current.base_branch:
             return self._mark_stale(current)
-        token = await self.github.installation_token(current.installation_id, contents="write")
+        token = await self.github.installation_token(
+            current.installation_id, purpose="contents_write"
+        )
         env = build_subprocess_environment()
         env.update(
             {
@@ -167,7 +167,7 @@ class TrustedPublisher:
                 body=f"{draft.body}\n\nRefs #{current.issue_number}\n\n{marker}",
                 head=branch,
                 base=branch_base,
-                draft=config.pull_request_mode == "draft",
+                draft=policy.pull_request_mode == "draft",
             )
         else:
             number, url = found
@@ -185,7 +185,7 @@ class TrustedPublisher:
                 kind="issue_comment",
                 idempotency_key=f"comment:{current.job_id}:completed",
                 payload={
-                    "body": f"{'Draft ' if config.pull_request_mode == 'draft' else ''}PR created: {url}"
+                    "body": f"{'Draft ' if policy.pull_request_mode == 'draft' else ''}PR created: {url}"
                     f"\n\n<!-- osa-job:{current.job_id}:completed -->"
                 },
             ),
@@ -268,23 +268,23 @@ class TrustedPublisher:
         ):
             raise ValueError("workspace contains an active Git hook")
 
-    async def _verify_completion(self, job: BotJob, config: RepositoryBotConfig, workspace: Path) -> None:
+    async def _verify_completion(
+        self,
+        job: BotJob,
+        contract: ExecutionContract,
+        workspace: Path,
+    ) -> None:
         if not job.implementation_session_id:
             raise ValueError("publish job has no implementation Session")
         snapshot = SqliteSessionStore(self.store).load(job.implementation_session_id)
         if snapshot is None or snapshot.state.last_status != "completed":
             raise ValueError("implementation Session is not completed")
-        requirements = CompletionRequirements(
-            required_evidence=frozenset(
-                {"successful_test", "independent_verification", "git_change_snapshot", "delivery_draft"}
-            )
-        )
         report = await CompletionEvaluator().evaluate(
             CompletionEvaluation(
                 messages=tuple(snapshot.messages),
                 workspace_root=str(workspace),
-                requirements=requirements,
-                validation_commands=config.validation_commands,
+                requirements=snapshot.state.completion_requirements,
+                validation_commands=contract.validation_commands,
             )
         )
         reasons = report.blocking_reasons

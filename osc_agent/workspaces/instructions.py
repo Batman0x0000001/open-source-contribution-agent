@@ -10,7 +10,7 @@ from osc_agent.workspaces.path_policy import safe_repo_path
 
 
 MAX_INSTRUCTION_CHARS = 40_000
-_INSTRUCTION_FILES = (("AGENTS.md", "agents"), ("CLAUDE.md", "claude"))
+_INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md")
 
 
 class RepositoryInstructionResolver:
@@ -32,12 +32,10 @@ class RepositoryInstructionResolver:
         root = working_directory.resolve()
         target = safe_repo_path(root, relative_path)
         directory = root if relative_path == "." else (target if target.is_dir() else target.parent)
-        if directory != root and root not in directory.parents:
-            raise ValueError("instruction target escapes the repository")
 
         discovered = set(state.active_paths)
         for scope in _scopes(root, directory):
-            for filename, _kind in _INSTRUCTION_FILES:
+            for filename in _INSTRUCTION_FILES:
                 candidate = scope / filename
                 if not candidate.exists():
                     continue
@@ -47,7 +45,9 @@ class RepositoryInstructionResolver:
                 if not resolved.is_file():
                     continue
                 discovered.add(resolved.relative_to(root).as_posix())
-        return RepositoryInstructionState(active_paths=sorted(discovered, key=_path_depth))
+        return RepositoryInstructionState(
+            active_paths=tuple(sorted(discovered, key=_path_depth))
+        )
 
     def load(
         self,

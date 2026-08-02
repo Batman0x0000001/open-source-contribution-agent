@@ -110,7 +110,7 @@ def test_skill_tool_description_uses_catalog_model_visibility(tmp_path: Path) ->
     assert "project-review" not in tool.description
 
 
-def test_skill_tool_keeps_the_existing_status_wire_contract() -> None:
+def test_skill_tool_exposes_only_reachable_status_values() -> None:
     status_schema = SkillToolOutput.model_json_schema()["properties"]["status"]
 
-    assert status_schema["enum"] == ["inline", "completed", "failed"]
+    assert status_schema["enum"] == ["inline", "failed"]

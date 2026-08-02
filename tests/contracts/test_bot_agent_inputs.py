@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 
+from osc_agent.application import ProductSkillInput
 from osc_agent.bot.worker.agent_jobs import (
     _build_implementation_application,
     _build_plan_application,
@@ -15,7 +16,11 @@ from osc_agent.bot.worker.agent_jobs import (
 )
 from osc_agent.bot.config import BotWorkerSettings
 from osc_agent.bot.domain.artifacts import IssuePlanArtifact
-from osc_agent.bot.domain.execution import ExecutionContract
+from osc_agent.bot.domain.execution import (
+    ExecutionContract,
+    repository_config_from_contract,
+    validate_job_contract,
+)
 from osc_agent.bot.domain.jobs import BotJob
 from osc_agent.bot.domain.repositories import RepositoryBotConfig
 from osc_agent.bot.persistence.session_store import SqliteSessionStore
@@ -74,7 +79,6 @@ def test_bot_builds_planning_and_implementation_skill_inputs_from_bound_models()
         job,
         contract,
         {"content_source": "github", "issue": {"number": 3}, "comments": []},
-        skill_name=contract.planning_skill_name,
     )
     plan = IssuePlanArtifact(
         status="ready",
@@ -87,22 +91,49 @@ def test_bot_builds_planning_and_implementation_skill_inputs_from_bound_models()
         job,
         contract,
         plan,
-        skill_name=contract.implementation_skill_name,
     )
 
     assert planning.name == "issue-planning"
+    assert isinstance(planning, ProductSkillInput)
     assert planning.arguments["execution_contract_hash"] == contract.contract_hash
     assert implementation.name == "open-source-contribution"
+    assert isinstance(implementation, ProductSkillInput)
     assert implementation.arguments["mode"] == "approved_implementation"
     assert implementation.arguments["automation"]["approved_plan"] == plan.plan_markdown
 
 
-def test_bot_rejects_skill_input_when_job_contract_binding_changes() -> None:
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("execution_contract_hash", "f" * 64),
+        ("repository_id", 9),
+        ("repository_full_name", "other/repo"),
+        ("installation_id", 9),
+        ("issue_number", 9),
+        ("base_branch", "release"),
+        ("base_sha", "d" * 40),
+        ("issue_input_hash", "e" * 64),
+        ("image_id", "sha256:" + "f" * 64),
+    ],
+)
+def test_bot_rejects_every_job_contract_binding_change(field, value) -> None:
     contract = _contract()
-    job = _job(contract).model_copy(update={"base_sha": "d" * 40})
+    job = _job(contract).model_copy(update={field: value})
 
     with pytest.raises(ValueError, match="does not match"):
-        build_planning_skill_input(job, contract, {}, skill_name="issue-planning")
+        validate_job_contract(job, contract)
+
+
+def test_execution_contract_restores_the_approved_repository_policy() -> None:
+    contract = _contract()
+    policy = repository_config_from_contract(contract)
+
+    assert policy.enabled is True
+    assert policy.image == contract.image_id
+    assert policy.validation_commands == contract.validation_commands
+    assert policy.denied_paths == contract.denied_paths
+    assert policy.max_changed_files == contract.max_changed_files
+    assert policy.max_patch_bytes == contract.max_patch_bytes
 
 
 @pytest.mark.parametrize(
@@ -128,7 +159,6 @@ def test_bot_session_dispatch_preserves_crash_safe_start_or_resume(existing, exp
         _job(_contract()),
         _contract(),
         {},
-        skill_name="issue-planning",
     )
 
     events = _bot_session_events(Conversation(), initial)  # type: ignore[arg-type]

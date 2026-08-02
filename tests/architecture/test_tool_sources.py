@@ -65,6 +65,18 @@ def test_runtime_and_shared_capabilities_do_not_import_tool_implementations() ->
     assert not violations, "shared layer imports Tool adapters:\n" + "\n".join(violations)
 
 
+def test_tool_adapters_do_not_own_subprocess_lifecycle() -> None:
+    violations = [
+        str(path.relative_to(PROJECT_ROOT))
+        for path in (PACKAGE_ROOT / "tools").rglob("*.py")
+        if _imports(path) & {"subprocess", "asyncio.subprocess"}
+    ]
+
+    assert not violations, "Tool adapters import subprocess directly:\n" + "\n".join(
+        violations
+    )
+
+
 def test_legacy_tool_helper_modules_are_deleted() -> None:
     old_paths = [
         "filesystem_operations.py",

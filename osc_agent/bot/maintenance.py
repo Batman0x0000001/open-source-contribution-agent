@@ -1,4 +1,4 @@
-"""实现 Bot 状态清理、部署检查和架构文档生成。"""
+"""实现 Bot 状态清理、归档、重建和部署检查。"""
 
 from __future__ import annotations
 

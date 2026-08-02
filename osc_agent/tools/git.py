@@ -45,12 +45,13 @@ class GitStatusTool(BaseTool[GitStatusInput, GitStatusOutput]):
         return True
 
     async def call(self, input: GitStatusInput, context: ToolContext) -> ToolResult:
-        return _git_tool_result(
-            "status",
-            await asyncio.to_thread(
+        try:
+            output = await asyncio.to_thread(
                 git_status, repo_root=Path(context.workspace.working_directory)
-            ),
-        )
+            )
+        except ValueError as exc:
+            return _git_error(exc)
+        return ToolResult(data={"status": output})
 
 
 class GitDiffInput(ContractModel):
@@ -79,7 +80,9 @@ class GitDiffOutput(ContractModel):
 
 class GitDiffTool(BaseTool[GitDiffInput, GitDiffOutput]):
     name = "git_diff"
-    description = "Show tracked Git changes in the current repository."
+    description = (
+        "Show the contribution snapshot, including commits and tracked or untracked changes."
+    )
     input_model = GitDiffInput
     output_model = GitDiffOutput
 
@@ -158,22 +161,21 @@ class GitLogTool(BaseTool[GitLogInput, GitLogOutput]):
         return True
 
     async def call(self, input: GitLogInput, context: ToolContext) -> ToolResult:
-        return _git_tool_result(
-            "log",
-            await asyncio.to_thread(
+        try:
+            output = await asyncio.to_thread(
                 git_log,
                 repo_root=Path(context.workspace.working_directory),
                 limit=input.limit,
-            ),
-        )
-
-
-def _git_tool_result(field: str, output: str) -> ToolResult:
-    if output.startswith("Error: "):
-        return ToolResult(
-            error=ToolError(
-                code="GIT_COMMAND_FAILED",
-                message=output.removeprefix("Error: "),
             )
+        except ValueError as exc:
+            return _git_error(exc)
+        return ToolResult(data={"log": output})
+
+
+def _git_error(error: ValueError) -> ToolResult:
+    return ToolResult(
+        error=ToolError(
+            code="GIT_COMMAND_FAILED",
+            message=str(error),
         )
-    return ToolResult(data={field: output})
+    )

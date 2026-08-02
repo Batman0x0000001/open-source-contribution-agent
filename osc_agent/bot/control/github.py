@@ -5,9 +5,28 @@ from __future__ import annotations
 import base64
 from datetime import datetime, timedelta, timezone
 import re
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from osc_agent.bot.config import BotControlSettings
+
+
+InstallationTokenPurpose = Literal[
+    "repository_read",
+    "issue_read",
+    "issue_write",
+    "pull_request_read",
+    "pull_request_write",
+    "contents_write",
+]
+
+_TOKEN_PERMISSIONS: dict[InstallationTokenPurpose, dict[str, str]] = {
+    "repository_read": {"contents": "read"},
+    "issue_read": {"issues": "read"},
+    "issue_write": {"issues": "write"},
+    "pull_request_read": {"pull_requests": "read"},
+    "pull_request_write": {"pull_requests": "write"},
+    "contents_write": {"contents": "write"},
+}
 
 
 class GitHubApiError(RuntimeError):
@@ -51,7 +70,10 @@ class GitHubControlClient(Protocol):
     ) -> tuple[int, str] | None: ...
 
     async def installation_token(
-        self, installation_id: int, *, contents: str = "read"
+        self,
+        installation_id: int,
+        *,
+        purpose: InstallationTokenPurpose = "repository_read",
     ) -> str: ...
 
 
@@ -60,14 +82,16 @@ class GitHubAppClient:
 
     def __init__(self, settings: BotControlSettings) -> None:
         self.settings = settings
-        self._token_cache: dict[tuple[int, str], tuple[str, datetime]] = {}
+        self._token_cache: dict[
+            tuple[int, InstallationTokenPurpose], tuple[str, datetime]
+        ] = {}
 
     async def collaborator_permission(self, installation_id: int, repository: str, login: str) -> str:
         data = await self._request(
             installation_id,
             "GET",
             f"/repos/{repository}/collaborators/{login}/permission",
-            contents="read",
+            purpose="repository_read",
         )
         permission = data.get("permission")
         if not isinstance(permission, str):
@@ -90,12 +114,16 @@ class GitHubAppClient:
 
     async def issue(self, installation_id: int, repository: str, number: int) -> dict[str, object]:
         issue = await self._request(
-            installation_id, "GET", f"/repos/{repository}/issues/{number}"
+            installation_id,
+            "GET",
+            f"/repos/{repository}/issues/{number}",
+            purpose="issue_read",
         )
         comments = await self._request(
             installation_id,
             "GET",
             f"/repos/{repository}/issues/{number}/comments?per_page=30",
+            purpose="issue_read",
         )
         return {
             "content_source": "github",
@@ -110,7 +138,7 @@ class GitHubAppClient:
             "POST",
             f"/repos/{repository}/issues/{number}/comments",
             json_body={"body": sanitize_github_markdown(body)},
-            contents="write",
+            purpose="issue_write",
         )
         url = data.get("html_url")
         if not isinstance(url, str):
@@ -128,6 +156,7 @@ class GitHubAppClient:
             installation_id,
             "GET",
             f"/repos/{repository}/issues/{number}/comments?per_page=100",
+            purpose="issue_read",
         )
         if not isinstance(data, list):
             raise ValueError("GitHub issue comment lookup response is invalid")
@@ -161,7 +190,7 @@ class GitHubAppClient:
                 "base": base,
                 "draft": draft,
             },
-            contents="write",
+            purpose="pull_request_write",
         )
         number, url = data.get("number"), data.get("html_url")
         if not isinstance(number, int) or not isinstance(url, str):
@@ -176,7 +205,7 @@ class GitHubAppClient:
             installation_id,
             "GET",
             f"/repos/{repository}/pulls?state=open&head={owner}:{head}&base={base}&per_page=10",
-            contents="read",
+            purpose="pull_request_read",
         )
         if not isinstance(data, list) or not data:
             return None
@@ -185,8 +214,13 @@ class GitHubAppClient:
             raise ValueError("GitHub pull request lookup response is invalid")
         return int(first["number"]), str(first["html_url"])
 
-    async def installation_token(self, installation_id: int, *, contents: str = "read") -> str:
-        key = (installation_id, contents)
+    async def installation_token(
+        self,
+        installation_id: int,
+        *,
+        purpose: InstallationTokenPurpose = "repository_read",
+    ) -> str:
+        key = (installation_id, purpose)
         cached = self._token_cache.get(key)
         now = datetime.now(timezone.utc)
         if cached is not None and cached[1] > now + timedelta(minutes=2):
@@ -194,13 +228,7 @@ class GitHubAppClient:
         payload = await self._app_request(
             "POST",
             f"/app/installations/{installation_id}/access_tokens",
-            json_body={
-                "permissions": {
-                    "contents": contents,
-                    "issues": "write" if contents == "write" else "read",
-                    "pull_requests": "write" if contents == "write" else "read",
-                }
-            },
+            json_body={"permissions": _TOKEN_PERMISSIONS[purpose]},
         )
         token, expires = payload.get("token"), payload.get("expires_at")
         if not isinstance(token, str) or not isinstance(expires, str):
@@ -216,9 +244,9 @@ class GitHubAppClient:
         path: str,
         *,
         json_body: dict[str, object] | None = None,
-        contents: str = "read",
+        purpose: InstallationTokenPurpose = "repository_read",
     ) -> Any:
-        token = await self.installation_token(installation_id, contents=contents)
+        token = await self.installation_token(installation_id, purpose=purpose)
         return await _http_request(method, path, token, json_body)
 
     async def _app_request(

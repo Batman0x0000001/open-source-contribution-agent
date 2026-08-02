@@ -7,7 +7,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterator
 from uuid import uuid4
 
-from osc_agent.bot.domain.jobs import utc_now
 from osc_agent.bot.persistence.session_records import SessionRecordType, append_session_record
 from osc_agent.bot.persistence.store import BotStore
 from osc_agent.runtime.messages import RuntimeMessage
@@ -23,9 +22,10 @@ from osc_agent.runtime.state import AgentRunState
 class SqliteSessionStore(SessionStore):
     """为远程 Worker 提供追加式、可跨进程恢复的 Session Store。"""
 
-    def __init__(self, store: BotStore, *, lease_seconds: int = 3_600) -> None:
+    def __init__(self, store: BotStore, *, lease_seconds: int = 60) -> None:
         self.store = store
         self.lease_seconds = lease_seconds
+        self._lease_owners: dict[str, str] = {}
 
     @contextmanager
     def lease(self, session_id: str) -> Iterator[None]:
@@ -46,19 +46,58 @@ class SqliteSessionStore(SessionStore):
                 (session_id, owner, until),
             )
             connection.commit()
+        self._lease_owners[session_id] = owner
         try:
             yield
         finally:
+            if self._lease_owners.get(session_id) == owner:
+                self._lease_owners.pop(session_id, None)
             with self.store.connect() as connection:
                 connection.execute(
                     "DELETE FROM session_leases WHERE session_id=? AND owner=?", (session_id, owner)
                 )
 
+    def renew_lease(self, session_id: str) -> None:
+        owner = self._lease_owners.get(session_id)
+        if owner is None:
+            raise ValueError("SESSION_LEASE_LOST")
+        until = (
+            datetime.now(timezone.utc) + timedelta(seconds=self.lease_seconds)
+        ).isoformat()
+        with self.store.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "UPDATE session_leases SET lease_until=? WHERE session_id=? AND owner=?",
+                (until, session_id, owner),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("SESSION_LEASE_LOST")
+            connection.commit()
+
     def create(self, metadata: SessionMetadata, state: AgentRunState) -> None:
-        if self.load(metadata.session_id) is not None:
-            raise ValueError(f"session already exists: {metadata.session_id}")
-        self._append(metadata.session_id, "metadata", metadata.model_dump_json())
-        self._append(metadata.session_id, "state", state.model_dump_json())
+        with self.store.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            exists = connection.execute(
+                "SELECT 1 FROM session_records WHERE session_id=? LIMIT 1",
+                (metadata.session_id,),
+            ).fetchone()
+            if exists is not None:
+                raise ValueError(f"session already exists: {metadata.session_id}")
+            append_session_record(
+                connection,
+                session_id=metadata.session_id,
+                record_type="metadata",
+                payload_json=metadata.model_dump_json(),
+                require_existing=False,
+            )
+            append_session_record(
+                connection,
+                session_id=metadata.session_id,
+                record_type="state",
+                payload_json=state.model_dump_json(),
+                require_existing=True,
+            )
+            connection.commit()
 
     def append_message(self, session_id: str, message: RuntimeMessage) -> None:
         self._require(session_id)
@@ -105,14 +144,13 @@ class SqliteSessionStore(SessionStore):
     def list_overviews(self, *, limit: int | None = None) -> list[SessionOverview]:
         with self.store.connect() as connection:
             rows = connection.execute(
-                """SELECT DISTINCT session_id FROM session_records
-                   ORDER BY (SELECT MAX(created_at) FROM session_records s2
-                             WHERE s2.session_id=session_records.session_id) DESC"""
+                """SELECT session_id, MAX(created_at) AS updated_at
+                   FROM session_records GROUP BY session_id ORDER BY updated_at DESC"""
                 + (" LIMIT ?" if limit is not None else ""),
                 (() if limit is None else (limit,)),
             ).fetchall()
         overviews: list[SessionOverview] = []
-        for (session_id,) in rows:
+        for session_id, updated_at in rows:
             try:
                 snapshot = self.load(session_id)
                 assert snapshot is not None
@@ -122,7 +160,7 @@ class SqliteSessionStore(SessionStore):
                         session_id=session_id,
                         model=snapshot.metadata.model,
                         workspace_root=snapshot.metadata.workspace_root,
-                        updated_at=utc_now(),
+                        updated_at=updated_at,
                         status=state.last_status or "unknown",
                         working_directory=state.workspace.working_directory,
                         worktree=state.workspace.worktree,
@@ -132,7 +170,7 @@ class SqliteSessionStore(SessionStore):
                 overviews.append(
                     SessionOverview(
                         session_id=session_id,
-                        updated_at=utc_now(),
+                        updated_at=updated_at,
                         status="invalid",
                         error=str(exc),
                     )

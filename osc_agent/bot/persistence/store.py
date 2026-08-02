@@ -109,7 +109,6 @@ class BotStore:
         job: BotJob,
         *,
         input_value: dict[str, object] | None = None,
-        outbox_event: OutboxEvent | None = None,
         outbox_events: tuple[OutboxEvent, ...] = (),
     ) -> None:
         encoded = job.model_dump_json()
@@ -144,8 +143,7 @@ class BotStore:
                     "INSERT INTO bot_job_inputs(job_id, input_json, created_at) VALUES(?, ?, ?)",
                     (job.job_id, input_encoded, utc_now()),
                 )
-            initial_events = ((outbox_event,) if outbox_event is not None else ()) + outbox_events
-            for initial_event in initial_events:
+            for initial_event in outbox_events:
                 if initial_event.job_id != job.job_id:
                     raise ValueError("initial outbox event belongs to a different job")
                 connection.execute(
@@ -272,13 +270,6 @@ class BotStore:
             ).fetchone()
         return (str(row[0]), str(row[1])) if row else None
 
-    def consume_plan_reply(self, source_id: str) -> None:
-        with self.connect() as connection:
-            connection.execute(
-                """UPDATE bot_inbox_messages SET status='consumed', consumed_at=?
-                   WHERE source_id=? AND status='pending'""", (utc_now(), source_id)
-            )
-
     def append_external_message_once(self, *, source_id: str, session_id: str, text: str) -> bool:
         """Append an inbox message and consume it in the same SQLite transaction."""
 
@@ -321,6 +312,7 @@ class BotStore:
         job_id: str,
         *,
         expected_version: int,
+        required_lease_owner: str | None = None,
         **changes: object,
     ) -> BotJob:
         current = self.get_job(job_id)
@@ -328,6 +320,7 @@ class BotStore:
             raise ValueError(f"unknown bot job: {job_id}")
         if current.version != expected_version:
             raise ValueError("BOT_JOB_VERSION_CONFLICT")
+        _require_job_lease(current, required_lease_owner)
         update = dict(changes)
         _validate_job_changes(update)
         update["version"] = current.version + 1
@@ -340,7 +333,8 @@ class BotStore:
             cursor = connection.execute(
                 """UPDATE bot_jobs SET status = ?, version = ?, lease_owner = ?,
                     lease_until = ?, job_json = ?, updated_at = ?
-                    WHERE job_id = ? AND version = ?""",
+                    WHERE job_id = ? AND version = ?
+                      AND (? IS NULL OR lease_owner = ?)""",
                 (
                     updated.status,
                     updated.version,
@@ -350,6 +344,8 @@ class BotStore:
                     updated.updated_at,
                     job_id,
                     expected_version,
+                    required_lease_owner,
+                    required_lease_owner,
                 ),
             )
             if cursor.rowcount != 1:
@@ -362,6 +358,7 @@ class BotStore:
         job_id: str,
         expected_version: int,
         event: JobEvent,
+        required_lease_owner: str | None = None,
         **changes: object,
     ) -> BotJob:
         """Atomically validate and persist a state transition plus its audit event."""
@@ -369,6 +366,7 @@ class BotStore:
         current = self.get_job(job_id)
         if current is None or current.version != expected_version:
             raise ValueError("BOT_JOB_VERSION_CONFLICT")
+        _require_job_lease(current, required_lease_owner)
         _validate_job_changes(changes)
         status = BotJobStateMachine.transition(
             current.status,
@@ -383,9 +381,11 @@ class BotStore:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 """UPDATE bot_jobs SET status=?, version=?, lease_owner=?, lease_until=?,
-                   job_json=?, updated_at=? WHERE job_id=? AND version=?""",
+                   job_json=?, updated_at=? WHERE job_id=? AND version=?
+                   AND (? IS NULL OR lease_owner=?)""",
                 (updated.status, updated.version, updated.lease_owner, updated.lease_until,
-                 updated.model_dump_json(), updated.updated_at, job_id, expected_version),
+                 updated.model_dump_json(), updated.updated_at, job_id, expected_version,
+                 required_lease_owner, required_lease_owner),
             )
             if cursor.rowcount != 1:
                 raise ValueError("BOT_JOB_VERSION_CONFLICT")
@@ -503,10 +503,11 @@ class BotStore:
         return self.update_job_fields(
             job_id,
             expected_version=job.version,
+            required_lease_owner=worker_id,
             lease_until=(datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat(),
         )
 
-    def record_progress(self, job_id: str, event_type: str) -> BotJob:
+    def record_progress(self, job_id: str, worker_id: str, event_type: str) -> BotJob:
         """Persist a bounded progress marker without RuntimeEvent payload content."""
 
         if not event_type or len(event_type) > 64:
@@ -517,17 +518,10 @@ class BotStore:
         return self.update_job_fields(
             job_id,
             expected_version=current.version,
+            required_lease_owner=worker_id,
             last_progress_event=event_type,
             last_progress_at=utc_now(),
         )
-
-    def save_approval(self, approval: BotApproval) -> None:
-        with self.connect() as connection:
-            connection.execute(
-                "INSERT INTO bot_approvals(approval_id, job_id, approval_json, created_at) VALUES(?, ?, ?, ?)",
-                (approval.approval_id, approval.job_id, approval.model_dump_json(), approval.created_at),
-            )
-        self.append_job_event(approval.job_id, "ApprovalRecorded", {"approval_id": approval.approval_id})
 
     def get_approval(self, approval_id: str) -> BotApproval | None:
         with self.connect() as connection:
@@ -623,24 +617,24 @@ class BotStore:
         self,
         job_id: str,
         artifact: IssuePlanArtifact | DeliveryDraft,
+        *,
+        required_lease_owner: str | None = None,
     ) -> str:
         artifact_id = str(uuid4())
         with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if required_lease_owner is not None:
+                row = connection.execute(
+                    "SELECT lease_owner FROM bot_jobs WHERE job_id=?", (job_id,)
+                ).fetchone()
+                if row is None or row[0] != required_lease_owner:
+                    raise ValueError("BOT_JOB_LEASE_LOST")
             connection.execute(
                 "INSERT INTO bot_artifacts(artifact_id, job_id, kind, artifact_json, created_at) VALUES(?, ?, ?, ?, ?)",
                 (artifact_id, job_id, artifact.evidence_type, artifact.model_dump_json(), utc_now()),
             )
+            connection.commit()
         return artifact_id
-
-    def save_job_input(self, job_id: str, value: dict[str, object]) -> None:
-        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        if len(encoded) > 500_000:
-            raise ValueError("GitHub issue evidence exceeds the bot input limit")
-        with self.connect() as connection:
-            connection.execute(
-                "INSERT INTO bot_job_inputs(job_id, input_json, created_at) VALUES(?, ?, ?)",
-                (job_id, encoded, utc_now()),
-            )
 
     def get_job_input(self, job_id: str) -> dict[str, object]:
         with self.connect() as connection:
@@ -708,11 +702,13 @@ class BotStore:
         expected_version: int,
         event: JobEvent,
         outbox_event: OutboxEvent,
+        required_lease_owner: str | None = None,
         **changes: object,
     ) -> BotJob:
         current = self.get_job(job_id)
         if current is None or current.version != expected_version:
             raise ValueError("BOT_JOB_VERSION_CONFLICT")
+        _require_job_lease(current, required_lease_owner)
         if outbox_event.job_id != job_id:
             raise ValueError("outbox event belongs to a different job")
         _validate_job_changes(changes)
@@ -734,7 +730,8 @@ class BotStore:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 """UPDATE bot_jobs SET status=?, version=?, lease_owner=?, lease_until=?,
-                   job_json=?, updated_at=? WHERE job_id=? AND version=?""",
+                   job_json=?, updated_at=? WHERE job_id=? AND version=?
+                   AND (? IS NULL OR lease_owner=?)""",
                 (
                     updated.status,
                     updated.version,
@@ -744,13 +741,15 @@ class BotStore:
                     updated.updated_at,
                     job_id,
                     expected_version,
+                    required_lease_owner,
+                    required_lease_owner,
                 ),
             )
             if cursor.rowcount != 1:
                 connection.rollback()
                 raise ValueError("BOT_JOB_VERSION_CONFLICT")
             connection.execute(
-                """INSERT OR IGNORE INTO outbox_events(event_id, job_id, kind, idempotency_key,
+                """INSERT INTO outbox_events(event_id, job_id, kind, idempotency_key,
                    status, attempts, next_attempt_at, event_json) VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     outbox_event.event_id,
@@ -846,9 +845,7 @@ class BotStore:
         job = self.get_job(job_id)
         if job is None:
             return
-        if job.version != expected_version or job.status not in {
-            "completed", "stale", "dead_letter", "cancelled"
-        }:
+        if job.version != expected_version or not BotJobStateMachine.is_terminal(job.status):
             raise ValueError("BOT_JOB_CLEANUP_CONFLICT")
         session_ids = [
             value
@@ -944,3 +941,8 @@ def _validate_job_changes(changes: dict[str, object]) -> None:
     reserved = {"status", "version", "updated_at"}.intersection(changes)
     if reserved:
         raise ValueError(f"BOT_JOB_RESERVED_FIELDS:{','.join(sorted(reserved))}")
+
+
+def _require_job_lease(job: BotJob, required_owner: str | None) -> None:
+    if required_owner is not None and job.lease_owner != required_owner:
+        raise ValueError("BOT_JOB_LEASE_LOST")

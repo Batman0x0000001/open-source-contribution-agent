@@ -13,8 +13,8 @@ import typer
 from pydantic import JsonValue
 
 from osc_agent.application import (
-    SkillInput,
     UserPrompt,
+    UserSkillInput,
 )
 from osc_agent.cli.agent import (
     approve_tool,
@@ -185,12 +185,6 @@ def run_skill(
         raise typer.BadParameter(f"--arguments must be valid JSON: {exc.msg}") from exc
     if not isinstance(payload, dict):
         raise typer.BadParameter("--arguments must decode to an object")
-    catalog = build_skill_catalog(repo)
-    descriptor = catalog.get(name)
-    if descriptor is None:
-        raise typer.BadParameter(f"unknown skill: {name}")
-    if descriptor not in catalog.list_user_invocable():
-        raise typer.BadParameter("skill is not user invocable")
     _run_inline_skill(name, repo, payload, once=once, quiet=quiet)
 
 
@@ -203,20 +197,21 @@ def _run_inline_skill(
     quiet: bool,
 ) -> None:
     session_id = str(uuid4())
-    agent_application = build_cli_application(
-        repo,
-        build_skill_profile(name),
-        approval_handler=approve_tool,
-        question_handler=ask_questions,
-    )
-    conversation = agent_application.open_session(session_id)
-    typer.echo(f"Session: {session_id}")
-
     try:
+        agent_application = build_cli_application(
+            repo,
+            build_skill_profile(name),
+            approval_handler=approve_tool,
+            question_handler=ask_questions,
+        )
+        conversation = agent_application.open_session(session_id)
+        typer.echo(f"Session: {session_id}")
         run_conversation(
             conversation=conversation,
             repository_root=repo,
-            initial_events=conversation.start(SkillInput(name=name, arguments=arguments)),
+            initial_events=conversation.start(
+                UserSkillInput(name=name, arguments=arguments)
+            ),
             once=once,
             quiet=quiet,
         )

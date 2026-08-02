@@ -22,6 +22,7 @@ from osc_agent.application import (
 from osc_agent.application.agent import ApprovalHandler, QuestionHandler
 from osc_agent.application.session_summary import build_session_summary
 from osc_agent.configuration import load_agent_settings
+from osc_agent.cli.sessions import render_session_summary
 from osc_agent.runtime.events import (
     AssistantDelta,
     ContextCompacted,
@@ -181,33 +182,11 @@ def _render_summary(conversation: AgentConversation, repository_root: Path) -> N
     snapshot = conversation.snapshot()
     if snapshot is None:
         return
-    summary = build_session_summary(snapshot)
-    typer.echo("\nSummary")
-    typer.echo(f"  Session: {summary.session_id}")
-    typer.echo(f"  Status: {summary.status}")
-    typer.echo(f"  Working directory: {summary.working_directory}")
-    if summary.worktree_path is not None:
-        typer.echo(f"  Worktree: {summary.worktree_path} ({summary.worktree_branch})")
-    typer.echo(
-        "  Touched files: "
-        + (", ".join(summary.touched_files) if summary.touched_files else "not collected")
+    render_session_summary(
+        build_session_summary(snapshot),
+        repository_root,
+        heading="Summary",
     )
-    test = "not collected"
-    if summary.last_test_success is not None:
-        test = "PASS (test command recorded)" if summary.last_test_success else "FAIL (test command recorded)"
-    typer.echo(f"  Test: {test}")
-    typer.echo(f"  Verify: {summary.verification_verdict or 'not collected'}")
-    if summary.snapshot_complete is not None:
-        typer.echo(
-            "  Git snapshot: "
-            f"{'complete' if summary.snapshot_complete else 'truncated'}, "
-            f"{len(summary.snapshot_files)} files"
-        )
-    else:
-        typer.echo("  Git snapshot: not collected")
-    if summary.reason:
-        typer.echo(f"  Reason: {_bounded(summary.reason, 200)}")
-    typer.echo(f'  Resume: osc-agent resume --repo "{repository_root}" {summary.session_id}')
 
 
 def _status(text: str, quiet: bool) -> None:

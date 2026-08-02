@@ -8,7 +8,7 @@ import pytest
 
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock
 from osc_agent.runtime.session import SessionMetadata
-from osc_agent.runtime.session_store import FileSessionStore
+from osc_agent.runtime.session_store import FileSessionStore, FileToolResultStore
 from osc_agent.runtime.state import PlanModeEntered, PlanSaved
 from tests.runtime_factories import agent_run_state
 
@@ -110,3 +110,22 @@ def test_session_overviews_sort_and_skip_invalid_for_latest(tmp_path: Path) -> N
     assert {item.session_id for item in overviews} == {"older", "newer", "invalid"}
     assert next(item for item in overviews if item.session_id == "invalid").status == "invalid"
     assert store.latest_session_id() in {"older", "newer"}
+
+
+def test_tool_result_identity_is_idempotent_and_rejects_content_drift(
+    tmp_path: Path,
+) -> None:
+    store = FileToolResultStore(tmp_path)
+
+    first = store.persist(
+        session_id="session-1", tool_use_id="call-1", content="stable"
+    )
+    second = store.persist(
+        session_id="session-1", tool_use_id="call-1", content="stable"
+    )
+
+    assert first == second == "call-1"
+    with pytest.raises(ValueError, match="different content"):
+        store.persist(
+            session_id="session-1", tool_use_id="call-1", content="changed"
+        )

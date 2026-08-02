@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from typing import Literal
@@ -23,10 +22,7 @@ from osc_agent.subagents.registry import (
     SubagentRegistry,
 )
 from osc_agent.subagents.runner import SubagentRunner
-from osc_agent.subagents.workspace_guard import (
-    capture_workspace_fingerprint,
-    verify_workspace_unchanged,
-)
+from osc_agent.subagents.workspace_guard import SubagentWorkspaceError
 
 
 MAX_AGENT_OUTPUT_CHARS = 30_000
@@ -55,7 +51,6 @@ class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
     def __init__(self, runner: SubagentRunner, registry: SubagentRegistry) -> None:
         self.runner = runner
         self.registry = registry
-        self._semaphores: dict[str, asyncio.Semaphore] = {}
 
     @property
     def description(self) -> str:
@@ -83,7 +78,7 @@ class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
         registration = self.registry.get(input.agent)
         return bool(registration and registration.concurrency_safe)
 
-    def is_destructive(self, input: AgentToolInput) -> bool:
+    def requires_approval(self, input: AgentToolInput) -> bool:
         registration = self.registry.get(input.agent)
         return bool(registration and not registration.read_only)
 
@@ -97,19 +92,21 @@ class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
             return arguments
 
         prompt = f"Task:\n{input.task}\n\n" + registration.prompt_builder(arguments)
-        executed, workspace_fingerprint = await self._execute(
-            input.agent,
-            registration,
-            prompt,
-            context,
-        )
-        if isinstance(executed, ToolResult):
-            return executed
+        try:
+            executed = await self.runner.run(
+                input.agent,
+                SubagentRequest(
+                    prompt=prompt,
+                    working_directory=context.workspace.working_directory,
+                    caller_capabilities=context.capabilities,
+                ),
+            )
+        except SubagentWorkspaceError as exc:
+            return _error(exc.code, str(exc))
         return self._validate_result(
             input.agent,
             registration,
             executed,
-            workspace_fingerprint,
             context,
         )
 
@@ -127,58 +124,11 @@ class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
         except ValidationError as exc:
             return _error("AGENT_INPUT_INVALID", str(exc))
 
-    async def _execute(
-        self,
-        name: str,
-        registration: SubagentRegistration,
-        prompt: str,
-        context: ToolContext,
-    ) -> tuple[SubagentRunResult | ToolResult, str | None]:
-        semaphore = self._semaphores.setdefault(
-            name,
-            asyncio.Semaphore(registration.max_parallel),
-        )
-        async with semaphore:
-            before = None
-            workspace_fingerprint = None
-            if registration.read_only:
-                before = await capture_workspace_fingerprint(context)
-                if isinstance(before, ToolResult):
-                    return before, None
-            try:
-                run = await self.runner.run(
-                    name,
-                    SubagentRequest(
-                        prompt=prompt,
-                        working_directory=context.workspace.working_directory,
-                        caller_capabilities=context.capabilities,
-                        parent_messages=tuple(context.transcript_messages),
-                    ),
-                )
-            except (asyncio.CancelledError, Exception):
-                if registration.read_only:
-                    guard_error, workspace_fingerprint = await verify_workspace_unchanged(
-                        before,
-                        context,
-                    )
-                    if guard_error is not None:
-                        return guard_error, workspace_fingerprint
-                raise
-            if registration.read_only:
-                guard_error, workspace_fingerprint = await verify_workspace_unchanged(
-                    before,
-                    context,
-                )
-                if guard_error is not None:
-                    return guard_error, workspace_fingerprint
-        return run, workspace_fingerprint
-
     @staticmethod
     def _validate_result(
         name: str,
         registration: SubagentRegistration,
         run: SubagentRunResult,
-        workspace_fingerprint: str | None,
         context: ToolContext,
     ) -> ToolResult:
         if run.status != "completed":
@@ -189,7 +139,7 @@ class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
                     "child_session_id": run.session_id,
                     "result": None,
                     "error": run.error or run.status,
-                    "workspace_fingerprint": workspace_fingerprint,
+                    "workspace_fingerprint": run.workspace_fingerprint,
                 }
             )
         if len(run.output) > MAX_AGENT_OUTPUT_CHARS:
@@ -209,7 +159,7 @@ class AgentTool(BaseTool[AgentToolInput, AgentToolOutput]):
                 "child_session_id": run.session_id,
                 "result": output.model_dump(mode="json"),
                 "error": None,
-                "workspace_fingerprint": workspace_fingerprint,
+                "workspace_fingerprint": run.workspace_fingerprint,
             }
         )
 

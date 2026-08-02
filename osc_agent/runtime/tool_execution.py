@@ -91,6 +91,14 @@ class ToolExecutor:
             )
             if isinstance(generally_allowed_input, ToolResult):
                 return _with_grants(generally_allowed_input, granted)
+            if isinstance(permission, Ask) or generally_allowed_input != parsed:
+                validation_error = await _revalidate_input(
+                    tool,
+                    generally_allowed_input,
+                    context,
+                )
+                if validation_error is not None:
+                    return _with_grants(validation_error, granted)
 
             tool_permission = await tool.check_permissions(generally_allowed_input, context)
             allowed_input = await self._resolve_permission(
@@ -102,6 +110,10 @@ class ToolExecutor:
             )
             if isinstance(allowed_input, ToolResult):
                 return _with_grants(allowed_input, granted)
+            if isinstance(tool_permission, Ask) or allowed_input != generally_allowed_input:
+                validation_error = await _revalidate_input(tool, allowed_input, context)
+                if validation_error is not None:
+                    return _with_grants(validation_error, granted)
 
             serialized_input: dict[str, JsonValue] = allowed_input.model_dump(mode="json")
             hook_result = await self.hooks.run_pre_tool_use(
@@ -125,7 +137,7 @@ class ToolExecutor:
                     PostToolUsePayload(
                         tool_name=tool.name,
                         input=serialized_input,
-                        result=result,
+                        result=result.model_copy(deep=True),
                     ),
                     context,
                 )
@@ -208,6 +220,19 @@ def _validate_output(
     except ValidationError as exc:
         return _error("TOOL_OUTPUT_INVALID", str(exc))
     return result.model_copy(update={"data": output.model_dump(mode="json")})
+
+
+async def _revalidate_input(
+    tool: Tool[ContractModel, ContractModel],
+    input: ContractModel,
+    context: ToolContext,
+) -> ToolResult | None:
+    """审批等待或权限改写后，重新确认即将执行的输入仍然有效。"""
+
+    validation = await tool.validate_input(input, context)
+    if isinstance(validation, ValidationFailure):
+        return _error("TOOL_VALIDATION_FAILED", validation.reason)
+    return None
 
 
 def _error(code: str, message: str) -> ToolResult:

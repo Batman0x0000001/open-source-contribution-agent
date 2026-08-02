@@ -1,4 +1,4 @@
-"""查询仓库级 Session，并把 V5 Snapshot 投影为只读 CLI 输出。"""
+"""查询仓库级 Session，并把 V6 Snapshot 投影为统一的只读 CLI 输出。"""
 
 from __future__ import annotations
 
@@ -59,24 +59,51 @@ def show_session(repository_root: Path, session_id: str, *, messages: int) -> No
             typer.echo(f"  {message.role}: {_message_preview(message)}")
 
 
-def render_session_summary(summary: SessionSummary, repository_root: Path) -> None:
-    typer.echo(f"Session: {summary.session_id}")
-    typer.echo(f"Status: {summary.status}")
-    typer.echo(f"Working directory: {summary.working_directory}")
+def render_session_summary(
+    summary: SessionSummary,
+    repository_root: Path,
+    *,
+    heading: str | None = None,
+) -> None:
+    prefix = "  " if heading is not None else ""
+    if heading is not None:
+        typer.echo(f"\n{heading}")
+    typer.echo(f"{prefix}Session: {summary.session_id}")
+    typer.echo(f"{prefix}Status: {summary.status}")
+    typer.echo(f"{prefix}Working directory: {summary.working_directory}")
+    if summary.worktree_path is not None:
+        typer.echo(
+            f"{prefix}Worktree: {summary.worktree_path} ({summary.worktree_branch})"
+        )
     typer.echo(
-        "Touched files: "
+        f"{prefix}Touched files: "
         + (", ".join(summary.touched_files) if summary.touched_files else "not collected")
     )
-    typer.echo(
-        "Test: "
-        + (
-            ("PASS" if summary.last_test_success else "FAIL")
-            if summary.last_test_success is not None
-            else "not collected"
+    test = "not collected"
+    if summary.last_test_success is not None:
+        test = (
+            "PASS (test command recorded)"
+            if summary.last_test_success
+            else "FAIL (test command recorded)"
         )
+    typer.echo(f"{prefix}Test: {test}")
+    typer.echo(
+        f"{prefix}Verify: {summary.verification_verdict or 'not collected'}"
     )
-    typer.echo(f"Verify: {summary.verification_verdict or 'not collected'}")
-    typer.echo(f'RESUME: osc-agent resume --repo "{repository_root}" {summary.session_id}')
+    if summary.snapshot_complete is not None:
+        typer.echo(
+            f"{prefix}Git snapshot: "
+            f"{'complete' if summary.snapshot_complete else 'truncated'}, "
+            f"{len(summary.snapshot_files)} files"
+        )
+    else:
+        typer.echo(f"{prefix}Git snapshot: not collected")
+    if summary.reason:
+        typer.echo(f"{prefix}Reason: {_bounded(summary.reason, 200)}")
+    typer.echo(
+        f'{prefix}Resume: osc-agent resume --repo "{repository_root}" '
+        f"{summary.session_id}"
+    )
 
 
 def _message_preview(message: RuntimeMessage) -> str:
@@ -90,3 +117,7 @@ def _message_preview(message: RuntimeMessage) -> str:
         elif isinstance(block, ToolResultBlock):
             parts.append(f"[tool_result {block.tool_use_id} {'error' if block.is_error else 'ok'}]")
     return " ".join(parts)
+
+
+def _bounded(value: str, limit: int) -> str:
+    return value if len(value) <= limit else value[: limit - 1] + "…"

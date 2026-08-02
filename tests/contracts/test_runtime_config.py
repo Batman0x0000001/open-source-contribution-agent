@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from textwrap import indent
 
 import pytest
 from pydantic import ValidationError
@@ -104,3 +105,34 @@ def test_runtime_config_rejects_invalid_files(
 
     with pytest.raises((ValueError, ValidationError), match=error):
         load_runtime_config(path)
+
+
+@pytest.mark.parametrize(
+    ("loader", "error"),
+    [
+        (load_runtime_config, "unable to read runtime config"),
+        (load_repository_catalog, "unable to read bot repositories config"),
+    ],
+)
+def test_config_loaders_share_yaml_error_normalization(
+    tmp_path: Path,
+    loader,
+    error: str,
+) -> None:
+    path = tmp_path / "invalid.yml"
+    path.write_text("runtime: [", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=error):
+        loader(path)
+
+
+def test_combined_config_requires_the_requested_section(tmp_path: Path) -> None:
+    repositories_only = tmp_path / "repositories.yml"
+    repositories_only.write_text("repositories: {}\n", encoding="utf-8")
+    runtime_only = tmp_path / "runtime.yml"
+    runtime_only.write_text("runtime:\n" + indent(_runtime_yaml(), "  "), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="missing runtime section"):
+        load_runtime_config(repositories_only)
+    with pytest.raises(ValueError, match="missing repositories section"):
+        load_repository_catalog(runtime_only)

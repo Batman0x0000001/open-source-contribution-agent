@@ -12,6 +12,7 @@ from osc_agent.bot.config import BotControlSettings
 from osc_agent.bot.control.commands import parse_webhook_command
 from osc_agent.bot.control.handler import BotControlService
 from osc_agent.bot.domain.artifacts import IssuePlanArtifact
+from osc_agent.bot.domain.jobs import BotJob
 from osc_agent.bot.domain.repositories import RepositoryBotCatalog, RepositoryBotConfig
 from osc_agent.bot.domain.state_machine import JobEvent
 from osc_agent.bot.persistence.store import BotStore
@@ -98,6 +99,17 @@ def test_control_creates_plan_and_bound_implementation_approval(tmp_path: Path) 
     contract = store.get_execution_contract(job.execution_contract_hash)
     assert contract is not None and contract.model_id == settings.model_id
     assert store.get_job_input(job_id)["trust"] == "untrusted_external"
+    for comment_id in (41, 42):
+        status_payload = _payload("/osa status")
+        status_payload["comment"] = {"id": comment_id, "body": "/osa status"}
+        assert asyncio.run(control.handle_issue_comment(status_payload)) == "queued_plan"
+    with store.connect() as connection:
+        status_keys = connection.execute(
+            "SELECT idempotency_key FROM outbox_events "
+            "WHERE idempotency_key LIKE ? ORDER BY idempotency_key",
+            (f"comment:{job_id}:status:%",),
+        ).fetchall()
+    assert len(status_keys) == 2
     plan = IssuePlanArtifact(
         status="ready",
         base_sha=job.base_sha,
@@ -142,3 +154,39 @@ def test_control_rejects_non_writer(tmp_path: Path) -> None:
     )
     with pytest.raises(PermissionError):
         asyncio.run(control.handle_issue_comment(_payload("/osa plan")))
+
+
+@pytest.mark.parametrize("status", ["completed", "stale", "dead_letter", "cancelled"])
+def test_cancel_is_idempotent_for_every_terminal_status(status: str) -> None:
+    control = object.__new__(BotControlService)
+    job = BotJob(
+        job_id=str(uuid4()),
+        repository_id=1,
+        repository_full_name="owner/repo",
+        installation_id=1,
+        issue_number=1,
+        issue_url="https://github.com/owner/repo/issues/1",
+        base_sha="a" * 40,
+        image_id=IMAGE_ID,
+        status=status,
+    )
+
+    assert control._cancel(job) == status
+
+
+def test_cancel_rejects_the_non_atomic_publishing_window() -> None:
+    control = object.__new__(BotControlService)
+    job = BotJob(
+        job_id=str(uuid4()),
+        repository_id=1,
+        repository_full_name="owner/repo",
+        installation_id=1,
+        issue_number=1,
+        issue_url="https://github.com/owner/repo/issues/1",
+        base_sha="a" * 40,
+        image_id=IMAGE_ID,
+        status="publishing",
+    )
+
+    with pytest.raises(ValueError, match="can no longer be cancelled"):
+        control._cancel(job)

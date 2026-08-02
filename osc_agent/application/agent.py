@@ -35,7 +35,7 @@ from osc_agent.skills.invocation_tool import SkillTool
 from osc_agent.skills.models import PreparedSkill, SkillRequest
 from osc_agent.skills.preparer import SkillPreparer
 from osc_agent.skills.resource_tool import ReadSkillResourceTool
-from osc_agent.subagents.builtins import build_explore_subagent, build_verify_subagent
+from osc_agent.subagents.builtins import build_default_subagents
 from osc_agent.subagents.registry import SubagentRegistration, SubagentRegistry
 from osc_agent.subagents.runner import SubagentRunner
 from osc_agent.subagents.tool import AgentTool
@@ -56,12 +56,20 @@ class UserPrompt(FrozenContractModel):
     text: str = Field(min_length=1)
 
 
-class SkillInput(FrozenContractModel):
+class _SkillInput(FrozenContractModel):
     name: str = Field(min_length=1)
     arguments: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-AgentInput = UserPrompt | SkillInput
+class UserSkillInput(_SkillInput):
+    """用户从产品入口直接请求调用的 Skill。"""
+
+
+class ProductSkillInput(_SkillInput):
+    """受信产品流程代表自身启动的 Skill。"""
+
+
+AgentInput = UserPrompt | UserSkillInput | ProductSkillInput
 ApprovalHandler = Callable[[Ask], Awaitable[ApprovalResponse]]
 QuestionHandler = Callable[[list[dict[str, JsonValue]]], Awaitable[dict[str, str]]]
 
@@ -135,8 +143,11 @@ class AgentConversation:
     async def start(self, input: AgentInput) -> AsyncIterator[RuntimeEvent]:
         """显式启动新 Session；存在性由 Runtime 在 lease 内验证。"""
 
-        if not isinstance(input, (UserPrompt, SkillInput)):
-            raise ValueError("new Agent Session requires a UserPrompt or SkillInput")
+        if not isinstance(input, (UserPrompt, UserSkillInput, ProductSkillInput)):
+            raise ValueError(
+                "new Agent Session requires a UserPrompt, UserSkillInput, "
+                "or ProductSkillInput"
+            )
         app = self._application
         resolved = await self._resolve_input(input)
         async for event in app._runtime.query(
@@ -185,7 +196,7 @@ class AgentConversation:
                 name=input.name,
                 arguments=input.arguments,
                 caller_capabilities=capabilities,
-                trigger="product",
+                trigger=("user" if isinstance(input, UserSkillInput) else "product"),
             )
         )
         if not isinstance(prepared, PreparedSkill):
@@ -253,20 +264,28 @@ def build_agent_application(config: AgentApplicationConfig) -> AgentApplication:
     subagents = SubagentRegistry(
         list(config.subagent_registrations)
         if config.subagent_registrations is not None
-        else [
-            build_explore_subagent(
-                model=model, config=settings.runtime.agents.explore.to_query_config()
-            ),
-            build_verify_subagent(
-                model=model, config=settings.runtime.agents.verify.to_query_config()
-            ),
-        ]
+        else list(
+            build_default_subagents(
+                model=model,
+                explore_config=settings.runtime.agents.explore.to_query_config(),
+                verify_config=settings.runtime.agents.verify.to_query_config(),
+            )
+        )
     )
     subagent_runner = SubagentRunner(runtime, subagents, default_model=model)
     skill_preparer = SkillPreparer(catalog)
     registry.register(SkillTool(skill_preparer))
     registry.register(AgentTool(subagent_runner, subagents))
-    capabilities = _validate_product_contracts(config, catalog, registry.names())
+    tool_names = registry.names()
+    _validate_application_contracts(
+        config,
+        catalog,
+        subagents,
+        tool_names,
+    )
+    registered = CapabilityScope(allowed_tools=frozenset(tool_names))
+    profile = CapabilityScope(allowed_tools=config.profile.allowed_tools)
+    capabilities = registered.intersect(profile)
     return AgentApplication(
         runtime=runtime,
         session_store=session_store,
@@ -279,13 +298,15 @@ def build_agent_application(config: AgentApplicationConfig) -> AgentApplication:
     )
 
 
-def _validate_product_contracts(
+def _validate_application_contracts(
     config: AgentApplicationConfig,
     catalog: SkillCatalog,
+    subagents: SubagentRegistry,
     tool_names: list[str],
-) -> CapabilityScope:
+) -> None:
     known_tools = set(tool_names)
     catalog.validate_allowed_tools(known_tools)
+    subagents.validate_allowed_tools(known_tools)
     if config.profile.allowed_tools is not None:
         unknown = config.profile.allowed_tools - known_tools
         if unknown:
@@ -295,9 +316,6 @@ def _validate_product_contracts(
     }
     if unknown_skills:
         raise ValueError("Agent Profile references unknown initial Skills: " + ", ".join(sorted(unknown_skills)))
-    registered = CapabilityScope(allowed_tools=frozenset(tool_names))
-    profile = CapabilityScope(allowed_tools=config.profile.allowed_tools)
-    return registered.intersect(profile)
 
 
 _SYSTEM_POLICY_PROMPT = """<external_content_policy>

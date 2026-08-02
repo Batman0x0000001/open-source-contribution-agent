@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
-import yaml
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from osc_agent.bot.domain.repositories import RepositoryBotCatalog
+from osc_agent.configuration.source import load_config_section
 
 
 class BotControlSettings(BaseSettings):
@@ -104,16 +103,12 @@ class BotMaintenanceSettings(BaseSettings):
 
 
 def load_repository_catalog(path: Path) -> RepositoryBotCatalog:
-    try:
-        raw: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise ValueError(f"unable to read bot repositories config: {exc}") from exc
-    if isinstance(raw, dict) and "runtime" in raw:
-        unknown = set(raw) - {"runtime", "repositories"}
-        if unknown:
-            raise ValueError(f"unknown production config sections: {', '.join(sorted(unknown))}")
-        raw = {"repositories": raw.get("repositories")}
-    catalog = RepositoryBotCatalog.model_validate(raw)
+    repositories = load_config_section(
+        path,
+        section="repositories",
+        source_name="bot repositories",
+    )
+    catalog = RepositoryBotCatalog.model_validate({"repositories": repositories})
     _validate_execution_policy(catalog)
     return catalog
 

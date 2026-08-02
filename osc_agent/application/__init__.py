@@ -6,8 +6,9 @@ from osc_agent.application.agent import (
     AgentConversation,
     AgentInput,
     AgentProfile,
-    SkillInput,
+    ProductSkillInput,
     UserPrompt,
+    UserSkillInput,
     build_agent_application,
 )
 
@@ -17,7 +18,8 @@ __all__ = [
     "AgentConversation",
     "AgentInput",
     "AgentProfile",
-    "SkillInput",
+    "ProductSkillInput",
     "UserPrompt",
+    "UserSkillInput",
     "build_agent_application",
 ]

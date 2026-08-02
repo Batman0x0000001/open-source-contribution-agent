@@ -72,9 +72,12 @@ class BotJobStateMachine(StateMachine):
         | queued_implementation.to(cancelled)
         | running_implementation.to(cancelled)
         | ready_to_publish.to(cancelled)
-        | publishing.to(cancelled)
         | retry_wait.to(cancelled)
     )
+
+    @classmethod
+    def is_terminal(cls, status: str) -> bool:
+        return any(state.final and state.value == status for state in cls.states)
 
     @classmethod
     def transition(cls, current: str, event: JobEvent, *, retry_phase: str | None = None) -> str:

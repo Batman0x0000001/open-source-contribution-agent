@@ -67,7 +67,7 @@ class InvalidOutputTool(EchoTool):
 class DestructiveTool(EchoTool):
     name = "destructive"
 
-    def is_destructive(self, input: EchoInput) -> bool:
+    def requires_approval(self, input: EchoInput) -> bool:
         return True
 
 
@@ -93,6 +93,19 @@ class RejectedTool(EchoTool):
 
     async def validate_input(self, input: EchoInput, context: tool_context):
         return ValidationFailure(reason="domain validation failed")
+
+
+class UnclassifiedTool(BaseTool[EchoInput, EchoOutput]):
+    name = "unclassified"
+    input_model = EchoInput
+    output_model = EchoOutput
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def call(self, input: EchoInput, context: tool_context) -> ToolResult:
+        self.calls += 1
+        return ToolResult(data={"value": input.value})
 
 
 def context(*, allowed_tools: frozenset[str] | None = None) -> tool_context:
@@ -169,6 +182,20 @@ def test_destructive_tool_requires_explicit_approval() -> None:
     assert denied_result.error and denied_result.error.code == "PERMISSION_REQUIRED"
     assert approved_result.error is None
     assert tool.calls == 1
+
+
+def test_unclassified_non_read_only_tool_requires_explicit_approval() -> None:
+    tool = UnclassifiedTool()
+
+    result = asyncio.run(
+        ToolExecutor(ToolRegistry([tool])).execute(
+            ToolUseBlock(id="1", name=tool.name, input={"value": "x"}),
+            context(),
+        )
+    )
+
+    assert result.error and result.error.code == "PERMISSION_REQUIRED"
+    assert tool.calls == 0
 
 
 def test_general_approval_does_not_bypass_tool_specific_permission() -> None:
@@ -280,6 +307,40 @@ def test_validation_and_pre_hook_run_before_call() -> None:
     assert tool.calls == 0
 
 
+def test_input_is_revalidated_after_waiting_for_approval(tmp_path) -> None:
+    marker = tmp_path / "still-valid"
+    marker.write_text("yes", encoding="utf-8")
+
+    class ApprovalSensitiveTool(DestructiveTool):
+        name = "approval_sensitive"
+
+        async def validate_input(self, input: EchoInput, context: tool_context):
+            if not marker.is_file():
+                return ValidationFailure(reason="approved precondition changed")
+            return await super().validate_input(input, context)
+
+    async def approve(_decision: Ask) -> ApprovalResponse:
+        marker.unlink()
+        return ApprovalResponse(choice="allow_once")
+
+    tool = ApprovalSensitiveTool()
+    executor = ToolExecutor(
+        ToolRegistry([tool]),
+        dependencies=ToolExecutionDependencies(approval_handler=approve),
+    )
+
+    result = asyncio.run(
+        executor.execute(
+            ToolUseBlock(id="approval", name=tool.name, input={"value": "x"}),
+            context(),
+        )
+    )
+
+    assert result.error and result.error.code == "TOOL_VALIDATION_FAILED"
+    assert result.error.message == "approved precondition changed"
+    assert tool.calls == 0
+
+
 def test_pre_hook_can_block_and_post_hook_observes_success() -> None:
     events: list[str] = []
     tool = EchoTool()
@@ -314,7 +375,7 @@ def test_unexpected_pre_execution_failures_are_structured(phase: str) -> None:
     class PhaseTool(EchoTool):
         name = "phase"
 
-        def is_destructive(self, input: EchoInput) -> bool:
+        def requires_approval(self, input: EchoInput) -> bool:
             return phase == "approval"
 
         async def validate_input(self, input: EchoInput, context: tool_context):
@@ -392,6 +453,25 @@ def test_post_hook_failure_preserves_the_completed_tool_result() -> None:
     assert raised.value.tool_use_id == "post-1"
     assert raised.value.result.error is None
     assert raised.value.result.data == {"value": "done"}
+
+
+def test_post_hook_cannot_mutate_the_completed_tool_result() -> None:
+    hooks = HookRegistry()
+
+    async def mutating_hook(payload, context) -> None:
+        payload.result.data["value"] = "mutated"
+
+    hooks.register_post_tool_use(mutating_hook)
+    executor = ToolExecutor(ToolRegistry([EchoTool()]), hooks=hooks)
+
+    result = asyncio.run(
+        executor.execute(
+            ToolUseBlock(id="post-1", name="echo", input={"value": "original"}),
+            context(),
+        )
+    )
+
+    assert result.data == {"value": "original"}
 
 
 def test_pipeline_does_not_swallow_cancellation() -> None:

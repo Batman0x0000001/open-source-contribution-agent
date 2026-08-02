@@ -41,7 +41,7 @@ class EnterPlanModeTool(BaseTool[EmptyInput, ModeOutput]):
     def is_read_only(self, input: EmptyInput) -> bool:
         return True
 
-    def is_destructive(self, input: EmptyInput) -> bool:
+    def requires_approval(self, input: EmptyInput) -> bool:
         return True
 
     async def validate_input(
@@ -79,6 +79,9 @@ class WritePlanTool(BaseTool[WritePlanInput, WritePlanOutput]):
 
     def is_read_only(self, input: WritePlanInput) -> bool:
         # 这是 Plan Mode 唯一允许的受控写操作，不接受模型提供的路径。
+        return False
+
+    def requires_approval(self, input: WritePlanInput) -> bool:
         return False
 
     async def validate_input(
@@ -142,7 +145,7 @@ class ExitPlanModeTool(BaseTool[EmptyInput, ModeOutput]):
     def is_read_only(self, input: EmptyInput) -> bool:
         return True
 
-    def is_destructive(self, input: EmptyInput) -> bool:
+    def requires_approval(self, input: EmptyInput) -> bool:
         return True
 
     async def validate_input(

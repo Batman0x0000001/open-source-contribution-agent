@@ -40,8 +40,12 @@ def test_bash_tool_uses_non_shell_process_runner_contract(tmp_path: Path) -> Non
 
 
 def test_bash_read_only_classification_is_narrow() -> None:
-    assert is_read_only_command("git status --short")
     assert is_read_only_command("rg needle .")
+    assert not is_read_only_command("git status --short")
+    assert not is_read_only_command("git diff --output=result.patch")
+    assert not is_read_only_command("git diff --ext-diff")
+    assert not is_read_only_command("git log -p --output=history.txt")
+    assert not is_read_only_command("git show --ext-diff HEAD")
     assert not is_read_only_command("git push origin main")
     assert not is_read_only_command("rg needle . | tee result.txt")
 

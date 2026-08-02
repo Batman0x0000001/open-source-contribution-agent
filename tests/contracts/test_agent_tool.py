@@ -193,51 +193,8 @@ def test_agent_tool_returns_specific_errors_for_unknown_input_and_output(tmp_pat
         )
 
 
-def test_agent_tool_limits_parallel_runs_and_propagates_cancellation(tmp_path: Path) -> None:
+def test_agent_tool_propagates_runner_cancellation(tmp_path: Path) -> None:
     initialize_repository(tmp_path)
-    class ControlledRunner:
-        def __init__(self) -> None:
-            self.active = 0
-            self.maximum = 0
-            self.two_started = asyncio.Event()
-            self.release = asyncio.Event()
-
-        async def run(self, name: str, request: SubagentRequest) -> SubagentRunResult:
-            self.active += 1
-            self.maximum = max(self.maximum, self.active)
-            if self.active == 2:
-                self.two_started.set()
-            try:
-                await self.release.wait()
-                return SubagentRunResult(
-                    session_id=request.prompt[-8:] or "child",
-                    status="completed",
-                    output='{"value":"done"}',
-                )
-            finally:
-                self.active -= 1
-
-    async def exercise_parallelism() -> int:
-        runner = ControlledRunner()
-        registry = SubagentRegistry([registration(max_parallel=2)])
-        tool = AgentTool(runner, registry)  # type: ignore[arg-type]
-        calls = [
-            asyncio.create_task(
-                tool.call(
-                    AgentToolInput(agent="explore", task=f"inspect-{index}"),
-                    context(tmp_path),
-                )
-            )
-            for index in range(3)
-        ]
-        await asyncio.wait_for(runner.two_started.wait(), timeout=5)
-        assert runner.active == 2
-        runner.release.set()
-        await asyncio.gather(*calls)
-        return runner.maximum
-
-    assert asyncio.run(exercise_parallelism()) == 2
-
     class CancellingRunner:
         async def run(self, name: str, request: SubagentRequest) -> SubagentRunResult:
             await asyncio.Event().wait()

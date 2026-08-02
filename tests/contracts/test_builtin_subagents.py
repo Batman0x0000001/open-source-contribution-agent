@@ -20,7 +20,9 @@ from osc_agent.subagents.builtins.verify import (
 )
 from osc_agent.subagents.models import SubagentRequest, SubagentRunResult
 from osc_agent.subagents.registry import SubagentRegistry
+from osc_agent.subagents.runner import SubagentRunner
 from osc_agent.subagents.tool import AgentTool, AgentToolInput
+from osc_agent.subagents.workspace_guard import SubagentWorkspaceError
 
 from osc_agent.configuration.runtime import default_runtime_config_path, load_runtime_config
 
@@ -59,7 +61,6 @@ def test_verify_registration_is_minimal_read_only_and_bounded() -> None:
     registration = build_verify_subagent(model="test-model", config=VERIFY_CONFIG)
 
     assert registration.definition.name == "verify"
-    assert registration.definition.context_policy == "minimal"
     assert registration.definition.capabilities.allowed_tools == VERIFY_TOOLS
     assert registration.definition.config.max_rounds == 16
     assert registration.definition.config.max_total_tokens == 60_000
@@ -215,47 +216,56 @@ def test_verify_prompt_states_semantic_output_constraints() -> None:
     assert "blocked checks require exit_code null" in prompt
 
 
-def test_read_only_agent_guard_fails_closed_and_preserves_changes(tmp_path: Path) -> None:
+def test_read_only_agent_guard_fails_closed_and_preserves_changes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     initialize_repository(tmp_path)
-
-    class MutatingRunner:
-        async def run(self, name: str, request: SubagentRequest) -> SubagentRunResult:
-            (Path(request.working_directory) / "unexpected.bin").write_bytes(b"\x00\x01")
-            return SubagentRunResult(session_id="child", status="completed", output="{}")
-
     registry = SubagentRegistry(
         [build_verify_subagent(model="test-model", config=VERIFY_CONFIG)]
     )
-    result = asyncio.run(
-        AgentTool(MutatingRunner(), registry).call(
-            AgentToolInput(
-                agent="verify",
-                task="verify",
-                arguments={
-                    "original_goal": "goal",
-                    "implementation_summary": "summary",
-                },
-            ),
-            context(tmp_path),
-        )
+    runner = SubagentRunner(
+        object(),  # type: ignore[arg-type]
+        registry,
+        default_model="test-model",
+        session_id_factory=lambda: "child",
     )
 
-    assert result.error and result.error.code == "AGENT_READ_ONLY_VIOLATION"
+    async def mutate_workspace(
+        session_id: str,
+        definition,
+        request: SubagentRequest,
+    ) -> SubagentRunResult:
+        (Path(request.working_directory) / "unexpected.bin").write_bytes(b"\x00\x01")
+        return SubagentRunResult(session_id=session_id, status="completed", output="{}")
+
+    monkeypatch.setattr(runner, "_execute", mutate_workspace)
+    with pytest.raises(SubagentWorkspaceError) as raised:
+        asyncio.run(
+            runner.run(
+                "verify",
+                SubagentRequest(
+                    prompt="verify",
+                    working_directory=str(tmp_path),
+                    caller_capabilities=context(tmp_path).capabilities,
+                ),
+            )
+        )
+
+    assert raised.value.code == "AGENT_READ_ONLY_VIOLATION"
     assert (tmp_path / "unexpected.bin").is_file()
 
     outside_git = tmp_path / "outside"
     outside_git.mkdir()
-    failed = asyncio.run(
-        AgentTool(MutatingRunner(), registry).call(
-            AgentToolInput(
-                agent="verify",
-                task="verify",
-                arguments={
-                    "original_goal": "goal",
-                    "implementation_summary": "summary",
-                },
-            ),
-            context(outside_git),
+    with pytest.raises(SubagentWorkspaceError) as failed:
+        asyncio.run(
+            runner.run(
+                "verify",
+                SubagentRequest(
+                    prompt="verify",
+                    working_directory=str(outside_git),
+                    caller_capabilities=context(outside_git).capabilities,
+                ),
+            )
         )
-    )
-    assert failed.error and failed.error.code == "AGENT_READ_ONLY_GUARD_FAILED"
+    assert failed.value.code == "AGENT_READ_ONLY_GUARD_FAILED"
