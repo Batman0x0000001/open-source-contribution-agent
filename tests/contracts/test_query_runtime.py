@@ -5,6 +5,7 @@ from __future__ import annotations
 from tests.runtime_factories import tool_context
 
 import asyncio
+from dataclasses import fields
 import inspect
 from pathlib import Path
 from typing import AsyncIterator
@@ -29,7 +30,7 @@ from osc_agent.runtime.query_models import QueryConfig, QueryParams, ResumeQuery
 from osc_agent.runtime.session import SessionMetadata
 from osc_agent.runtime.tool_models import ToolResult
 from osc_agent.runtime.hooks import HookRegistry
-from osc_agent.runtime.query import AgentRuntime
+from osc_agent.runtime.query import AgentRuntime, _QueryProgress
 from osc_agent.runtime.tool import BaseTool, ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
 from osc_agent.runtime.session_store import FileSessionStore
@@ -106,6 +107,12 @@ def runtime(gateway: FakeGateway, tools=None, session_store=None, hooks=None) ->
 
 def test_query_is_an_async_generator() -> None:
     assert inspect.isasyncgenfunction(AgentRuntime.query)
+
+
+def test_query_progress_does_not_duplicate_the_persisted_terminal_state() -> None:
+    assert {field.name for field in fields(_QueryProgress)}.isdisjoint(
+        {"status", "stop_reason", "last_status", "last_reason"}
+    )
 
 
 def test_runtime_strictly_validates_start_and_resume_under_session_lease(tmp_path: Path) -> None:
@@ -527,6 +534,124 @@ def test_cancelled_tool_gets_a_persisted_result_pair(tmp_path: Path) -> None:
         for message in snapshot.messages
         for block in message.content
     )
+
+
+def test_post_hook_failure_preserves_result_and_stops_before_later_tools(
+    tmp_path: Path,
+) -> None:
+    class CountingNarrowTool(NarrowTool):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def call(self, input: EchoInput, context: tool_context) -> ToolResult:
+            self.calls += 1
+            return await super().call(input, context)
+
+    class CountingEchoTool(EchoTool):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def call(self, input: EchoInput, context: tool_context) -> ToolResult:
+            self.calls += 1
+            return await super().call(input, context)
+
+    hooks = HookRegistry()
+
+    async def fail_post_hook(payload, context) -> None:
+        raise RuntimeError("post hook failed")
+
+    hooks.register_post_tool_use(fail_post_hook)
+    narrow = CountingNarrowTool()
+    echo = CountingEchoTool()
+    store = FileSessionStore(tmp_path / "sessions")
+    gateway = FakeGateway(
+        [[
+            ModelCompleted(
+                message=RuntimeMessage(
+                    role="assistant",
+                    content=[
+                        ToolUseBlock(id="narrow-1", name="narrow", input={"value": "x"}),
+                        ToolUseBlock(id="echo-1", name="echo", input={"value": "later"}),
+                    ],
+                ),
+                stop_reason="tool_use",
+            )
+        ]]
+    )
+    start = StartQueryParams(
+        session_id="post-hook-failure",
+        model="test",
+        messages=[RuntimeMessage(role="user", content=[TextBlock(text="start")])],
+        workspace_root=str(tmp_path),
+    )
+
+    events = asyncio.run(
+        collect(runtime(gateway, [narrow, echo], store, hooks), start)
+    )
+
+    assert narrow.calls == 1
+    assert echo.calls == 0
+    assert [event.type for event in events].count("tool_completed") == 1
+    assert isinstance(events[-1], RunStopped)
+    assert events[-1].transition.error_code == "POST_TOOL_HOOK_FAILED"
+
+    snapshot = store.load("post-hook-failure")
+    assert snapshot is not None
+    assert snapshot.state.last_status == "failed"
+    assert snapshot.state.capabilities.allowed_tools == {"echo"}
+    result_blocks = [
+        block
+        for message in snapshot.messages
+        for block in message.content
+        if isinstance(block, ToolResultBlock)
+    ]
+    assert [block.tool_use_id for block in result_blocks] == ["narrow-1", "echo-1"]
+    assert result_blocks[0].is_error is False
+    assert result_blocks[0].content["data"] == {"value": "x"}
+    assert result_blocks[1].content["error"]["code"] == "TOOL_NOT_EXECUTED"
+
+    resumed_gateway = FakeGateway(
+        [[
+            ModelCompleted(
+                message=RuntimeMessage(
+                    role="assistant",
+                    content=[TextBlock(text="resumed")],
+                ),
+                stop_reason="end_turn",
+            )
+        ]]
+    )
+    asyncio.run(
+        collect(
+            runtime(resumed_gateway, [narrow, echo], store),
+            ResumeQueryParams(
+                session_id="post-hook-failure",
+                workspace_root=str(tmp_path),
+            ),
+        )
+    )
+    resumed_results = [
+        block
+        for message in resumed_gateway.requests[0].messages
+        for block in message.content
+        if isinstance(block, ToolResultBlock)
+    ]
+    assert [block.tool_use_id for block in resumed_results] == [
+        "narrow-1",
+        "echo-1",
+    ]
+
+
+def test_unknown_model_event_fails_explicitly() -> None:
+    class UnknownEventGateway:
+        async def stream(self, request: ModelRequest):
+            yield object()
+
+    events = asyncio.run(collect(runtime(UnknownEventGateway()), params()))
+
+    assert isinstance(events[-1], RunStopped)
+    assert events[-1].transition.error_code == "MODEL_REQUEST_FAILED"
+    assert "unsupported model event" in events[-1].transition.reason
 
 
 def test_cancelled_model_request_marks_session_without_partial_message(

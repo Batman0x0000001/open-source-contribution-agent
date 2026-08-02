@@ -9,6 +9,7 @@ from tests.runtime_factories import agent_run_state, tool_context
 import asyncio
 
 from pydantic import Field
+import pytest
 
 from osc_agent.runtime.hooks import HookBlock, HookContinue, HookRegistry
 from osc_agent.contracts import ContractModel
@@ -22,7 +23,11 @@ from osc_agent.runtime.tool_models import (
     ValidationFailure,
 )
 from osc_agent.runtime.tool import BaseTool, ToolRegistry
-from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
+from osc_agent.runtime.tool_execution import (
+    PostToolUseHookError,
+    ToolExecutionDependencies,
+    ToolExecutor,
+)
 
 
 class EchoInput(ContractModel):
@@ -299,3 +304,109 @@ def test_pre_hook_can_block_and_post_hook_observes_success() -> None:
     assert result.error and result.error.code == "HOOK_BLOCKED"
     assert events == ["pre"]
     assert tool.calls == 0
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ["validation", "permission_policy", "approval", "tool_permission", "pre_hook"],
+)
+def test_unexpected_pre_execution_failures_are_structured(phase: str) -> None:
+    class PhaseTool(EchoTool):
+        name = "phase"
+
+        def is_destructive(self, input: EchoInput) -> bool:
+            return phase == "approval"
+
+        async def validate_input(self, input: EchoInput, context: tool_context):
+            if phase == "validation":
+                raise RuntimeError("validation exploded")
+            return await super().validate_input(input, context)
+
+        async def check_permissions(self, input: EchoInput, context: tool_context):
+            if phase == "tool_permission":
+                raise RuntimeError("tool permission exploded")
+            return await super().check_permissions(input, context)
+
+    class PhasePolicy:
+        async def decide(self, tool, input, context):
+            if phase == "permission_policy":
+                raise RuntimeError("permission policy exploded")
+            if phase == "approval":
+                return Ask(
+                    tool_name=tool.name,
+                    prompt="approve",
+                    working_directory=context.workspace.working_directory,
+                    risk="destructive",
+                )
+            return Allow(updated_input=input.model_dump(mode="json"))
+
+    async def approval_handler(_decision: Ask) -> ApprovalResponse:
+        raise RuntimeError("approval exploded")
+
+    hooks = HookRegistry()
+
+    async def pre_hook(payload, context):
+        if phase == "pre_hook":
+            raise RuntimeError("pre hook exploded")
+        return HookContinue()
+
+    hooks.register_pre_tool_use(pre_hook)
+    tool = PhaseTool()
+    executor = ToolExecutor(
+        ToolRegistry([tool]),
+        permission_policy=PhasePolicy(),
+        hooks=hooks,
+        dependencies=ToolExecutionDependencies(approval_handler=approval_handler),
+    )
+
+    result = asyncio.run(
+        executor.execute(
+            ToolUseBlock(id="phase-1", name=tool.name, input={"value": "x"}),
+            context(),
+        )
+    )
+
+    assert result.error and result.error.code == "TOOL_PIPELINE_FAILED"
+    assert tool.calls == 0
+
+
+def test_post_hook_failure_preserves_the_completed_tool_result() -> None:
+    tool = EchoTool()
+    hooks = HookRegistry()
+
+    async def post_hook(payload, context) -> None:
+        raise RuntimeError("post hook exploded")
+
+    hooks.register_post_tool_use(post_hook)
+    executor = ToolExecutor(ToolRegistry([tool]), hooks=hooks)
+
+    with pytest.raises(PostToolUseHookError) as raised:
+        asyncio.run(
+            executor.execute(
+                ToolUseBlock(id="post-1", name=tool.name, input={"value": "done"}),
+                context(),
+            )
+        )
+
+    assert tool.calls == 1
+    assert raised.value.tool_use_id == "post-1"
+    assert raised.value.result.error is None
+    assert raised.value.result.data == {"value": "done"}
+
+
+def test_pipeline_does_not_swallow_cancellation() -> None:
+    hooks = HookRegistry()
+
+    async def cancelled_pre_hook(payload, context):
+        raise asyncio.CancelledError
+
+    hooks.register_pre_tool_use(cancelled_pre_hook)
+    executor = ToolExecutor(ToolRegistry([EchoTool()]), hooks=hooks)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            executor.execute(
+                ToolUseBlock(id="cancel-1", name="echo", input={"value": "x"}),
+                context(),
+            )
+        )

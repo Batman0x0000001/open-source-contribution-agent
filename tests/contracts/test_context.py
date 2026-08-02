@@ -37,7 +37,6 @@ def test_projection_compacts_without_mutating_authoritative_transcript(tmp_path:
         pipeline.project(
             transcript,
             config=QueryConfig(max_tool_result_chars=100),
-            working_directory=str(tmp_path),
         )
     )
 
@@ -66,7 +65,6 @@ def test_auto_compact_preserves_tool_use_result_pair() -> None:
         ContextPipeline().project(
             transcript,
             config=QueryConfig(auto_compact_chars=1),
-            working_directory="C:/repo",
         )
     )
 
@@ -96,7 +94,6 @@ def test_reactive_compact_can_replace_the_entire_projection() -> None:
         ContextPipeline().project(
             transcript,
             config=QueryConfig(),
-            working_directory="C:/repo",
             force_reason="reactive_compact",
         )
     )
@@ -132,7 +129,6 @@ def test_runtime_reminder_reinjects_plan_and_worktree_without_mutating_transcrip
         ContextPipeline().project(
             transcript,
             config=QueryConfig(),
-            working_directory=context.workspace.working_directory,
             runtime_context=context,
         )
     )
@@ -166,7 +162,6 @@ def test_model_summary_reports_its_token_usage() -> None:
         ).project(
             transcript,
             config=QueryConfig(auto_compact_chars=1),
-            working_directory="C:/repo",
         )
     )
 

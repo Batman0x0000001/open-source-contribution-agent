@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import hashlib
 import json
@@ -29,6 +30,17 @@ from osc_agent.runtime.tool import Tool, ToolRegistry
 
 
 ApprovalHandler = Callable[[Ask], Awaitable[ApprovalResponse]]
+
+
+class PostToolUseHookError(Exception):
+    """Tool 已完成，但 PostToolUse Hook 失败，调用方必须保留真实结果。"""
+
+    def __init__(self, *, tool_use_id: str, result: ToolResult, message: str) -> None:
+        super().__init__(message)
+        self.tool_use_id = tool_use_id
+        self.result = result
+
+
 @dataclass(frozen=True)
 class ToolExecutionDependencies:
     approval_handler: ApprovalHandler | None = None
@@ -58,58 +70,81 @@ class ToolExecutor:
         if isinstance(parsed, ToolResult):
             return parsed
 
-        validation = await tool.validate_input(parsed, context)
-        if isinstance(validation, ValidationFailure):
-            return _error("TOOL_VALIDATION_FAILED", validation.reason)
-
-        if not context.capabilities.permits_tool(tool.name):
-            return _error(
-                "PERMISSION_DENIED",
-                f"tool {tool.name} is outside the current capability scope",
-            )
-
-        permission = await self.permission_policy.decide(tool, parsed, context)
-        generally_allowed_input = await self._resolve_permission(
-            permission,
-            parsed,
-            tool,
-            context,
-            granted,
-        )
-        if isinstance(generally_allowed_input, ToolResult):
-            return _with_grants(generally_allowed_input, granted)
-
-        tool_permission = await tool.check_permissions(generally_allowed_input, context)
-        allowed_input = await self._resolve_permission(
-            tool_permission,
-            generally_allowed_input,
-            tool,
-            context,
-            granted,
-        )
-        if isinstance(allowed_input, ToolResult):
-            return _with_grants(allowed_input, granted)
-
-        serialized_input: dict[str, JsonValue] = allowed_input.model_dump(mode="json")
-        hook_result = await self.hooks.run_pre_tool_use(
-            PreToolUsePayload(tool_name=tool.name, input=serialized_input),
-            context,
-        )
-        if not hook_result.allowed:
-            return _with_grants(_error("HOOK_BLOCKED", hook_result.reason), granted)
-
         try:
-            result = await tool.call(allowed_input, context)
-        except Exception as exc:  # noqa: BLE001 - Tool 异常必须转换为结构化结果。
-            result = _error("TOOL_EXECUTION_FAILED", str(exc) or type(exc).__name__)
+            validation = await tool.validate_input(parsed, context)
+            if isinstance(validation, ValidationFailure):
+                return _error("TOOL_VALIDATION_FAILED", validation.reason)
 
-        result = _validate_output(tool, result)
-        result = _with_grants(result, granted)
-        await self.hooks.run_post_tool_use(
-            PostToolUsePayload(tool_name=tool.name, input=serialized_input, result=result),
-            context,
-        )
-        return result
+            if not context.capabilities.permits_tool(tool.name):
+                return _error(
+                    "PERMISSION_DENIED",
+                    f"tool {tool.name} is outside the current capability scope",
+                )
+
+            permission = await self.permission_policy.decide(tool, parsed, context)
+            generally_allowed_input = await self._resolve_permission(
+                permission,
+                parsed,
+                tool,
+                context,
+                granted,
+            )
+            if isinstance(generally_allowed_input, ToolResult):
+                return _with_grants(generally_allowed_input, granted)
+
+            tool_permission = await tool.check_permissions(generally_allowed_input, context)
+            allowed_input = await self._resolve_permission(
+                tool_permission,
+                generally_allowed_input,
+                tool,
+                context,
+                granted,
+            )
+            if isinstance(allowed_input, ToolResult):
+                return _with_grants(allowed_input, granted)
+
+            serialized_input: dict[str, JsonValue] = allowed_input.model_dump(mode="json")
+            hook_result = await self.hooks.run_pre_tool_use(
+                PreToolUsePayload(tool_name=tool.name, input=serialized_input),
+                context,
+            )
+            if not hook_result.allowed:
+                return _with_grants(_error("HOOK_BLOCKED", hook_result.reason), granted)
+
+            try:
+                result = await tool.call(allowed_input, context)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - Tool 异常必须转换为结构化结果。
+                result = _error("TOOL_EXECUTION_FAILED", str(exc) or type(exc).__name__)
+
+            result = _validate_output(tool, result)
+            result = _with_grants(result, granted)
+            try:
+                await self.hooks.run_post_tool_use(
+                    PostToolUsePayload(
+                        tool_name=tool.name,
+                        input=serialized_input,
+                        result=result,
+                    ),
+                    context,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - 已执行 Tool 的真实结果必须保留。
+                raise PostToolUseHookError(
+                    tool_use_id=call.id,
+                    result=result,
+                    message=str(exc) or type(exc).__name__,
+                ) from exc
+            return result
+        except (asyncio.CancelledError, PostToolUseHookError):
+            raise
+        except Exception as exc:  # noqa: BLE001 - Pipeline 异常必须转换为结构化结果。
+            return _with_grants(
+                _error("TOOL_PIPELINE_FAILED", str(exc) or type(exc).__name__),
+                granted,
+            )
 
     async def _resolve_permission(
         self,

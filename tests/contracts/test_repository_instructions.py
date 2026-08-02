@@ -67,7 +67,6 @@ def test_instruction_context_is_reinjected_and_marks_conflict_policy(
         ContextPipeline().project(
             transcript,
             config=QueryConfig(auto_compact_chars=1),
-            working_directory=str(tmp_path),
             runtime_context=context,
         )
     )

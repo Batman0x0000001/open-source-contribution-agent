@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import AsyncIterator, TypeAlias
 
 from osc_agent.runtime.messages import RuntimeMessage, ToolUseBlock
 from osc_agent.runtime.state import AgentRunState
-from osc_agent.runtime.tool_execution import ToolExecutor
+from osc_agent.runtime.tool_execution import PostToolUseHookError, ToolExecutor
 from osc_agent.runtime.tool_models import ToolResult
 
 
@@ -19,10 +19,17 @@ class ToolBatch:
 
 
 @dataclass(frozen=True)
-class ToolExecutionUpdate:
-    state: AgentRunState
-    tool_use_id: str | None = None
-    result: ToolResult | None = None
+class ToolResultAvailable:
+    tool_use_id: str
+    result: ToolResult
+
+
+@dataclass(frozen=True)
+class ToolBatchStateCommitted:
+    agent_state: AgentRunState
+
+
+ToolExecutionEvent: TypeAlias = ToolResultAvailable | ToolBatchStateCommitted
 
 
 def partition_tool_calls(
@@ -48,20 +55,27 @@ async def run_tools(
     session_id: str,
     state_directory: str,
     transcript_messages: list[RuntimeMessage],
-) -> AsyncIterator[ToolExecutionUpdate]:
+) -> AsyncIterator[ToolExecutionEvent]:
     current_state = state
     for batch in partition_tool_calls(calls, executor):
         if batch.concurrency_safe:
             results: dict[int, ToolResult] = {}
+            post_hook_failures: dict[int, PostToolUseHookError] = {}
 
-            async def execute_indexed(index: int, call: ToolUseBlock) -> tuple[int, ToolResult]:
+            async def execute_indexed(
+                index: int,
+                call: ToolUseBlock,
+            ) -> tuple[int, ToolResult, PostToolUseHookError | None]:
                 context = current_state.tool_context(
                     session_id=session_id,
                     tool_use_id=call.id,
                     state_directory=state_directory,
                     transcript_messages=transcript_messages,
                 )
-                return index, await executor.execute(call, context)
+                try:
+                    return index, await executor.execute(call, context), None
+                except PostToolUseHookError as exc:
+                    return index, exc.result, exc
 
             tasks = [
                 asyncio.create_task(execute_indexed(index, call))
@@ -69,10 +83,11 @@ async def run_tools(
             ]
             try:
                 for completed in asyncio.as_completed(tasks):
-                    index, result = await completed
+                    index, result, post_hook_failure = await completed
                     results[index] = result
-                    yield ToolExecutionUpdate(
-                        state=current_state,
+                    if post_hook_failure is not None:
+                        post_hook_failures[index] = post_hook_failure
+                    yield ToolResultAvailable(
                         tool_use_id=batch.calls[index].id,
                         result=result,
                     )
@@ -84,7 +99,9 @@ async def run_tools(
 
             for index in range(len(batch.calls)):
                 current_state = current_state.apply_all(results[index].state_changes)
-            yield ToolExecutionUpdate(state=current_state)
+            yield ToolBatchStateCommitted(agent_state=current_state)
+            if post_hook_failures:
+                raise post_hook_failures[min(post_hook_failures)]
             continue
 
         call = batch.calls[0]
@@ -94,13 +111,20 @@ async def run_tools(
             state_directory=state_directory,
             transcript_messages=transcript_messages,
         )
-        result = await executor.execute(call, context)
+        post_hook_failure: PostToolUseHookError | None = None
+        try:
+            result = await executor.execute(call, context)
+        except PostToolUseHookError as exc:
+            result = exc.result
+            post_hook_failure = exc
         current_state = current_state.apply_all(result.state_changes)
-        yield ToolExecutionUpdate(
-            state=current_state,
+        yield ToolBatchStateCommitted(agent_state=current_state)
+        yield ToolResultAvailable(
             tool_use_id=call.id,
             result=result,
         )
+        if post_hook_failure is not None:
+            raise post_hook_failure
 
 
 def _is_concurrency_safe(call: ToolUseBlock, executor: ToolExecutor) -> bool:

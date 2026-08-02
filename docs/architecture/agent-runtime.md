@@ -48,12 +48,15 @@ Skill 的默认来源由 `skills/catalog.py` 构建，Provider 由 `providers/fa
 
 ## Runtime 与状态
 
-`AgentRuntime.query()` 是唯一模型循环。不可变 Query 参数、私有循环计数 `_QueryState` 和
-可持久化 `AgentRunState` 分离：前者控制预算，后者保存 workspace、permissions、capabilities、
-completion requirements 与终态。
+`AgentRuntime.query()` 是唯一模型循环。不可变 Query 参数、私有执行指标 `_QueryProgress` 和
+可持久化 `AgentRunState` 分离：前者只控制预算、压缩恢复、无进展与 Completion Gate 计数，
+后者保存 workspace、permissions、capabilities、completion requirements 与唯一终态。
 
 Tool 只接收从状态投影出的只读 `ToolContext`。Tool 不修改上下文，而是返回有序
 `state_changes`。串行调用立即应用变化；并发调用可乱序完成，但变化始终按模型调用顺序应用。
+Tool Result 到达和 Batch State Commit 使用不同事件表达；并发 Result 可以先到达，但只有
+Commit 事件能够替换并持久化 `AgentRunState`。Tool 已执行后若 PostToolUse Hook 失败，Runtime
+保留真实 Result 与 StateChange，再将 Query 终止为失败，避免模型重试已经发生的副作用。
 capability 和 completion requirement 只能收窄，合并规则只存在于 `AgentRunState.apply()`。
 Tool Schema 根据该状态展示能力，ToolExecutor 在 PermissionPolicy 之前执行相同 capability
 硬门禁。Skill 与 Agent 的发现信息只存在于对应 Tool description，不复制进 system prompt。

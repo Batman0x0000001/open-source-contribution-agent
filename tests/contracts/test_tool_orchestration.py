@@ -12,8 +12,14 @@ from osc_agent.runtime.tool_models import ToolResult
 from osc_agent.runtime.state import PlanSaved
 from tests.runtime_factories import agent_run_state
 from osc_agent.runtime.tool import BaseTool, ToolRegistry
-from osc_agent.runtime.tool_execution import ToolExecutor
-from osc_agent.runtime.tool_orchestration import partition_tool_calls, run_tools
+from osc_agent.runtime.tool_execution import PostToolUseHookError, ToolExecutor
+from osc_agent.runtime.tool_orchestration import (
+    ToolBatchStateCommitted,
+    ToolResultAvailable,
+    partition_tool_calls,
+    run_tools,
+)
+from osc_agent.runtime.hooks import HookRegistry
 
 
 class DelayInput(ContractModel):
@@ -99,12 +105,16 @@ def test_concurrent_completion_is_streamed_but_context_updates_follow_call_order
 
     updates = asyncio.run(collect_updates())
 
-    result_updates = [update for update in updates if update.result is not None]
-    final_state = updates[-1].state
+    result_updates = [
+        update for update in updates if isinstance(update, ToolResultAvailable)
+    ]
+    committed = next(
+        update for update in updates if isinstance(update, ToolBatchStateCommitted)
+    )
 
     assert completion_order == ["second", "first"]
     assert [update.tool_use_id for update in result_updates] == ["2", "1"]
-    assert final_state.permissions.plan_path == "second"
+    assert committed.agent_state.permissions.plan_path == "second"
 
 
 def test_non_safe_calls_execute_serially() -> None:
@@ -128,4 +138,55 @@ def test_non_safe_calls_execute_serially() -> None:
     updates = asyncio.run(collect_updates())
 
     assert completion_order == ["first", "second"]
-    assert updates[-1].state.permissions.plan_path == "second"
+    commits = [
+        update for update in updates if isinstance(update, ToolBatchStateCommitted)
+    ]
+    assert [update.agent_state.permissions.plan_path for update in commits] == [
+        "first",
+        "second",
+    ]
+
+
+def test_concurrent_post_hook_failure_commits_all_started_tool_results() -> None:
+    completion_order: list[str] = []
+    hooks = HookRegistry()
+
+    async def fail_second(payload, context) -> None:
+        if payload.input["name"] == "second":
+            raise RuntimeError("post hook failed")
+
+    hooks.register_post_tool_use(fail_second)
+    executor = ToolExecutor(
+        ToolRegistry([DelayTool(completion_order)]),
+        hooks=hooks,
+    )
+
+    async def collect_updates():
+        updates = []
+        with_error = None
+        try:
+            async for update in run_tools(
+                [call("1", "first", 0.02), call("2", "second", 0)],
+                executor=executor,
+                state=agent_run_state("C:/repo"),
+                session_id="session-1",
+                state_directory="C:/state",
+                transcript_messages=[],
+            ):
+                updates.append(update)
+        except PostToolUseHookError as exc:
+            with_error = exc
+        return updates, with_error
+
+    updates, error = asyncio.run(collect_updates())
+    results = [
+        update for update in updates if isinstance(update, ToolResultAvailable)
+    ]
+    committed = next(
+        update for update in updates if isinstance(update, ToolBatchStateCommitted)
+    )
+
+    assert completion_order == ["second", "first"]
+    assert [update.tool_use_id for update in results] == ["2", "1"]
+    assert committed.agent_state.permissions.plan_path == "second"
+    assert error is not None and error.tool_use_id == "2"

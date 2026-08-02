@@ -44,11 +44,16 @@ from osc_agent.runtime.session import SessionMetadata
 from osc_agent.runtime.session_store import SessionStore
 from osc_agent.runtime.state import AgentRunState, InstructionsActivated
 from osc_agent.runtime.tool_models import ToolError, ToolResult
-from osc_agent.runtime.tool_orchestration import run_tools
+from osc_agent.runtime.tool_execution import PostToolUseHookError
+from osc_agent.runtime.tool_orchestration import (
+    ToolBatchStateCommitted,
+    ToolResultAvailable,
+    run_tools,
+)
 
 
 @dataclass
-class _QueryState:
+class _QueryProgress:
     session_id: str
     round_count: int = 0
     input_tokens: int = 0
@@ -58,8 +63,6 @@ class _QueryState:
     last_tool_signature: str | None = None
     stop_block_count: int = 0
     last_stop_reasons: tuple[str, ...] = ()
-    status: Literal["running", "completed", "blocked", "failed", "cancelled"] = "running"
-    stop_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,15 +70,15 @@ class _OpenedSession:
     messages: list[RuntimeMessage]
     model: str
     system_prompt: str
-    run_state: AgentRunState
+    agent_state: AgentRunState
 
 
 @dataclass
 class _ActiveQuery:
     params: QueryParams
-    state: _QueryState
+    progress: _QueryProgress
     transcript: SessionTranscript
-    run_state: AgentRunState
+    agent_state: AgentRunState
     model: str
     system_prompt: str
     store: SessionStore | None
@@ -91,11 +94,9 @@ class _ActiveQuery:
         status: Literal["running", "completed", "blocked", "failed", "cancelled"],
         reason: str | None = None,
     ) -> None:
-        self.state.status = status
-        self.state.stop_reason = reason
-        self.run_state = self.run_state.with_status(status, reason)
+        self.agent_state = self.agent_state.with_status(status, reason)
         if self.store is not None:
-            self.store.save_state(self.params.session_id, self.run_state)
+            self.store.save_state(self.params.session_id, self.agent_state)
 
 
 class AgentRuntime:
@@ -123,7 +124,7 @@ class AgentRuntime:
 
     async def _query_locked(self, params: QueryParams) -> AsyncIterator[RuntimeEvent]:
         run = self._open_run(params)
-        state = run.state
+        progress = run.progress
         transcript = run.transcript
         model = run.model
         system_prompt = run.system_prompt
@@ -131,27 +132,31 @@ class AgentRuntime:
         force_compact_reason: str | None = None
 
         while True:
-            tool_context = run.run_state.tool_context(
+            tool_context = run.agent_state.tool_context(
                 session_id=params.session_id,
                 state_directory=self.dependencies.state_directory,
                 transcript_messages=transcript.snapshot(),
             )
-            failure = _budget_failure(state, params.config, started_at, self.dependencies.monotonic())
+            failure = _budget_failure(
+                progress,
+                params.config,
+                started_at,
+                self.dependencies.monotonic(),
+            )
             if failure is not None:
                 yield _stopped(run, failure)
                 return
 
-            state.round_count += 1
+            progress.round_count += 1
             projection = await self.dependencies.context_pipeline.project(
                 transcript,
                 config=params.config,
-                working_directory=tool_context.workspace.working_directory,
                 runtime_context=tool_context,
                 instruction_resolver=self.dependencies.instruction_resolver,
                 force_reason=force_compact_reason,
             )
-            state.input_tokens += projection.summary_input_tokens
-            state.output_tokens += projection.summary_output_tokens
+            progress.input_tokens += projection.summary_input_tokens
+            progress.output_tokens += projection.summary_output_tokens
             force_compact_reason = None
             if projection.compacted:
                 yield ContextCompacted(
@@ -160,8 +165,8 @@ class AgentRuntime:
                     reason=projection.reason or "context_pipeline",
                 )
             yield ModelRequestStarted(
-                session_id=state.session_id,
-                round_number=state.round_count,
+                session_id=progress.session_id,
+                round_number=progress.round_count,
             )
 
             request = ModelRequest(
@@ -188,8 +193,12 @@ class AgentRuntime:
                             yield AssistantDelta(text=event.text)
                         elif isinstance(event, ModelRetryScheduled):
                             yield event
-                        else:
+                        elif isinstance(event, ModelCompleted):
                             completed = event
+                        else:
+                            raise TypeError(
+                                f"unsupported model event: {type(event).__name__}"
+                            )
             except TimeoutError:
                 yield _stopped(
                     run,
@@ -205,9 +214,10 @@ class AgentRuntime:
             except ModelGatewayError as exc:
                 if (
                     exc.code == "CONTEXT_LENGTH_EXCEEDED"
-                    and state.reactive_compaction_count < params.config.max_reactive_compactions
+                    and progress.reactive_compaction_count
+                    < params.config.max_reactive_compactions
                 ):
-                    state.reactive_compaction_count += 1
+                    progress.reactive_compaction_count += 1
                     force_compact_reason = "reactive_compact"
                     continue
                 yield _stopped(
@@ -239,8 +249,8 @@ class AgentRuntime:
 
             run.append(completed.message)
             yield AssistantMessageCompleted(message=completed.message)
-            state.input_tokens += completed.input_tokens
-            state.output_tokens += completed.output_tokens
+            progress.input_tokens += completed.input_tokens
+            progress.output_tokens += completed.output_tokens
 
             tool_calls = [
                 block
@@ -264,14 +274,14 @@ class AgentRuntime:
                 )
                 if stop_result.blocking_reasons:
                     reasons = tuple(stop_result.blocking_reasons)
-                    state.stop_block_count = (
-                        state.stop_block_count + 1
-                        if reasons == state.last_stop_reasons
+                    progress.stop_block_count = (
+                        progress.stop_block_count + 1
+                        if reasons == progress.last_stop_reasons
                         else 1
                     )
-                    state.last_stop_reasons = reasons
+                    progress.last_stop_reasons = reasons
                     run.append(_completion_gate_message(reasons))
-                    if state.stop_block_count >= 3:
+                    if progress.stop_block_count >= 3:
                         yield _stopped(
                             run,
                             Blocked(
@@ -288,11 +298,11 @@ class AgentRuntime:
                 ensure_ascii=False,
                 sort_keys=True,
             )
-            if signature == state.last_tool_signature:
-                state.no_progress_rounds += 1
+            if signature == progress.last_tool_signature:
+                progress.no_progress_rounds += 1
             else:
-                state.no_progress_rounds = 0
-                state.last_tool_signature = signature
+                progress.no_progress_rounds = 0
+                progress.last_tool_signature = signature
 
             for call in tool_calls:
                 yield ToolRequested(call=call)
@@ -302,18 +312,23 @@ class AgentRuntime:
                 async for update in run_tools(
                     tool_calls,
                     executor=self.dependencies.tool_executor,
-                    state=run.run_state,
+                    state=run.agent_state,
                     session_id=params.session_id,
                     state_directory=self.dependencies.state_directory,
                     transcript_messages=transcript.snapshot(),
                 ):
-                    run.run_state = update.state
-                    run.persist("running")
-                    if update.result is not None and update.tool_use_id is not None:
+                    if isinstance(update, ToolBatchStateCommitted):
+                        run.agent_state = update.agent_state
+                        run.persist("running")
+                    elif isinstance(update, ToolResultAvailable):
                         results[update.tool_use_id] = update.result
                         yield ToolCompleted(
                             tool_use_id=update.tool_use_id,
                             result=update.result,
+                        )
+                    else:
+                        raise TypeError(
+                            f"unsupported tool execution event: {type(update).__name__}"
                         )
             except asyncio.CancelledError:
                 for call in tool_calls:
@@ -327,14 +342,39 @@ class AgentRuntime:
                             )
                         ),
                     )
-                run.append(_tool_result_message(tool_calls, results))
+                _append_tool_results(run, tool_calls, results)
                 yield _stopped(run, Cancelled(reason="tool execution was cancelled"))
                 return
+            except PostToolUseHookError as exc:
+                for call in tool_calls:
+                    results.setdefault(
+                        call.id,
+                        ToolResult(
+                            error=ToolError(
+                                code="TOOL_NOT_EXECUTED",
+                                message=(
+                                    "tool was not executed because a PostToolUse Hook "
+                                    f"failed after {exc.tool_use_id}"
+                                ),
+                                retryable=False,
+                            )
+                        ),
+                    )
+                _append_tool_results(run, tool_calls, results)
+                yield _stopped(
+                    run,
+                    Failed(
+                        error_code="POST_TOOL_HOOK_FAILED",
+                        reason=(
+                            f"PostToolUse Hook failed after {exc.tool_use_id}: "
+                            f"{str(exc) or type(exc).__name__}"
+                        ),
+                        retryable=False,
+                    ),
+                )
+                return
 
-            run.append(_tool_result_message(tool_calls, results))
-            for call in tool_calls:
-                for message in results[call.id].new_messages:
-                    run.append(message)
+            _append_tool_results(run, tool_calls, results)
 
     def _open_run(self, params: QueryParams) -> _ActiveQuery:
         store = self.dependencies.session_store
@@ -344,21 +384,21 @@ class AgentRuntime:
         else:
             assert isinstance(params, StartQueryParams)
             opened = self._start(params, workspace_root)
-        run_state = opened.run_state
-        working_directory = run_state.workspace.working_directory
+        agent_state = opened.agent_state
+        working_directory = agent_state.workspace.working_directory
         instruction_state = self.dependencies.instruction_resolver.activate_for_path(
             Path(working_directory),
             ".",
-            run_state.workspace.instruction_state,
+            agent_state.workspace.instruction_state,
         )
-        run_state = run_state.apply(
+        agent_state = agent_state.apply(
             InstructionsActivated(state=instruction_state, replace=True)
         )
         run = _ActiveQuery(
             params=params,
-            state=_QueryState(session_id=params.session_id),
+            progress=_QueryProgress(session_id=params.session_id),
             transcript=SessionTranscript(session_id=params.session_id, messages=opened.messages),
-            run_state=run_state,
+            agent_state=agent_state,
             model=opened.model,
             system_prompt=opened.system_prompt,
             store=store,
@@ -373,7 +413,7 @@ class AgentRuntime:
         instruction_state = self.dependencies.instruction_resolver.activate_root(
             Path(workspace_root)
         )
-        run_state = AgentRunState.start(
+        agent_state = AgentRunState.start(
             workspace_root=workspace_root,
             capabilities=params.capabilities,
             completion_requirements=params.completion_requirements,
@@ -388,7 +428,7 @@ class AgentRuntime:
                     model=params.model,
                     system_prompt=params.system_prompt,
                 ),
-                run_state,
+                agent_state,
             )
             for message in messages:
                 store.append_message(params.session_id, message)
@@ -396,7 +436,7 @@ class AgentRuntime:
             messages=messages,
             model=params.model,
             system_prompt=params.system_prompt,
-            run_state=run_state,
+            agent_state=agent_state,
         )
 
     def _resume(self, params: ResumeQueryParams, workspace_root: str) -> _OpenedSession:
@@ -409,11 +449,13 @@ class AgentRuntime:
         if str(Path(snapshot.metadata.workspace_root).resolve()) != workspace_root:
             raise ValueError("resume workspace does not match the saved session")
 
-        run_state = snapshot.state
-        if run_state.workspace.worktree is not None:
+        agent_state = snapshot.state
+        if agent_state.workspace.worktree is not None:
             if self.dependencies.workspace_validator is None:
                 raise ValueError("resume of a worktree session requires a workspace validator")
-            self.dependencies.workspace_validator.validate_session(run_state.workspace.worktree)
+            self.dependencies.workspace_validator.validate_session(
+                agent_state.workspace.worktree
+            )
 
         messages = [*snapshot.messages, *params.messages]
         interrupted = _repair_interrupted_tool_uses(snapshot.messages)
@@ -426,7 +468,7 @@ class AgentRuntime:
             messages=messages,
             model=snapshot.metadata.model,
             system_prompt=snapshot.metadata.system_prompt,
-            run_state=run_state,
+            agent_state=agent_state,
         )
 
 
@@ -480,6 +522,17 @@ def _tool_result_message(calls: list[ToolUseBlock], results: dict[str, ToolResul
     )
 
 
+def _append_tool_results(
+    run: _ActiveQuery,
+    calls: list[ToolUseBlock],
+    results: dict[str, ToolResult],
+) -> None:
+    run.append(_tool_result_message(calls, results))
+    for call in calls:
+        for message in results[call.id].new_messages:
+            run.append(message)
+
+
 def _repair_interrupted_tool_uses(messages: list[RuntimeMessage]) -> RuntimeMessage | None:
     """只修复 transcript 尾部悬空调用；中间配对错误说明权威日志已损坏。"""
 
@@ -525,17 +578,17 @@ def _repair_interrupted_tool_uses(messages: list[RuntimeMessage]) -> RuntimeMess
 
 
 def _budget_failure(
-    state: _QueryState,
+    progress: _QueryProgress,
     config: QueryConfig,
     started_at: float,
     now: float,
 ) -> Failed | None:
-    if state.round_count >= config.max_rounds:
+    if progress.round_count >= config.max_rounds:
         return Failed(
             error_code="MAX_ROUNDS",
             reason=f"query exceeded {config.max_rounds} rounds",
         )
-    if state.input_tokens + state.output_tokens >= config.max_total_tokens:
+    if progress.input_tokens + progress.output_tokens >= config.max_total_tokens:
         return Failed(
             error_code="MAX_TOTAL_TOKENS",
             reason=f"query exceeded {config.max_total_tokens} tokens",
@@ -545,9 +598,12 @@ def _budget_failure(
             error_code="DEADLINE_EXCEEDED",
             reason=f"query exceeded {config.deadline_seconds} seconds",
         )
-    if state.no_progress_rounds >= config.max_no_progress_rounds:
+    if progress.no_progress_rounds >= config.max_no_progress_rounds:
         return Failed(
             error_code="NO_PROGRESS",
-            reason=f"query repeated the same tool calls for {state.no_progress_rounds} rounds",
+            reason=(
+                "query repeated the same tool calls for "
+                f"{progress.no_progress_rounds} rounds"
+            ),
         )
     return None

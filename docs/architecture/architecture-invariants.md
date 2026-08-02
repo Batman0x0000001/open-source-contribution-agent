@@ -5,9 +5,9 @@
 | 编号 | 最小机制 | Python 对应 | 硬验证 |
 |---|---|---|---|
 | Q1 | Query 是唯一 AsyncGenerator 循环 | `AgentRuntime.query` | 事件序列与单一入口测试 |
-| Q2 | 配置、循环计数、持久状态、Tool 投影分离 | `QueryConfig`、私有 `_QueryState`、`AgentRunState`、`ToolContext` | Pydantic / frozen dataclass |
+| Q2 | 配置、执行指标、持久状态、Tool 投影分离，终态无镜像字段 | `QueryConfig`、私有 `_QueryProgress`、`AgentRunState`、`ToolContext` | Pydantic / frozen dataclass |
 | T1 | Tool 是输入敏感的完整行为对象 | `Tool`、`ToolExecutor` | validation → permission → hooks → call 测试 |
-| T2 | 并发完成可乱序，StateChange 按调用顺序应用 | `tool_orchestration.py`、`AgentRunState.apply()` | 并发与串行测试 |
+| T2 | Tool Result 与 State Commit 显式分离；并发完成可乱序，StateChange 按调用顺序应用 | `tool_orchestration.py`、`AgentRunState.apply()` | 并发、串行与 Post Hook 失败测试 |
 | T3 | Tool 只适配模型协议，共享文件、Git 和进程能力位于 Tool 外部 | `tools/`、`workspaces/`、`processes/` | AST 依赖边界与核心注册表测试 |
 | C1 | Transcript 与模型 Projection 分离 | `SessionTranscript`、`ContextPipeline` | compact 不改变权威历史和 Tool 配对 |
 | R1 | Session V6 无平行运行字段，Transcript 驱动恢复 | `SessionMetadata`、`AgentRunState`、File/SQLite Store | V5 拒绝、V6 新建、追加与恢复 |

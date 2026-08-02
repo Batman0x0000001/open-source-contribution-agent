@@ -124,7 +124,6 @@ class ContextPipeline:
         transcript: SessionTranscript,
         *,
         config: QueryConfig,
-        working_directory: str,
         runtime_context: ToolContext | None = None,
         instruction_resolver: RepositoryInstructionResolver | None = None,
         force_reason: str | None = None,

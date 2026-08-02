@@ -13,7 +13,7 @@ from osc_agent.runtime.messages import ToolUseBlock
 
 from osc_agent.runtime.tool import ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
-from osc_agent.runtime.tool_orchestration import run_tools
+from osc_agent.runtime.tool_orchestration import ToolBatchStateCommitted, run_tools
 from osc_agent.skills.catalog import SkillCatalog
 from osc_agent.skills.invocation_tool import SkillTool, SkillToolInput, SkillToolOutput
 from osc_agent.skills.loader import SkillLoader
@@ -80,7 +80,10 @@ def test_skill_tool_delegates_to_preparer_and_updates_context(tmp_path: Path) ->
         ]
 
     updates = asyncio.run(execute_through_runtime_path())
-    assert updates[-1].state.completion_requirements.required_evidence == {
+    committed = next(
+        update for update in updates if isinstance(update, ToolBatchStateCommitted)
+    )
+    assert committed.agent_state.completion_requirements.required_evidence == {
         "successful_test",
         "git_change_snapshot",
     }
