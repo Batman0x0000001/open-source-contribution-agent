@@ -10,7 +10,12 @@ from pydantic import Field
 
 from osc_agent.contracts import ContractModel
 from osc_agent.runtime.gateway import ModelCompleted, ModelGateway, ModelRequest
-from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock
+from osc_agent.runtime.messages import (
+    RuntimeMessage,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from osc_agent.runtime.query_models import QueryConfig
 from osc_agent.runtime.session_store import MemoryToolResultStore, ToolResultStore
 from osc_agent.runtime.state import ToolContext
@@ -168,19 +173,32 @@ class ContextPipeline:
         session_id: str,
     ) -> bool:
         results = _tool_results(messages)
+        tool_names = {
+            block.id: block.name
+            for message in messages
+            for block in message.content
+            if isinstance(block, ToolUseBlock)
+        }
         total = sum(len(_json_text(block.content)) for block in results)
         changed = False
         for block in sorted(results, key=lambda item: len(_json_text(item.content)), reverse=True):
             if total <= max_chars:
                 break
             original = _json_text(block.content)
-            path = self.tool_result_store.persist(
-                session_id=session_id,
-                tool_use_id=block.tool_use_id,
-                content=original,
-            )
             preview = original[:1_000]
-            block.content = f"[Tool result persisted as {path}; use read_tool_result]\nPreview:\n{preview}"
+            if tool_names.get(block.tool_use_id) == "read_tool_result":
+                # 原始结果已经持久化；再次保存读取页会形成无法终止的 result_id 链。
+                block.content = (
+                    "[Retrieved tool result page compacted; request a smaller page or "
+                    f"continue from its next_offset.]\nPreview:\n{preview}"
+                )
+            else:
+                path = self.tool_result_store.persist(
+                    session_id=session_id,
+                    tool_use_id=block.tool_use_id,
+                    content=original,
+                )
+                block.content = f"[Tool result persisted as {path}; use read_tool_result]\nPreview:\n{preview}"
             total = sum(len(_json_text(item.content)) for item in results)
             changed = True
         return changed

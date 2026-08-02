@@ -1,6 +1,6 @@
 # Bot-first architecture
 
-本文描述 Open Source Contribution Agent `0.3.1` 的生产架构。
+本文描述 Open Source Contribution Agent `0.3.2` 的生产架构。
 
 The GitHub App is the production product. The local CLI is a debugging adapter. Both build an
 `AgentApplication`, open an `AgentConversation`, and submit typed input. The conversation facade

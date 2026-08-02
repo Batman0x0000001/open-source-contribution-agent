@@ -41,4 +41,52 @@ def test_tool_result_is_scoped_to_owning_session(tmp_path: Path) -> None:
     )
 
     assert owned.data["content"] == "full result"
+    assert owned.data["complete"] is True
+    assert owned.data["next_offset"] is None
     assert foreign.error and foreign.error.code == "TOOL_RESULT_NOT_FOUND"
+
+
+def test_tool_result_supports_bounded_pagination(tmp_path: Path) -> None:
+    store = FileToolResultStore(tmp_path / "results")
+    result_id = store.persist(
+        session_id="owner",
+        tool_use_id="call-1",
+        content="0123456789",
+    )
+    executor = ToolExecutor(ToolRegistry([ReadToolResultTool(store)]))
+
+    first = asyncio.run(
+        executor.execute(
+            ToolUseBlock(
+                id="read-1",
+                name="read_tool_result",
+                input={"result_id": result_id, "offset": 3, "limit": 4},
+            ),
+            context(tmp_path, "owner"),
+        )
+    )
+    last = asyncio.run(
+        executor.execute(
+            ToolUseBlock(
+                id="read-2",
+                name="read_tool_result",
+                input={"result_id": result_id, "offset": 7, "limit": 4},
+            ),
+            context(tmp_path, "owner"),
+        )
+    )
+
+    assert first.data == {
+        "result_id": result_id,
+        "content": "3456",
+        "offset": 3,
+        "next_offset": 7,
+        "complete": False,
+    }
+    assert last.data == {
+        "result_id": result_id,
+        "content": "789",
+        "offset": 7,
+        "next_offset": None,
+        "complete": True,
+    }

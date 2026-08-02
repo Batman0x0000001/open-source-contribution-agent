@@ -1,6 +1,6 @@
 # 当前状态模型
 
-本文描述 Open Source Contribution Agent `0.3.1` 的持久化状态边界。Control 与 Worker 必须使用相同的状态模型；不支持不同状态模型的进程混跑或滚动升级。
+本文描述 Open Source Contribution Agent `0.3.2` 的持久化状态边界。Control 与 Worker 必须使用相同的状态模型；不支持不同状态模型的进程混跑或滚动升级。
 
 Runtime Session 使用 V6。Metadata 只保存 `session_id`、`workspace_root`、`model` 和
 `system_prompt`；workspace、permissions、capabilities、completion requirements 与终态统一

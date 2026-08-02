@@ -73,6 +73,50 @@ def test_repeated_projection_reuses_the_same_persisted_tool_result(tmp_path: Pat
     ]
 
 
+def test_projection_does_not_persist_a_retrieved_tool_result_again() -> None:
+    store = MemoryToolResultStore()
+    original_id = store.persist(
+        session_id="session-1",
+        tool_use_id="original-call",
+        content="original result",
+    )
+    transcript = SessionTranscript(
+        session_id="session-1",
+        messages=[
+            message(
+                "assistant",
+                ToolUseBlock(
+                    id="read-call",
+                    name="read_tool_result",
+                    input={"result_id": original_id},
+                ),
+            ),
+            message(
+                "user",
+                ToolResultBlock(tool_use_id="read-call", content="x" * 1_000),
+            ),
+        ],
+    )
+
+    projection = asyncio.run(
+        ContextPipeline(tool_result_store=store).project(
+            transcript,
+            config=QueryConfig(max_tool_result_chars=100),
+        )
+    )
+
+    projected = projection.messages[-1].content[0]
+    assert isinstance(projected, ToolResultBlock)
+    assert "Retrieved tool result page compacted" in str(projected.content)
+    assert "Tool result persisted" not in str(projected.content)
+    try:
+        store.read(session_id="session-1", result_id="read-call")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("retrieved tool result was recursively persisted")
+
+
 def test_auto_compact_preserves_tool_use_result_pair() -> None:
     tool_use = ToolUseBlock(id="call-1", name="read", input={})
     tool_result = ToolResultBlock(tool_use_id="call-1", content="result")
