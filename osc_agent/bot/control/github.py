@@ -274,7 +274,7 @@ async def _http_request(
     method: str, path: str, token: str, json_body: dict[str, object] | None
 ) -> Any:
     try:
-        import httpx
+        import httpx2
     except ImportError as exc:
         raise ValueError("GitHub bot dependencies are missing; install .[bot]") from exc
     headers = {
@@ -283,7 +283,7 @@ async def _http_request(
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "osc-agent-bot",
     }
-    async with httpx.AsyncClient(base_url="https://api.github.com", timeout=20) as client:
+    async with httpx2.AsyncClient(base_url="https://api.github.com", timeout=20) as client:
         response = await client.request(method, path, headers=headers, json=json_body)
     if response.status_code >= 400:
         raise GitHubApiError(response.status_code)

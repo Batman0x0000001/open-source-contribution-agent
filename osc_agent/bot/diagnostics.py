@@ -49,7 +49,7 @@ def base_results(programs: Iterable[str]) -> list[BotDoctorResult]:
 def bot_dependencies_available() -> bool:
     try:
         import fastapi  # noqa: F401
-        import httpx  # noqa: F401
+        import httpx2  # noqa: F401
         import jwt  # noqa: F401
         import uvicorn  # noqa: F401
     except ImportError:
