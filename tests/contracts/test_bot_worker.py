@@ -159,6 +159,53 @@ def test_reclaimed_worker_does_not_schedule_retry_or_complete() -> None:
     assert transitions == []
 
 
+def test_worker_failure_comment_is_unique_per_phase_attempt(monkeypatch) -> None:
+    import osc_agent.bot.worker.coordinator as worker_module
+
+    base = _job().model_copy(update={"lease_owner": "worker"})
+    claimed = [
+        base.model_copy(update={"implementation_attempts": attempt, "version": attempt})
+        for attempt in (1, 2)
+    ]
+    current: BotJob | None = None
+    comments = []
+
+    class Store:
+        def claim_job(self, _worker_id, phase=None):
+            nonlocal current
+            current = claimed.pop(0)
+            return current
+
+        def get_job(self, _job_id):
+            return current
+
+        def apply_job_event_with_outbox(self, **changes):
+            comments.append(changes["outbox_event"])
+            assert current is not None
+            return current.model_copy(
+                update={"status": "retry_wait", "version": current.version + 1}
+            )
+
+    async def resolve(image_id: str) -> str:
+        return image_id
+
+    async def fail(_job):
+        raise RuntimeError("implementation failed")
+
+    monkeypatch.setattr(worker_module, "resolve_image_id", resolve)
+    worker = object.__new__(BotWorker)
+    worker.store = Store()  # type: ignore[assignment]
+    worker.bot_settings = SimpleNamespace(worker_id="worker")  # type: ignore[assignment]
+    worker.implementation_executor = SimpleNamespace(execute=fail)  # type: ignore[assignment]
+
+    assert asyncio.run(worker.run_once("implementation")) is True
+    assert asyncio.run(worker.run_once("implementation")) is True
+    assert [event.idempotency_key for event in comments] == [
+        f"comment:{base.job_id}:failed:implementation:1",
+        f"comment:{base.job_id}:failed:implementation:2",
+    ]
+
+
 def test_runtime_stream_stops_when_job_lease_is_reclaimed() -> None:
     job = _job(status="running_plan").model_copy(update={"lease_owner": "worker-2"})
 

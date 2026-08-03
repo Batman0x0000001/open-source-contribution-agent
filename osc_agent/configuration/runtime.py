@@ -17,7 +17,19 @@ class AgentExecutionConfig(FrozenContractModel):
     max_total_tokens: int = Field(ge=1)
     deadline_seconds: int = Field(ge=1)
     max_output_tokens: int = Field(ge=1)
+    max_output_tokens_escalation: int | None = Field(default=None, ge=1)
     max_no_progress_rounds: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def escalation_must_raise_the_output_limit(self) -> "AgentExecutionConfig":
+        if (
+            self.max_output_tokens_escalation is not None
+            and self.max_output_tokens_escalation <= self.max_output_tokens
+        ):
+            raise ValueError(
+                "max_output_tokens_escalation must exceed max_output_tokens"
+            )
+        return self
 
     def to_query_config(self) -> QueryConfig:
         return QueryConfig(**self.model_dump())

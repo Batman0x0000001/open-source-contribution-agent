@@ -96,6 +96,7 @@ def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -
     assert subagents.get("verify").definition.config.max_rounds == 16
     assert subagents.get("explore").definition.config.max_rounds == 8
     assert application._query_config.max_rounds == 30
+    assert application._query_config.max_output_tokens_escalation is None
     assert "agent" in application._capabilities.allowed_tools
     assert not hasattr(application, "_discovery_prompt")
     assert "open-source-contribution" in skill_tool.description
@@ -125,6 +126,35 @@ def test_application_has_one_shared_runtime_and_executor_graph(tmp_path: Path) -
     assert "agent" in {
         schema["name"] for schema in registry.schemas(contribution_context)
     }
+
+
+def test_official_anthropic_gateway_enables_safe_64k_output_escalation(
+    tmp_path: Path,
+) -> None:
+    official = build_agent_application(
+        AgentApplicationConfig(
+            settings=Settings(
+                anthropic_api_key="secret",
+                model_id="claude-sonnet-test",
+            ),
+            repository_root=tmp_path,
+            profile=AgentProfile(profile_id="official", system_prompt="test"),
+        )
+    )
+    compatible = build_agent_application(
+        AgentApplicationConfig(
+            settings=Settings(
+                anthropic_api_key="secret",
+                anthropic_base_url="https://compatible.example.com",
+                model_id="claude-sonnet-test",
+            ),
+            repository_root=tmp_path,
+            profile=AgentProfile(profile_id="compatible", system_prompt="test"),
+        )
+    )
+
+    assert official._query_config.max_output_tokens_escalation == 64_000
+    assert compatible._query_config.max_output_tokens_escalation is None
 
 
 def test_profile_capabilities_are_resolved_once_for_schema_and_execution(tmp_path: Path) -> None:

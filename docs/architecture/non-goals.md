@@ -1,6 +1,6 @@
 # 当前架构非目标
 
-以下能力不属于 Open Source Contribution Agent `0.3.3` 的最小核心。当前实现不为其提前建立专用框架。
+以下能力不属于 Open Source Contribution Agent `0.3.4` 的最小核心。当前实现不为其提前建立专用框架。
 
 | 排除项 | 原因 | 未来触发条件 |
 |---|---|---|

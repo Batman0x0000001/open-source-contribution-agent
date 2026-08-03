@@ -57,6 +57,15 @@ from osc_agent.runtime.tool_orchestration import (
 )
 
 
+_MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3
+_MAX_OUTPUT_TOKENS_RECOVERY_TEXT = (
+    "<max-output-tokens-recovery>\n"
+    "Output token limit hit. Resume directly — no apology and no recap. "
+    "Pick up mid-thought if needed and break the remaining work into smaller pieces.\n"
+    "</max-output-tokens-recovery>"
+)
+
+
 @dataclass
 class _QueryProgress:
     session_id: str
@@ -68,6 +77,7 @@ class _QueryProgress:
     last_tool_signature: str | None = None
     stop_block_count: int = 0
     last_stop_reasons: tuple[str, ...] = ()
+    max_output_tokens_recovery_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -135,6 +145,7 @@ class AgentRuntime:
         system_prompt = run.system_prompt
         started_at = run.started_at
         force_compact_reason: str | None = None
+        max_output_tokens_override: int | None = None
 
         while True:
             tool_context = run.agent_state.tool_context(
@@ -196,7 +207,9 @@ class AgentRuntime:
                 ),
                 messages=projection.messages,
                 tools=self.dependencies.tool_executor.registry.schemas(tool_context),
-                max_output_tokens=params.config.max_output_tokens,
+                max_output_tokens=(
+                    max_output_tokens_override or params.config.max_output_tokens
+                ),
             )
             completed: ModelCompleted | None = None
             try:
@@ -237,6 +250,7 @@ class AgentRuntime:
                 ):
                     progress.reactive_compaction_count += 1
                     force_compact_reason = "reactive_compact"
+                    max_output_tokens_override = None
                     continue
                 yield _stopped(
                     run,
@@ -265,10 +279,6 @@ class AgentRuntime:
                 )
                 return
 
-            run.append(completed.message)
-            yield AssistantMessageCompleted(
-                message=completed.message.model_copy(deep=True)
-            )
             progress.input_tokens += completed.input_tokens
             progress.output_tokens += completed.output_tokens
 
@@ -277,8 +287,38 @@ class AgentRuntime:
                 for block in completed.message.content
                 if isinstance(block, ToolUseBlock)
             ]
+            escalation = params.config.max_output_tokens_escalation
+            if (
+                not tool_calls
+                and completed.stop_reason == "max_tokens"
+                and max_output_tokens_override is None
+                and escalation is not None
+                and escalation > params.config.max_output_tokens
+            ):
+                max_output_tokens_override = escalation
+                continue
+
+            max_output_tokens_override = None
+            run.append(completed.message)
+            yield AssistantMessageCompleted(
+                message=completed.message.model_copy(deep=True)
+            )
             if not tool_calls:
                 if completed.stop_reason == "max_tokens":
+                    if (
+                        progress.max_output_tokens_recovery_count
+                        < _MAX_OUTPUT_TOKENS_RECOVERY_LIMIT
+                    ):
+                        progress.max_output_tokens_recovery_count += 1
+                        run.append(
+                            RuntimeMessage(
+                                role="user",
+                                content=[
+                                    TextBlock(text=_MAX_OUTPUT_TOKENS_RECOVERY_TEXT)
+                                ],
+                            )
+                        )
+                        continue
                     yield _stopped(
                         run,
                         Failed(
@@ -429,7 +469,12 @@ class AgentRuntime:
         )
         run = _ActiveQuery(
             params=params,
-            progress=_QueryProgress(session_id=params.session_id),
+            progress=_QueryProgress(
+                session_id=params.session_id,
+                max_output_tokens_recovery_count=_max_tokens_recovery_count(
+                    opened.messages
+                ),
+            ),
             transcript=SessionTranscript(session_id=params.session_id, messages=opened.messages),
             agent_state=agent_state,
             model=opened.model,
@@ -521,6 +566,16 @@ def _plan_name(session_id: str) -> str:
     ):
         raise ValueError("plan session id contains unsafe path characters")
     return f"{session_id}.md"
+
+
+def _max_tokens_recovery_count(messages: list[RuntimeMessage]) -> int:
+    return sum(
+        1
+        for message in messages
+        for block in message.content
+        if isinstance(block, TextBlock)
+        and block.text == _MAX_OUTPUT_TOKENS_RECOVERY_TEXT
+    )
 
 
 def _stopped(

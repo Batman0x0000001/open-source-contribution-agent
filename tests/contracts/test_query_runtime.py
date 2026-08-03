@@ -185,6 +185,127 @@ def test_query_streams_text_and_completes() -> None:
     assert isinstance(events[-1], RunCompleted)
 
 
+def test_max_tokens_output_is_persisted_and_resumed_with_a_meta_message(
+    tmp_path: Path,
+) -> None:
+    store = FileSessionStore(tmp_path / "sessions")
+    gateway = FakeGateway(
+        [
+            [
+                ModelCompleted(
+                    message=RuntimeMessage(
+                        role="assistant", content=[TextBlock(text="partial output")]
+                    ),
+                    stop_reason="max_tokens",
+                    output_tokens=8_192,
+                )
+            ],
+            [
+                ModelCompleted(
+                    message=RuntimeMessage(
+                        role="assistant", content=[TextBlock(text="finished")]
+                    ),
+                    stop_reason="end_turn",
+                )
+            ],
+        ]
+    )
+
+    events = asyncio.run(
+        collect(
+            runtime(gateway, session_store=store),
+            StartQueryParams(
+                session_id="max-tokens-recovery",
+                model="test-model",
+                messages=[RuntimeMessage(role="user", content=[TextBlock(text="work")])],
+                workspace_root=str(tmp_path),
+            ),
+        )
+    )
+
+    assert isinstance(events[-1], RunCompleted)
+    assert len(gateway.requests) == 2
+    recovery = gateway.requests[1].messages[-1]
+    assert recovery.role == "user"
+    assert "Resume directly" in recovery.content[0].text
+    snapshot = store.load("max-tokens-recovery")
+    assert snapshot is not None
+    assert any(
+        isinstance(block, TextBlock) and block.text == "partial output"
+        for message in snapshot.messages
+        for block in message.content
+    )
+
+
+def test_max_tokens_first_retries_the_same_request_at_a_safe_64k_limit() -> None:
+    gateway = FakeGateway(
+        [
+            [
+                ModelCompleted(
+                    message=RuntimeMessage(
+                        role="assistant", content=[TextBlock(text="discarded partial")]
+                    ),
+                    stop_reason="max_tokens",
+                    output_tokens=8_192,
+                )
+            ],
+            [
+                ModelCompleted(
+                    message=RuntimeMessage(
+                        role="assistant", content=[TextBlock(text="complete response")]
+                    ),
+                    stop_reason="end_turn",
+                )
+            ],
+        ]
+    )
+    query_params = StartQueryParams(
+        session_id="max-tokens-escalation",
+        model="test-model",
+        messages=[RuntimeMessage(role="user", content=[TextBlock(text="work")])],
+        workspace_root="C:/repo",
+        config=QueryConfig(
+            max_output_tokens=8_192,
+            max_output_tokens_escalation=64_000,
+        ),
+    )
+
+    events = asyncio.run(collect(runtime(gateway), query_params))
+
+    assert isinstance(events[-1], RunCompleted)
+    assert [request.max_output_tokens for request in gateway.requests] == [8_192, 64_000]
+    assert gateway.requests[1].messages == gateway.requests[0].messages
+    completed_messages = [
+        event.message
+        for event in events
+        if isinstance(event, AssistantMessageCompleted)
+    ]
+    assert [message.content[0].text for message in completed_messages] == [
+        "complete response"
+    ]
+
+
+def test_max_tokens_recovery_stops_after_three_continuations() -> None:
+    turns = [
+        [
+            ModelCompleted(
+                message=RuntimeMessage(
+                    role="assistant", content=[TextBlock(text=f"partial-{index}")]
+                ),
+                stop_reason="max_tokens",
+            )
+        ]
+        for index in range(4)
+    ]
+    gateway = FakeGateway(turns)
+
+    events = asyncio.run(collect(runtime(gateway), params()))
+
+    assert isinstance(events[-1], RunStopped)
+    assert events[-1].transition.error_code == "MODEL_MAX_TOKENS"
+    assert len(gateway.requests) == 4
+
+
 def test_start_query_can_initialize_a_persistent_plan_draft(tmp_path: Path) -> None:
     store = FileSessionStore(tmp_path / "sessions")
     gateway = FakeGateway(

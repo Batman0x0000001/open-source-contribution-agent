@@ -89,7 +89,9 @@ class BotWorker:
                     retry_phase=retry_phase,
                     outbox_event=self._comment_event(
                         current.job_id,
-                        "model-contract-mismatch",
+                        "model-contract-mismatch:"
+                        f"{retry_phase}:"
+                        f"{current.plan_attempts if retry_phase == 'plan' else current.implementation_attempts}",
                         "The Bot job cannot run because its approved model contract no longer matches the Worker configuration.",
                     ),
                     error_code="BOT_MODEL_CONTRACT_MISMATCH",
@@ -110,6 +112,11 @@ class BotWorker:
                 and current.status in {"running_plan", "running_implementation"}
             ):
                 retry_phase = "plan" if current.status == "running_plan" else "implementation"
+                attempt = (
+                    current.plan_attempts
+                    if retry_phase == "plan"
+                    else current.implementation_attempts
+                )
                 retrying = self.store.apply_job_event_with_outbox(
                     job_id=current.job_id,
                     expected_version=current.version,
@@ -118,7 +125,7 @@ class BotWorker:
                     retry_phase=retry_phase,
                     outbox_event=self._comment_event(
                         current.job_id,
-                        "failed",
+                        f"failed:{retry_phase}:{attempt}",
                         "The bot job failed inside the trusted worker. Review server audit logs before retrying.",
                     ),
                     error_code="BOT_WORKER_FAILED",

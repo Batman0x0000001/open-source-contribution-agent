@@ -22,6 +22,7 @@ class QueryConfig(FrozenContractModel):
     max_reactive_compactions: int = Field(default=1, ge=0)
     max_no_progress_rounds: int = Field(default=3, ge=1)
     max_output_tokens: int = Field(default=8_192, ge=1)
+    max_output_tokens_escalation: int | None = Field(default=None, ge=1)
 
 
 class StartQueryParams(FrozenContractModel):

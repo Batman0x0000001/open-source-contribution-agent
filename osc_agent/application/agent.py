@@ -288,11 +288,21 @@ def build_agent_application(config: AgentApplicationConfig) -> AgentApplication:
     registered = CapabilityScope(allowed_tools=frozenset(tool_names))
     profile = CapabilityScope(allowed_tools=config.profile.allowed_tools)
     capabilities = registered.intersect(profile)
+    query_config = settings.runtime.agents.main.to_query_config()
+    if (
+        query_config.max_output_tokens_escalation is None
+        and config.model_gateway is None
+        and settings.anthropic_base_url is None
+        and model.lower().startswith("claude-")
+    ):
+        query_config = query_config.model_copy(
+            update={"max_output_tokens_escalation": 64_000}
+        )
     return AgentApplication(
         runtime=runtime,
         session_store=session_store,
         skill_preparer=skill_preparer,
-        query_config=settings.runtime.agents.main.to_query_config(),
+        query_config=query_config,
         capabilities=capabilities,
         repository_root=repository_root,
         model=model,

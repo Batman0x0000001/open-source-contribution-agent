@@ -1,6 +1,6 @@
 # Bot observability runbook
 
-本文适用于 Open Source Contribution Agent `0.3.3`。
+本文适用于 Open Source Contribution Agent `0.3.4`。
 
 Control and Worker emit structured JSON. The stable envelope is `timestamp`, `level`, `service`,
 `event`, `job_id`, `session_id`, `repository`, `issue_number`, state transition, phase, attempt,
@@ -8,6 +8,9 @@ duration, error code, GitHub delivery ID and execution-contract hash. Logs must 
 full prompts, Issue bodies, Tool inputs/outputs or repository file contents.
 Job 的 `last_progress_event` 只包含 phase 和 RuntimeEvent 类型，并最多每五秒更新一次（终态
 事件例外）；`last_progress_at` 可用于识别仍在运行但没有新事件的 Agent。
+主 Agent 在官方 Claude 端点命中默认输出上限时，先对同一请求做一次 64k 重试；兼容端点
+只有显式配置 `max_output_tokens_escalation` 才启用。随后最多注入三次持久化续写消息，耗尽
+后才以 `MODEL_MAX_TOKENS` 终止。Worker 失败评论的 Outbox 幂等键包含阶段和尝试次数。
 
 Prometheus exports Job counts/active/duration/retries, dispatcher up/heartbeat/iterations/failures/
 crashes/depth/oldest age, dead letters, Agent runs/duration, Tool calls, Worker active/heartbeat and

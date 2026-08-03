@@ -1,6 +1,6 @@
 # 项目架构不变量矩阵
 
-本文记录 Open Source Contribution Agent `0.3.3` 由自动化测试保护的核心设计约束。
+本文记录 Open Source Contribution Agent `0.3.4` 由自动化测试保护的核心设计约束。
 
 | 编号 | 最小机制 | Python 对应 | 硬验证 |
 |---|---|---|---|
@@ -25,6 +25,7 @@
 | B2 | 服务状态机不侵入 Agent Runtime | `BotJobStateMachine` | Runtime 不 import Bot，状态图自动校验 |
 | B4 | 产品入口显式选择 Start/Resume，Runtime 在 lease 内验证 Session 事实 | `AgentConversation`、`AgentRuntime` | CLI 严格恢复与 Bot crash-safe 分发测试 |
 | E1 | Runtime 与 Publisher 使用同一完成判定 | `CompletionEvaluator`、`CompletionStopHook` | 相同输入得到相同 blocking reasons |
+| E2 | 安全时对截断请求做一次 64k 同请求重试，随后最多自动续写三次 | `AgentRuntime`、Session transcript | 升级、恢复与上限耗尽测试 |
 | X1 | Workspace、Process、Bot Domain/Control 不依赖 Runtime Context | 包依赖方向 | AST 边界测试 |
 | X2 | Capability 展示与执行使用同一持久状态 | `AgentRunState`、`ToolRegistry`、`ToolExecutor` | Schema 过滤与不可绕过执行门禁测试 |
 
