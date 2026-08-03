@@ -1,6 +1,6 @@
 # Bot-first architecture
 
-本文描述 Open Source Contribution Agent `0.3.4` 的生产架构。
+本文描述 Open Source Contribution Agent `0.3.5` 的生产架构。
 
 The GitHub App is the production product. The local CLI is a debugging adapter. Both build an
 `AgentApplication`, open an `AgentConversation`, and submit typed input. The conversation facade
@@ -17,6 +17,9 @@ repository-read-only tools, Explore, and `DisabledProcessRunner`; its only write
 session-owned draft under trusted runtime state, and it never resolves a Docker image. The draft
 is reinjected after compaction or retry. `submit_issue_plan` reads that draft while the Worker
 binds the base SHA and ExecutionContract hash instead of accepting those fields from the model.
+`read_file` bounds its own inline page and is excluded from generic large-result persistence, so
+repository reads cannot create a result-file readback loop. Full compaction summarizes the
+authoritative transcript before projection-only trimming.
 Implementation uses the approved `open-source-contribution` Skill and a network-disabled Docker
 runner. An immutable ExecutionContract binds the Issue snapshot, base SHA, model/profile/Skill
 revisions, tools, validation, sandbox limits, repository policy, and publication mode.

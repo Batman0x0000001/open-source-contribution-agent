@@ -7,6 +7,8 @@ from tests.runtime_factories import apply_tool_result, tool_context
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from osc_agent.runtime.messages import RuntimeMessage, ToolResultBlock, ToolUseBlock
 from osc_agent.runtime.tool_models import ApprovalResponse, Ask
 from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
@@ -81,6 +83,11 @@ def test_read_file_is_input_sensitive_behavior_object(tmp_path: Path) -> None:
         "offset": 1,
         "complete": False,
     }
+
+
+def test_read_file_rejects_a_page_larger_than_its_inline_context_bound() -> None:
+    with pytest.raises(ValueError):
+        ReadFileInput(path="README.md", limit=50_001)
 
 
 def test_read_file_returns_unchanged_stub_for_an_exact_duplicate(tmp_path: Path) -> None:

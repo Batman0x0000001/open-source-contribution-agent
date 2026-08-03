@@ -31,7 +31,12 @@ from osc_agent.workspaces.models import FileObservation
 
 class ReadFileInput(ContractModel):
     path: str = Field(min_length=1)
-    limit: int = Field(default=20_000, ge=1, le=200_000)
+    limit: int = Field(
+        default=20_000,
+        ge=1,
+        le=50_000,
+        description="Maximum characters to return; use offset for additional pages.",
+    )
     offset: int = Field(default=0, ge=0)
 
 

@@ -1,6 +1,6 @@
 # 项目架构不变量矩阵
 
-本文记录 Open Source Contribution Agent `0.3.4` 由自动化测试保护的核心设计约束。
+本文记录 Open Source Contribution Agent `0.3.5` 由自动化测试保护的核心设计约束。
 
 | 编号 | 最小机制 | Python 对应 | 硬验证 |
 |---|---|---|---|
@@ -10,6 +10,7 @@
 | T2 | Tool Result 与 State Commit 显式分离；并发完成可乱序，StateChange 按调用顺序应用 | `tool_orchestration.py`、`AgentRunState.apply()` | 并发、串行与 Post Hook 失败测试 |
 | T3 | Tool 只适配模型协议，共享文件、Git 和进程能力位于 Tool 外部 | `tools/`、`workspaces/`、`processes/` | AST 依赖边界与核心注册表测试 |
 | C1 | Transcript 与模型 Projection 分离 | `SessionTranscript`、`ContextPipeline` | compact 不改变权威历史和 Tool 配对 |
+| C2 | `read_file` 自身有界且不进入大型结果回读闭环；摘要读取权威结果而非裁剪 Projection | `ReadFileTool`、`ContextPipeline` | inline Read 与原始摘要输入测试 |
 | R1 | Session V6 无平行运行字段，Transcript 驱动恢复 | `SessionMetadata`、`AgentRunState`、File/SQLite Store | V5 拒绝、V6 新建、追加与恢复 |
 | S1 | Catalog 只发现 manifest，正文和资源延迟加载 | `SkillLoader`、`ReadSkillResourceTool` | 调用时读取与路径逃逸测试 |
 | S2 | 产品 Skill、SkillTool 共用准备器 | `AgentConversation`、`SkillTool`、`SkillPreparer` | composition 对象同一性测试 |

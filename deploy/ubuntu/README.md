@@ -1,6 +1,6 @@
 # Ubuntu 单机部署
 
-本文适用于 Open Source Contribution Agent `0.3.4`。
+本文适用于 Open Source Contribution Agent `0.3.5`。
 
 推荐从源码发布目录运行 `sudo ./deploy/ubuntu/install.sh --config /etc/osc-agent/config.yml`，
 再分别执行 Control/Worker doctor。升级采用停机归档和当前状态模型的原子重建，不支持不同

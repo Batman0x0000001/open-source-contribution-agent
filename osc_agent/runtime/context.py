@@ -22,6 +22,9 @@ from osc_agent.runtime.state import ToolContext
 from osc_agent.workspaces.instructions import RepositoryInstructionResolver
 
 
+_INLINE_BOUNDED_TOOL_NAMES = frozenset({"read_file"})
+
+
 class SessionTranscript(ContractModel):
     """会话的权威记录；Context Pipeline 只能读取，不能覆盖。"""
 
@@ -133,7 +136,8 @@ class ContextPipeline:
         instruction_resolver: RepositoryInstructionResolver | None = None,
         force_reason: str | None = None,
     ) -> ContextProjection:
-        messages = transcript.snapshot()
+        authoritative_messages = transcript.snapshot()
+        messages = [message.model_copy(deep=True) for message in authoritative_messages]
         reasons: list[str] = []
 
         if self._enforce_tool_result_budget(
@@ -148,7 +152,11 @@ class ContextPipeline:
         should_compact = force_reason is not None or _estimate_chars(messages) > config.auto_compact_chars
         if should_compact:
             reason = force_reason or "auto_compact"
-            messages, summary = await self._compact(messages, reason=reason)
+            messages, summary = await self._compact(
+                messages,
+                authoritative_messages=authoritative_messages,
+                reason=reason,
+            )
             reasons.append(reason)
         else:
             summary = ContextSummary(text="No summary generated")
@@ -179,9 +187,18 @@ class ContextPipeline:
             for block in message.content
             if isinstance(block, ToolUseBlock)
         }
-        total = sum(len(_json_text(block.content)) for block in results)
+        budgeted_results = [
+            block
+            for block in results
+            if tool_names.get(block.tool_use_id) not in _INLINE_BOUNDED_TOOL_NAMES
+        ]
+        total = sum(len(_json_text(block.content)) for block in budgeted_results)
         changed = False
-        for block in sorted(results, key=lambda item: len(_json_text(item.content)), reverse=True):
+        for block in sorted(
+            budgeted_results,
+            key=lambda item: len(_json_text(item.content)),
+            reverse=True,
+        ):
             if total <= max_chars:
                 break
             original = _json_text(block.content)
@@ -199,17 +216,32 @@ class ContextPipeline:
                     content=original,
                 )
                 block.content = f"[Tool result persisted as {path}; use read_tool_result]\nPreview:\n{preview}"
-            total = sum(len(_json_text(item.content)) for item in results)
+            total = sum(len(_json_text(item.content)) for item in budgeted_results)
             changed = True
         return changed
 
     @staticmethod
     def _micro_compact(messages: list[RuntimeMessage], *, keep_recent: int) -> bool:
         results = _tool_results(messages)
-        if len(results) <= keep_recent:
+        tool_names = {
+            block.id: block.name
+            for message in messages
+            for block in message.content
+            if isinstance(block, ToolUseBlock)
+        }
+        compactable_results = [
+            block
+            for block in results
+            if tool_names.get(block.tool_use_id) not in _INLINE_BOUNDED_TOOL_NAMES
+        ]
+        if len(compactable_results) <= keep_recent:
             return False
         changed = False
-        older = results if keep_recent == 0 else results[:-keep_recent]
+        older = (
+            compactable_results
+            if keep_recent == 0
+            else compactable_results[:-keep_recent]
+        )
         for block in older:
             content = _json_text(block.content)
             if len(content) > 200 and not content.startswith("[Tool result persisted"):
@@ -221,13 +253,19 @@ class ContextPipeline:
         self,
         messages: list[RuntimeMessage],
         *,
+        authoritative_messages: list[RuntimeMessage],
         reason: str,
     ) -> tuple[list[RuntimeMessage], ContextSummary]:
         groups = _group_by_api_round(messages)
+        authoritative_groups = _group_by_api_round(authoritative_messages)
         preserve_count = min(2, len(groups))
         if len(groups) <= preserve_count:
             preserve_count = max(0, len(groups) - 1)
-        summarized_groups = groups if preserve_count == 0 else groups[:-preserve_count]
+        summarized_groups = (
+            authoritative_groups
+            if preserve_count == 0
+            else authoritative_groups[:-preserve_count]
+        )
         preserved_groups = [] if preserve_count == 0 else groups[-preserve_count:]
         summarized = [message for group in summarized_groups for message in group]
         try:

@@ -8,7 +8,12 @@ import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from osc_agent.runtime.context import ContextPipeline, GatewayContextSummarizer, SessionTranscript
+from osc_agent.runtime.context import (
+    ContextPipeline,
+    ContextSummary,
+    GatewayContextSummarizer,
+    SessionTranscript,
+)
 from osc_agent.runtime.session_store import FileToolResultStore, MemoryToolResultStore
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
 from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
@@ -71,6 +76,86 @@ def test_repeated_projection_reuses_the_same_persisted_tool_result(tmp_path: Pat
     assert [path.name for path in (result_root / "session-1").iterdir()] == [
         "call-1.txt"
     ]
+
+
+def test_read_file_result_stays_inline_instead_of_entering_a_readback_loop() -> None:
+    original = "README contents\n" * 1_000
+    store = MemoryToolResultStore()
+    transcript = SessionTranscript(
+        session_id="session-1",
+        messages=[
+            message(
+                "assistant",
+                ToolUseBlock(
+                    id="read-call",
+                    name="read_file",
+                    input={"path": "README.md"},
+                ),
+            ),
+            message(
+                "user",
+                ToolResultBlock(tool_use_id="read-call", content=original),
+            ),
+        ],
+    )
+
+    projection = asyncio.run(
+        ContextPipeline(tool_result_store=store).project(
+            transcript,
+            config=QueryConfig(max_tool_result_chars=100),
+        )
+    )
+
+    projected = projection.messages[-1].content[0]
+    assert isinstance(projected, ToolResultBlock)
+    assert projected.content == original
+    try:
+        store.read(session_id="session-1", result_id="read-call")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("read_file output must not be persisted for model readback")
+
+
+def test_micro_compact_keeps_bounded_read_file_results_inline() -> None:
+    messages = []
+    for index in range(4):
+        call_id = f"read-{index}"
+        messages.extend(
+            [
+                message(
+                    "assistant",
+                    ToolUseBlock(
+                        id=call_id,
+                        name="read_file",
+                        input={"path": f"file-{index}.txt"},
+                    ),
+                ),
+                message(
+                    "user",
+                    ToolResultBlock(
+                        tool_use_id=call_id,
+                        content=f"original-{index}-" + "x" * 500,
+                    ),
+                ),
+            ]
+        )
+    transcript = SessionTranscript(session_id="session-1", messages=messages)
+
+    projection = asyncio.run(
+        ContextPipeline().project(
+            transcript,
+            config=QueryConfig(
+                max_tool_result_chars=100_000,
+                keep_recent_tool_results=1,
+                auto_compact_chars=100_000,
+            ),
+        )
+    )
+
+    first_result = projection.messages[1].content[0]
+    assert isinstance(first_result, ToolResultBlock)
+    assert str(first_result.content).startswith("original-0-")
 
 
 def test_projection_does_not_persist_a_retrieved_tool_result_again() -> None:
@@ -235,3 +320,57 @@ def test_model_summary_reports_its_token_usage() -> None:
 
     assert projection.summary_input_tokens == 7
     assert projection.summary_output_tokens == 3
+
+
+def test_auto_compact_summarizes_authoritative_tool_results_before_projection_trimming() -> None:
+    class RecordingSummarizer:
+        def __init__(self) -> None:
+            self.messages: list[RuntimeMessage] = []
+
+        async def summarize(
+            self,
+            messages: list[RuntimeMessage],
+            *,
+            reason: str,
+        ) -> ContextSummary:
+            self.messages = messages
+            return ContextSummary(text=f"summary for {reason}")
+
+    original = "authoritative README content\n" * 100
+    summarizer = RecordingSummarizer()
+    transcript = SessionTranscript(
+        session_id="session-1",
+        messages=[
+            message("user", TextBlock(text="translate README")),
+            message(
+                "assistant",
+                ToolUseBlock(id="read-1", name="read", input={}),
+            ),
+            message("user", ToolResultBlock(tool_use_id="read-1", content=original)),
+            message("assistant", TextBlock(text="middle one")),
+            message("user", TextBlock(text="continue one")),
+            message("assistant", TextBlock(text="middle two")),
+            message("user", TextBlock(text="continue two")),
+            message("assistant", TextBlock(text="latest")),
+            message("user", TextBlock(text="continue latest")),
+        ],
+    )
+
+    asyncio.run(
+        ContextPipeline(summarizer=summarizer).project(
+            transcript,
+            config=QueryConfig(
+                max_tool_result_chars=100,
+                keep_recent_tool_results=1,
+                auto_compact_chars=1,
+            ),
+        )
+    )
+
+    summarized_results = [
+        block.content
+        for item in summarizer.messages
+        for block in item.content
+        if isinstance(block, ToolResultBlock)
+    ]
+    assert original in summarized_results
