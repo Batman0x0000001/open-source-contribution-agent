@@ -8,7 +8,6 @@ from http.client import IncompleteRead
 import json
 import os
 from pathlib import Path
-import subprocess
 from typing import Any, Literal
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -16,18 +15,18 @@ from urllib.request import Request, urlopen
 
 from pydantic import Field
 
-from osc_agent.runtime.models import (
-    ContractModel,
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.messages import ToolResultBlock
+from osc_agent.runtime.tool_models import (
     ToolError,
     ToolResult,
-    ToolUseContext,
-    ToolResultBlock,
     ValidationFailure,
     ValidationResult,
     ValidationSuccess,
 )
+from osc_agent.runtime.state import ToolContext
 from osc_agent.runtime.tool import BaseTool
-from osc_agent.tools.process_runner import build_subprocess_environment
+from osc_agent.workspaces.git_state import git_remote_origin
 
 
 class GitHubIssue(ContractModel):
@@ -72,10 +71,10 @@ class GitHubListIssuesTool(BaseTool[GitHubListIssuesInput, GitHubListIssuesOutpu
     def is_concurrency_safe(self, input: GitHubListIssuesInput) -> bool:
         return True
 
-    async def validate_input(self, input: GitHubListIssuesInput, context: ToolUseContext) -> ValidationResult:
+    async def validate_input(self, input: GitHubListIssuesInput, context: ToolContext) -> ValidationResult:
         return _validate_remote(input.repo_url, context)
 
-    async def call(self, input: GitHubListIssuesInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: GitHubListIssuesInput, context: ToolContext) -> ToolResult:
         result = await asyncio.to_thread(
             fetch_issues,
             input.repo_url,
@@ -117,11 +116,11 @@ class GitHubGetIssueTool(BaseTool[GitHubGetIssueInput, GitHubGetIssueOutput]):
     def is_concurrency_safe(self, input: GitHubGetIssueInput) -> bool:
         return True
 
-    async def validate_input(self, input: GitHubGetIssueInput, context: ToolUseContext) -> ValidationResult:
+    async def validate_input(self, input: GitHubGetIssueInput, context: ToolContext) -> ValidationResult:
         valid = _validate_remote(input.repo_url, context)
         return valid
 
-    async def call(self, input: GitHubGetIssueInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: GitHubGetIssueInput, context: ToolContext) -> ToolResult:
         result = await asyncio.to_thread(
             fetch_issue,
             input.repo_url,
@@ -139,11 +138,11 @@ class GitHubGetIssueTool(BaseTool[GitHubGetIssueInput, GitHubGetIssueOutput]):
         )
 
 
-def _validate_remote(repo_url: str, context: ToolUseContext) -> ValidationResult:
+def _validate_remote(repo_url: str, context: ToolContext) -> ValidationResult:
     valid = _validate_repo_url(repo_url)
     if isinstance(valid, ValidationFailure):
         return valid
-    remote = _local_origin(Path(context.working_directory))
+    remote = _local_origin(Path(context.workspace.working_directory))
     requested = parse_github_repo(repo_url)
     if (
         remote is not None
@@ -210,7 +209,11 @@ def parse_github_repo(repo_url: str) -> tuple[str, str]:
     parts = [part for part in parsed.path.strip("/").split("/") if part]
     if len(parts) != 2:
         raise ValueError("repo_url must contain exactly an owner and repository name")
-    return parts[0], parts[1].removesuffix(".git")
+    owner = parts[0]
+    repository = parts[1].removesuffix(".git")
+    if not owner or not repository:
+        raise ValueError("repo_url must contain a non-empty owner and repository name")
+    return owner, repository
 
 
 def fetch_issues(
@@ -278,6 +281,8 @@ def _github_get_json(url: str, token: str | None = None) -> dict[str, Any]:
     try:
         with urlopen(Request(url, headers=headers), timeout=20) as response:
             return {"ok": True, "data": json.loads(response.read().decode("utf-8"))}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {"ok": False, "error": "GitHub API returned invalid JSON"}
     except HTTPError as exc:
         return {"ok": False, "error": f"GitHub API returned HTTP {exc.code}"}
     except IncompleteRead:
@@ -294,46 +299,8 @@ def _issue_labels(issue: dict[str, Any]) -> set[str]:
 
 
 def _local_origin(repo_root: Path) -> tuple[str, str] | None:
-    try:
-        top = subprocess.run(
-            [
-                "git",
-                "-c",
-                f"safe.directory={repo_root.resolve()}",
-                "rev-parse",
-                "--show-toplevel",
-            ],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            env=build_subprocess_environment(),
-        )
-        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != repo_root.resolve():
-            return None
-        completed = subprocess.run(
-            [
-                "git",
-                "-c",
-                f"safe.directory={repo_root.resolve()}",
-                "config",
-                "--get",
-                "remote.origin.url",
-            ],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            env=build_subprocess_environment(),
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    value = completed.stdout.strip()
-    if completed.returncode != 0 or not value:
+    value = git_remote_origin(repo_root=repo_root)
+    if value is None:
         return None
     if value.startswith("git@github.com:"):
         value = "https://github.com/" + value.removeprefix("git@github.com:")
@@ -346,7 +313,7 @@ def _local_origin(repo_root: Path) -> tuple[str, str] | None:
 
 
 def _remote_mismatch_approved(
-    context: ToolUseContext,
+    context: ToolContext,
     *,
     local_origin: tuple[str, str],
     requested_repository: tuple[str, str],

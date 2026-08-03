@@ -1,13 +1,13 @@
 [Unit]
-Description=Clean expired OSA Agent Bot state
+Description=Clean expired OSC Agent Bot state
 
 [Service]
 Type=oneshot
-User=osa-control
-Group=osa-shared
+User=osc-control
+Group=osc-shared
 UMask=0007
 EnvironmentFile=/etc/osc-agent/bot.env
-ExecStart=/opt/osc-agent/current/venv/bin/osc-agent bot cleanup
+ExecStart=/opt/osc-agent/current/venv/bin/osc-agent-bot cleanup
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

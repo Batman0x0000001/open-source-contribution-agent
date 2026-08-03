@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import tool_context
+
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -10,18 +12,10 @@ from pydantic import Field
 
 from osc_agent.runtime.dependencies import QueryDependencies
 from osc_agent.runtime.gateway import ModelCompleted, ModelEvent, ModelRequest
-from osc_agent.runtime.models import (
-    ApprovalResponse,
-    Ask,
-    ContractModel,
-    ResumeQueryParams,
-    RuntimeMessage,
-    StartQueryParams,
-    TextBlock,
-    ToolResult,
-    ToolUseBlock,
-    ToolUseContext,
-)
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolUseBlock
+from osc_agent.runtime.query_models import ResumeQueryParams, StartQueryParams
+from osc_agent.runtime.tool_models import ApprovalResponse, Ask, ToolResult
 from osc_agent.runtime.query import AgentRuntime
 from osc_agent.runtime.session_store import FileSessionStore
 from osc_agent.runtime.tool import BaseTool, ToolRegistry
@@ -41,13 +35,13 @@ class MutateTool(BaseTool[MutateInput, MutateOutput]):
     input_model = MutateInput
     output_model = MutateOutput
 
-    def is_destructive(self, input: MutateInput) -> bool:
+    def requires_approval(self, input: MutateInput) -> bool:
         return True
 
     def permission_risk(self, input: MutateInput) -> str:
         return "process"
 
-    async def call(self, input: MutateInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: MutateInput, context: tool_context) -> ToolResult:
         return ToolResult(data={"value": input.value})
 
 
@@ -72,13 +66,13 @@ def _runtime(gateway, store, approval_handler) -> AgentRuntime:
     return AgentRuntime(
         QueryDependencies(
             model_gateway=gateway,
-            tool_registry=registry,
             tool_executor=ToolExecutor(
                 registry,
                 dependencies=ToolExecutionDependencies(
                     approval_handler=approval_handler,
                 ),
             ),
+            state_directory=str(store.root.parent / "state"),
             session_store=store,
         )
     )
@@ -109,7 +103,7 @@ def test_exact_permission_grant_persists_across_resume(tmp_path: Path) -> None:
             StartQueryParams(
                 session_id="session-1",
                 model="test",
-                repository_root=str(tmp_path),
+                workspace_root=str(tmp_path),
                 messages=[
                     RuntimeMessage(
                         role="user",
@@ -121,7 +115,7 @@ def test_exact_permission_grant_persists_across_resume(tmp_path: Path) -> None:
     )
     snapshot = store.load("session-1")
     assert snapshot is not None
-    assert len(snapshot.runtime_state.permission_grants) == 1
+    assert len(snapshot.state.permissions.grants) == 1
 
     async def reject_repeat(_decision: Ask) -> ApprovalResponse:
         raise AssertionError("exact Session permission should be reused")
@@ -136,7 +130,7 @@ def test_exact_permission_grant_persists_across_resume(tmp_path: Path) -> None:
             second,
             ResumeQueryParams(
                 session_id="session-1",
-                repository_root=str(tmp_path),
+                workspace_root=str(tmp_path),
             ),
         )
     )

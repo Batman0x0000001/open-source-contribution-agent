@@ -1,17 +1,17 @@
 [Unit]
-Description=OSA Agent Trusted Worker
+Description=OSC Agent Trusted Worker
 After=docker.service network-online.target
 Requires=docker.service
 
 [Service]
 Type=simple
-User=osa-worker
-Group=osa-shared
+User=osc-worker
+Group=osc-shared
 SupplementaryGroups=docker
 UMask=0007
 EnvironmentFile=/etc/osc-agent/worker.env
-ExecStartPre=/opt/osc-agent/current/venv/bin/osc-agent deploy schema-check
-ExecStart=/opt/osc-agent/current/venv/bin/osc-agent bot worker
+ExecStartPre=/opt/osc-agent/current/venv/bin/osc-agent-bot schema-check
+ExecStart=/opt/osc-agent/current/venv/bin/osc-agent-bot worker
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

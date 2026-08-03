@@ -17,12 +17,9 @@ from osc_agent.runtime.gateway import (
     RetryingModelGateway,
     RetryPolicy,
 )
-from osc_agent.runtime.models import (
-    ModelRetryScheduled,
-    RuntimeMessage,
-    StartQueryParams,
-    TextBlock,
-)
+from osc_agent.runtime.events import ModelRetryScheduled
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock
+from osc_agent.runtime.query_models import StartQueryParams
 from osc_agent.runtime.query import AgentRuntime
 from osc_agent.runtime.session_store import FileSessionStore
 from osc_agent.runtime.tool import ToolRegistry
@@ -172,8 +169,8 @@ def test_runtime_exposes_retry_event_but_persists_only_completed_message(
     runtime = AgentRuntime(
         QueryDependencies(
             model_gateway=gateway,
-            tool_registry=registry,
             tool_executor=ToolExecutor(registry),
+            state_directory=str(tmp_path / "state"),
             session_store=store,
         )
     )
@@ -185,7 +182,7 @@ def test_runtime_exposes_retry_event_but_persists_only_completed_message(
                 StartQueryParams(
                     session_id="retry-session",
                     model="test",
-                    repository_root=str(tmp_path),
+                    workspace_root=str(tmp_path),
                     messages=[
                         RuntimeMessage(
                             role="user",

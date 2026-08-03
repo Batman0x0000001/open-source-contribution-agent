@@ -1,0 +1,147 @@
+"""提供进入和退出隔离 Git worktree 的工具。"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import Literal
+
+from pydantic import Field
+
+from osc_agent.workspaces.git_worktree import GitWorktreeManager
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.state import (
+    FilesObserved,
+    InstructionsActivated,
+    ToolContext,
+    WorktreeEntered,
+    WorktreeExited,
+)
+from osc_agent.runtime.tool_models import ToolResult, ValidationFailure, ValidationResult, ValidationSuccess
+from osc_agent.runtime.tool import BaseTool
+from osc_agent.workspaces.instructions import RepositoryInstructionResolver
+
+
+class EnterWorktreeInput(ContractModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
+class WorktreeOutput(ContractModel):
+    path: str
+    branch: str
+    action: Literal["entered", "kept", "removed"]
+
+
+class EnterWorktreeTool(BaseTool[EnterWorktreeInput, WorktreeOutput]):
+    name = "enter_worktree"
+    description = "Create and enter a Git worktree isolated for the current session."
+    input_model = EnterWorktreeInput
+    output_model = WorktreeOutput
+
+    def __init__(
+        self,
+        manager: GitWorktreeManager,
+        instructions: RepositoryInstructionResolver | None = None,
+    ) -> None:
+        self.manager = manager
+        self.instructions = instructions or RepositoryInstructionResolver()
+
+    def requires_approval(self, input: EnterWorktreeInput) -> bool:
+        return True
+
+    def permission_risk(self, input: EnterWorktreeInput) -> str:
+        return "write"
+
+    def permission_preview(
+        self,
+        input: EnterWorktreeInput,
+        context: ToolContext,
+    ) -> dict[str, object]:
+        return {
+            "action": "create",
+            "path": str((self.manager.worktrees_root / input.name).resolve()),
+            "branch": f"osc-agent/{input.name}",
+        }
+
+    async def validate_input(self, input: EnterWorktreeInput, context: ToolContext) -> ValidationResult:
+        if context.workspace.worktree is not None:
+            return ValidationFailure(reason="session is already inside a worktree")
+        try:
+            self.manager.validate_name(input.name)
+        except ValueError as exc:
+            return ValidationFailure(reason=str(exc))
+        return ValidationSuccess()
+
+    async def call(self, input: EnterWorktreeInput, context: ToolContext) -> ToolResult:
+        session = await asyncio.to_thread(
+            self.manager.create, Path(context.workspace.working_directory), input.name
+        )
+        instruction_state = self.instructions.activate_root(Path(session.path))
+        return ToolResult(
+            data={"path": session.path, "branch": session.branch, "action": "entered"},
+            state_changes=(
+                WorktreeEntered(session=session),
+                InstructionsActivated(state=instruction_state, replace=True),
+                FilesObserved(replace=True),
+            ),
+        )
+
+
+class ExitWorktreeInput(ContractModel):
+    action: Literal["keep", "remove", "discard"] = "keep"
+
+
+class ExitWorktreeTool(BaseTool[ExitWorktreeInput, WorktreeOutput]):
+    name = "exit_worktree"
+    description = "Keep, safely remove, or explicitly discard the current session worktree."
+    input_model = ExitWorktreeInput
+    output_model = WorktreeOutput
+
+    def __init__(
+        self,
+        manager: GitWorktreeManager,
+        instructions: RepositoryInstructionResolver | None = None,
+    ) -> None:
+        self.manager = manager
+        self.instructions = instructions or RepositoryInstructionResolver()
+
+    def requires_approval(self, input: ExitWorktreeInput) -> bool:
+        return input.action in {"remove", "discard"}
+
+    def permission_risk(self, input: ExitWorktreeInput) -> str:
+        return "destructive" if input.action == "discard" else "write"
+
+    def permission_preview(
+        self,
+        input: ExitWorktreeInput,
+        context: ToolContext,
+    ) -> dict[str, object]:
+        return {
+            "action": input.action,
+            "path": context.workspace.worktree.path if context.workspace.worktree else None,
+            "branch": context.workspace.worktree.branch if context.workspace.worktree else None,
+        }
+
+    async def validate_input(self, input: ExitWorktreeInput, context: ToolContext) -> ValidationResult:
+        if context.workspace.worktree is None:
+            return ValidationFailure(reason="session is not inside a worktree")
+        return ValidationSuccess()
+
+    async def call(self, input: ExitWorktreeInput, context: ToolContext) -> ToolResult:
+        session = context.workspace.worktree
+        assert session is not None
+        if input.action in {"remove", "discard"}:
+            await asyncio.to_thread(self.manager.remove, session, discard=input.action == "discard")
+        return ToolResult(
+            data={"path": session.path, "branch": session.branch, "action": "removed" if input.action != "keep" else "kept"},
+            state_changes=(
+                WorktreeExited(working_directory=session.original_working_directory),
+                InstructionsActivated(
+                    state=self.instructions.activate_root(
+                        Path(session.original_working_directory)
+                    ),
+                    replace=True,
+                ),
+                FilesObserved(replace=True),
+            ),
+        )

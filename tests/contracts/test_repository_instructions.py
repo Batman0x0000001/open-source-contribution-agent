@@ -2,23 +2,21 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import tool_context
+
 import asyncio
 from pathlib import Path
 
 import pytest
 
 from osc_agent.runtime.context import ContextPipeline, SessionTranscript
-from osc_agent.runtime.instructions import (
+from osc_agent.workspaces.instructions import (
     MAX_INSTRUCTION_CHARS,
     RepositoryInstructionResolver,
 )
-from osc_agent.runtime.models import (
-    QueryConfig,
-    RepositoryInstructionState,
-    RuntimeMessage,
-    TextBlock,
-    ToolUseContext,
-)
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock
+from osc_agent.runtime.query_models import QueryConfig
+from osc_agent.workspaces.models import RepositoryInstructionState
 
 
 def test_root_and_nested_agents_and_claude_files_are_loaded_at_equal_scope(
@@ -58,10 +56,9 @@ def test_instruction_context_is_reinjected_and_marks_conflict_policy(
         session_id="instructions",
         messages=[RuntimeMessage(role="user", content=[TextBlock(text="work")])],
     )
-    context = ToolUseContext(
+    context = tool_context(
         session_id="instructions",
         working_directory=str(tmp_path),
-        repository_root=str(tmp_path),
         state_directory=str(tmp_path / "state"),
         instruction_state=state,
     )
@@ -70,7 +67,6 @@ def test_instruction_context_is_reinjected_and_marks_conflict_policy(
         ContextPipeline().project(
             transcript,
             config=QueryConfig(auto_compact_chars=1),
-            working_directory=str(tmp_path),
             runtime_context=context,
         )
     )

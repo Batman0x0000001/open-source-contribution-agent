@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import tool_context
+
 import asyncio
+from dataclasses import fields
 import inspect
 from pathlib import Path
 from typing import AsyncIterator
@@ -17,31 +20,27 @@ from osc_agent.runtime.gateway import (
     ModelRequest,
     ModelTextDelta,
 )
-from osc_agent.runtime.models import (
-    CapabilityScope,
-    CompletionRequirements,
-    ContractModel,
-    ContextUpdate,
-    QueryConfig,
-    QueryParams,
-    ResumeQueryParams,
-    StartQueryParams,
+from osc_agent.completion.hooks import CompletionStopHook
+from osc_agent.completion.models import CompletionRequirements
+from osc_agent.runtime.state import CapabilitiesRestricted, CapabilityScope
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.events import (
+    AssistantMessageCompleted,
     RunCompleted,
     RunStopped,
-    RuntimeMessage,
-    SessionMetadata,
-    TextBlock,
-    ToolResult,
-    ToolResultBlock,
-    ToolUseBlock,
-    ToolUseContext,
+    ToolCompleted,
+    ToolRequested,
 )
-from osc_agent.runtime.completion import CompletionEvidenceStopHook
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
+from osc_agent.runtime.query_models import QueryConfig, QueryParams, ResumeQueryParams, StartQueryParams
+from osc_agent.runtime.session import SessionMetadata
+from osc_agent.runtime.tool_models import ToolResult
 from osc_agent.runtime.hooks import HookRegistry
-from osc_agent.runtime.query import AgentRuntime
+from osc_agent.runtime.query import AgentRuntime, _QueryProgress
 from osc_agent.runtime.tool import BaseTool, ToolRegistry
 from osc_agent.runtime.tool_execution import ToolExecutor
 from osc_agent.runtime.session_store import FileSessionStore
+from tests.runtime_factories import agent_run_state
 
 
 class EchoInput(ContractModel):
@@ -57,18 +56,23 @@ class EchoTool(BaseTool[EchoInput, EchoOutput]):
     input_model = EchoInput
     output_model = EchoOutput
 
-    async def call(self, input: EchoInput, context: ToolUseContext) -> ToolResult:
+    def is_read_only(self, input: EchoInput) -> bool:
+        return True
+
+    async def call(self, input: EchoInput, context: tool_context) -> ToolResult:
         return ToolResult(data={"value": input.value})
 
 
 class NarrowTool(EchoTool):
     name = "narrow"
 
-    async def call(self, input: EchoInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: EchoInput, context: tool_context) -> ToolResult:
         return ToolResult(
             data={"value": input.value},
-            context_update=ContextUpdate(
-                capabilities=CapabilityScope(allowed_tools=frozenset({"echo"}))
+            state_changes=(
+                CapabilitiesRestricted(
+                    capabilities=CapabilityScope(allowed_tools=frozenset({"echo"}))
+                ),
             ),
         )
 
@@ -89,7 +93,7 @@ def params(*, max_rounds: int = 30) -> QueryParams:
         session_id="session-1",
         model="test-model",
         messages=[RuntimeMessage(role="user", content=[TextBlock(text="hello")])],
-        repository_root="C:/repo",
+        workspace_root="C:/repo",
         config=QueryConfig(max_rounds=max_rounds),
     )
 
@@ -103,8 +107,8 @@ def runtime(gateway: FakeGateway, tools=None, session_store=None, hooks=None) ->
     return AgentRuntime(
         QueryDependencies(
             model_gateway=gateway,
-            tool_registry=registry,
             tool_executor=ToolExecutor(registry, hooks=hooks),
+            state_directory="C:/state",
             session_store=session_store,
         )
     )
@@ -112,6 +116,49 @@ def runtime(gateway: FakeGateway, tools=None, session_store=None, hooks=None) ->
 
 def test_query_is_an_async_generator() -> None:
     assert inspect.isasyncgenfunction(AgentRuntime.query)
+
+
+def test_query_progress_does_not_duplicate_the_persisted_terminal_state() -> None:
+    assert {field.name for field in fields(_QueryProgress)}.isdisjoint(
+        {"status", "stop_reason", "last_status", "last_reason"}
+    )
+
+
+def test_runtime_strictly_validates_start_and_resume_under_session_lease(tmp_path: Path) -> None:
+    store = FileSessionStore(tmp_path / "sessions")
+    store.create(
+        SessionMetadata(
+            schema_version=6,
+            session_id="existing",
+            workspace_root=str(tmp_path),
+            model="saved",
+        ),
+        agent_run_state(str(tmp_path)),
+    )
+    gateway = FakeGateway([])
+    agent = runtime(gateway, session_store=store)
+
+    with pytest.raises(ValueError, match="session already exists"):
+        asyncio.run(
+            collect(
+                agent,
+                StartQueryParams(
+                    session_id="existing",
+                    model="new",
+                    messages=[RuntimeMessage(role="user", content=[TextBlock(text="start")])],
+                    workspace_root=str(tmp_path),
+                ),
+            )
+        )
+    with pytest.raises(ValueError, match="unknown session"):
+        asyncio.run(
+            collect(
+                agent,
+                ResumeQueryParams(session_id="missing", workspace_root=str(tmp_path)),
+            )
+        )
+
+    assert gateway.requests == []
 
 
 def test_query_streams_text_and_completes() -> None:
@@ -138,6 +185,161 @@ def test_query_streams_text_and_completes() -> None:
     assert isinstance(events[-1], RunCompleted)
 
 
+def test_max_tokens_output_is_persisted_and_resumed_with_a_meta_message(
+    tmp_path: Path,
+) -> None:
+    store = FileSessionStore(tmp_path / "sessions")
+    gateway = FakeGateway(
+        [
+            [
+                ModelCompleted(
+                    message=RuntimeMessage(
+                        role="assistant", content=[TextBlock(text="partial output")]
+                    ),
+                    stop_reason="max_tokens",
+                    output_tokens=8_192,
+                )
+            ],
+            [
+                ModelCompleted(
+                    message=RuntimeMessage(
+                        role="assistant", content=[TextBlock(text="finished")]
+                    ),
+                    stop_reason="end_turn",
+                )
+            ],
+        ]
+    )
+
+    events = asyncio.run(
+        collect(
+            runtime(gateway, session_store=store),
+            StartQueryParams(
+                session_id="max-tokens-recovery",
+                model="test-model",
+                messages=[RuntimeMessage(role="user", content=[TextBlock(text="work")])],
+                workspace_root=str(tmp_path),
+            ),
+        )
+    )
+
+    assert isinstance(events[-1], RunCompleted)
+    assert len(gateway.requests) == 2
+    recovery = gateway.requests[1].messages[-1]
+    assert recovery.role == "user"
+    assert "Resume directly" in recovery.content[0].text
+    snapshot = store.load("max-tokens-recovery")
+    assert snapshot is not None
+    assert any(
+        isinstance(block, TextBlock) and block.text == "partial output"
+        for message in snapshot.messages
+        for block in message.content
+    )
+
+
+def test_max_tokens_first_retries_the_same_request_at_a_safe_64k_limit() -> None:
+    gateway = FakeGateway(
+        [
+            [
+                ModelCompleted(
+                    message=RuntimeMessage(
+                        role="assistant", content=[TextBlock(text="discarded partial")]
+                    ),
+                    stop_reason="max_tokens",
+                    output_tokens=8_192,
+                )
+            ],
+            [
+                ModelCompleted(
+                    message=RuntimeMessage(
+                        role="assistant", content=[TextBlock(text="complete response")]
+                    ),
+                    stop_reason="end_turn",
+                )
+            ],
+        ]
+    )
+    query_params = StartQueryParams(
+        session_id="max-tokens-escalation",
+        model="test-model",
+        messages=[RuntimeMessage(role="user", content=[TextBlock(text="work")])],
+        workspace_root="C:/repo",
+        config=QueryConfig(
+            max_output_tokens=8_192,
+            max_output_tokens_escalation=64_000,
+        ),
+    )
+
+    events = asyncio.run(collect(runtime(gateway), query_params))
+
+    assert isinstance(events[-1], RunCompleted)
+    assert [request.max_output_tokens for request in gateway.requests] == [8_192, 64_000]
+    assert gateway.requests[1].messages == gateway.requests[0].messages
+    completed_messages = [
+        event.message
+        for event in events
+        if isinstance(event, AssistantMessageCompleted)
+    ]
+    assert [message.content[0].text for message in completed_messages] == [
+        "complete response"
+    ]
+
+
+def test_max_tokens_recovery_stops_after_three_continuations() -> None:
+    turns = [
+        [
+            ModelCompleted(
+                message=RuntimeMessage(
+                    role="assistant", content=[TextBlock(text=f"partial-{index}")]
+                ),
+                stop_reason="max_tokens",
+            )
+        ]
+        for index in range(4)
+    ]
+    gateway = FakeGateway(turns)
+
+    events = asyncio.run(collect(runtime(gateway), params()))
+
+    assert isinstance(events[-1], RunStopped)
+    assert events[-1].transition.error_code == "MODEL_MAX_TOKENS"
+    assert len(gateway.requests) == 4
+
+
+def test_start_query_can_initialize_a_persistent_plan_draft(tmp_path: Path) -> None:
+    store = FileSessionStore(tmp_path / "sessions")
+    gateway = FakeGateway(
+        [[ModelCompleted(message=RuntimeMessage(role="assistant", content=[TextBlock(text="done")]), stop_reason="end_turn")]]
+    )
+    agent = AgentRuntime(
+        QueryDependencies(
+            model_gateway=gateway,
+            tool_executor=ToolExecutor(ToolRegistry([])),
+            state_directory=str(tmp_path / "state"),
+            session_store=store,
+        )
+    )
+
+    asyncio.run(
+        collect(
+            agent,
+            StartQueryParams(
+                session_id="plan-session",
+                model="test-model",
+                messages=[RuntimeMessage(role="user", content=[TextBlock(text="plan")])],
+                workspace_root=str(tmp_path),
+                start_in_plan_mode=True,
+            ),
+        )
+    )
+
+    snapshot = store.load("plan-session")
+    assert snapshot is not None
+    assert snapshot.state.permissions.mode == "plan"
+    assert snapshot.state.permissions.plan_path == "plan-session.md"
+    assert (tmp_path / "state" / "plans" / "plan-session.md").read_text(encoding="utf-8") == ""
+
+
 def test_completion_gate_blocks_three_identical_stop_attempts() -> None:
     final = ModelCompleted(
         message=RuntimeMessage(
@@ -148,12 +350,12 @@ def test_completion_gate_blocks_three_identical_stop_attempts() -> None:
     )
     gateway = FakeGateway([[final], [final], [final]])
     hooks = HookRegistry()
-    hooks.register_stop(CompletionEvidenceStopHook())
+    hooks.register_stop(CompletionStopHook())
     query_params = StartQueryParams(
         session_id="completion-gate",
         model="test-model",
         messages=[RuntimeMessage(role="user", content=[TextBlock(text="implement")])],
-        repository_root="C:/repo",
+        workspace_root="C:/repo",
         completion_requirements=CompletionRequirements(
             required_evidence=frozenset(
                 {"successful_test", "git_change_snapshot"}
@@ -208,6 +410,45 @@ def test_tool_result_is_appended_in_protocol_order_before_next_round() -> None:
     ]
 
 
+def test_runtime_event_consumers_cannot_mutate_authoritative_tool_data() -> None:
+    call = ToolUseBlock(id="call-1", name="echo", input={"value": "original"})
+    gateway = FakeGateway(
+        [
+            [
+                ModelCompleted(
+                    message=RuntimeMessage(role="assistant", content=[call]),
+                    stop_reason="tool_use",
+                )
+            ],
+            [
+                ModelCompleted(
+                    message=RuntimeMessage(
+                        role="assistant", content=[TextBlock(text="finished")]
+                    ),
+                    stop_reason="end_turn",
+                )
+            ],
+        ]
+    )
+
+    async def consume_and_mutate_events() -> None:
+        async for event in runtime(gateway, [EchoTool()]).query(params()):
+            if isinstance(event, AssistantMessageCompleted):
+                for block in event.message.content:
+                    if isinstance(block, ToolUseBlock):
+                        block.input["value"] = "assistant-event-mutation"
+            elif isinstance(event, ToolRequested):
+                event.call.input["value"] = "request-event-mutation"
+            elif isinstance(event, ToolCompleted):
+                event.result.data["value"] = "result-event-mutation"
+
+    asyncio.run(consume_and_mutate_events())
+
+    persisted_result = gateway.requests[1].messages[-1].content[0]
+    assert isinstance(persisted_result, ToolResultBlock)
+    assert persisted_result.content["data"] == {"value": "original"}
+
+
 def test_model_exception_becomes_structured_terminal_event() -> None:
     class FailingGateway:
         async def stream(self, request: ModelRequest) -> AsyncIterator[ModelEvent]:
@@ -218,8 +459,8 @@ def test_model_exception_becomes_structured_terminal_event() -> None:
     agent_runtime = AgentRuntime(
         QueryDependencies(
             model_gateway=FailingGateway(),
-            tool_registry=registry,
             tool_executor=ToolExecutor(registry),
+            state_directory="C:/state",
         )
     )
 
@@ -228,6 +469,79 @@ def test_model_exception_becomes_structured_terminal_event() -> None:
     assert isinstance(events[-1], RunStopped)
     assert events[-1].transition.kind == "failed"
     assert events[-1].transition.error_code == "MODEL_REQUEST_FAILED"
+
+
+def test_context_projection_exception_becomes_structured_terminal_event(
+    tmp_path: Path,
+) -> None:
+    class FailingContextPipeline:
+        async def project(self, *args, **kwargs):
+            raise RuntimeError("projection failed")
+
+    store = FileSessionStore(tmp_path / "sessions")
+    agent = AgentRuntime(
+        QueryDependencies(
+            model_gateway=FakeGateway([]),
+            tool_executor=ToolExecutor(ToolRegistry()),
+            state_directory="C:/state",
+            context_pipeline=FailingContextPipeline(),
+            session_store=store,
+        )
+    )
+
+    events = asyncio.run(
+        collect(
+            agent,
+            StartQueryParams(
+                session_id="projection-failure",
+                model="test",
+                messages=[RuntimeMessage(role="user", content=[TextBlock(text="start")])],
+                workspace_root=str(tmp_path),
+            ),
+        )
+    )
+
+    assert isinstance(events[-1], RunStopped)
+    assert events[-1].transition.error_code == "CONTEXT_PROJECTION_FAILED"
+    assert store.load("projection-failure").state.last_status == "failed"
+
+
+def test_stop_hook_exception_fails_closed_and_persists_terminal_state(
+    tmp_path: Path,
+) -> None:
+    hooks = HookRegistry()
+
+    async def failing_stop_hook(payload, context):
+        raise RuntimeError("stop hook failed")
+
+    hooks.register_stop(failing_stop_hook)
+    store = FileSessionStore(tmp_path / "sessions")
+    gateway = FakeGateway(
+        [[
+            ModelCompleted(
+                message=RuntimeMessage(
+                    role="assistant", content=[TextBlock(text="finished")]
+                ),
+                stop_reason="end_turn",
+            )
+        ]]
+    )
+
+    events = asyncio.run(
+        collect(
+            runtime(gateway, session_store=store, hooks=hooks),
+            StartQueryParams(
+                session_id="stop-hook-failure",
+                model="test",
+                messages=[RuntimeMessage(role="user", content=[TextBlock(text="start")])],
+                workspace_root=str(tmp_path),
+            ),
+        )
+    )
+
+    assert isinstance(events[-1], RunStopped)
+    assert events[-1].transition.error_code == "STOP_HOOK_FAILED"
+    assert store.load("stop-hook-failure").state.last_status == "failed"
 
 
 def test_round_budget_stops_before_an_unbounded_loop() -> None:
@@ -318,7 +632,7 @@ def test_resume_replays_complete_tool_pairs_and_appends_new_user_message(tmp_pat
         system_prompt="saved system prompt",
         capabilities=CapabilityScope(allowed_tools=frozenset({"echo"})),
         messages=[RuntimeMessage(role="user", content=[TextBlock(text="initial")])],
-        repository_root=str(tmp_path),
+        workspace_root=str(tmp_path),
     )
     asyncio.run(collect(runtime(first_gateway, [EchoTool()], store), initial))
 
@@ -328,7 +642,7 @@ def test_resume_replays_complete_tool_pairs_and_appends_new_user_message(tmp_pat
     resumed = ResumeQueryParams(
         session_id="resume-1",
         messages=[RuntimeMessage(role="user", content=[TextBlock(text="continue")])],
-        repository_root=str(tmp_path),
+        workspace_root=str(tmp_path),
     )
     asyncio.run(collect(runtime(resumed_gateway, [EchoTool()], store), resumed))
 
@@ -348,13 +662,15 @@ def test_resume_repairs_interrupted_tool_use_before_new_user_message(
     store = FileSessionStore(tmp_path / "sessions")
     store.create(
         SessionMetadata(
-            schema_version=4,
+            schema_version=6,
             session_id="interrupted",
-            repository_root=str(tmp_path),
-            initial_working_directory=str(tmp_path),
+            workspace_root=str(tmp_path),
             model="saved-model",
+        ),
+        agent_run_state(
+            str(tmp_path),
             capabilities=CapabilityScope(allowed_tools=frozenset({"echo"})),
-        )
+        ),
     )
     store.append_message(
         "interrupted",
@@ -376,7 +692,7 @@ def test_resume_repairs_interrupted_tool_use_before_new_user_message(
             runtime(gateway, [EchoTool()], store),
             ResumeQueryParams(
                 session_id="interrupted",
-                repository_root=str(tmp_path),
+                workspace_root=str(tmp_path),
                 messages=[RuntimeMessage(role="user", content=[TextBlock(text="continue")])],
             ),
         )
@@ -406,7 +722,7 @@ def test_resume_rejects_a_different_repository(tmp_path: Path) -> None:
                 session_id="repo-bound",
                 model="saved",
                 messages=[RuntimeMessage(role="user", content=[TextBlock(text="start")])],
-                repository_root=str(tmp_path / "repo-a"),
+                workspace_root=str(tmp_path / "repo-a"),
             ),
         )
     )
@@ -415,11 +731,11 @@ def test_resume_rejects_a_different_repository(tmp_path: Path) -> None:
         asyncio.run(
             collect(
                 runtime(resume_gateway, session_store=store),
-                ResumeQueryParams(session_id="repo-bound", repository_root=str(tmp_path / "repo-b")),
+                ResumeQueryParams(session_id="repo-bound", workspace_root=str(tmp_path / "repo-b")),
             )
         )
     except ValueError as exc:
-        assert "repository does not match" in str(exc)
+        assert "workspace does not match" in str(exc)
     else:
         raise AssertionError("cross-repository resume should fail")
 
@@ -436,7 +752,7 @@ def test_resume_keeps_runtime_capability_narrowing(tmp_path: Path) -> None:
         session_id="narrowed",
         model="saved",
         messages=[RuntimeMessage(role="user", content=[TextBlock(text="start")])],
-        repository_root=str(tmp_path),
+        workspace_root=str(tmp_path),
     )
     asyncio.run(collect(runtime(first, [EchoTool(), NarrowTool()], store), start))
 
@@ -446,7 +762,7 @@ def test_resume_keeps_runtime_capability_narrowing(tmp_path: Path) -> None:
     asyncio.run(
         collect(
             runtime(resumed, [EchoTool(), NarrowTool()], store),
-            ResumeQueryParams(session_id="narrowed", repository_root=str(tmp_path)),
+            ResumeQueryParams(session_id="narrowed", workspace_root=str(tmp_path)),
         )
     )
     assert [tool["name"] for tool in resumed.requests[0].tools] == ["echo"]
@@ -458,7 +774,7 @@ def test_cancelled_tool_gets_a_persisted_result_pair(tmp_path: Path) -> None:
     class BlockingTool(EchoTool):
         name = "blocking"
 
-        async def call(self, input: EchoInput, context: ToolUseContext) -> ToolResult:
+        async def call(self, input: EchoInput, context: tool_context) -> ToolResult:
             started.set()
             await asyncio.Event().wait()
             return ToolResult(data={"value": input.value})
@@ -476,7 +792,7 @@ def test_cancelled_tool_gets_a_persisted_result_pair(tmp_path: Path) -> None:
                     session_id="cancelled",
                     model="test",
                     messages=[RuntimeMessage(role="user", content=[TextBlock(text="start")])],
-                    repository_root=str(tmp_path),
+                    workspace_root=str(tmp_path),
                 ),
             )
         )
@@ -494,6 +810,225 @@ def test_cancelled_tool_gets_a_persisted_result_pair(tmp_path: Path) -> None:
         for message in snapshot.messages
         for block in message.content
     )
+
+
+def test_concurrent_cancellation_persists_completed_tool_state(
+    tmp_path: Path,
+) -> None:
+    fast_completed = asyncio.Event()
+    blocking_started = asyncio.Event()
+
+    class ConcurrentNarrowTool(NarrowTool):
+        name = "concurrent_narrow"
+
+        def is_read_only(self, input: EchoInput) -> bool:
+            return True
+
+        def is_concurrency_safe(self, input: EchoInput) -> bool:
+            return True
+
+        async def call(self, input: EchoInput, context: tool_context) -> ToolResult:
+            result = await super().call(input, context)
+            fast_completed.set()
+            return result
+
+    class ConcurrentBlockingTool(EchoTool):
+        name = "concurrent_blocking"
+
+        def is_read_only(self, input: EchoInput) -> bool:
+            return True
+
+        def is_concurrency_safe(self, input: EchoInput) -> bool:
+            return True
+
+        async def call(self, input: EchoInput, context: tool_context) -> ToolResult:
+            blocking_started.set()
+            await asyncio.Event().wait()
+            return await super().call(input, context)
+
+    store = FileSessionStore(tmp_path / "sessions")
+    gateway = FakeGateway(
+        [[
+            ModelCompleted(
+                message=RuntimeMessage(
+                    role="assistant",
+                    content=[
+                        ToolUseBlock(
+                            id="fast-1",
+                            name="concurrent_narrow",
+                            input={"value": "done"},
+                        ),
+                        ToolUseBlock(
+                            id="block-1",
+                            name="concurrent_blocking",
+                            input={"value": "waiting"},
+                        ),
+                    ],
+                ),
+                stop_reason="tool_use",
+            )
+        ]]
+    )
+
+    async def exercise():
+        task = asyncio.create_task(
+            collect(
+                runtime(
+                    gateway,
+                    [ConcurrentNarrowTool(), ConcurrentBlockingTool()],
+                    store,
+                ),
+                StartQueryParams(
+                    session_id="concurrent-cancelled",
+                    model="test",
+                    messages=[
+                        RuntimeMessage(
+                            role="user", content=[TextBlock(text="start")]
+                        )
+                    ],
+                    workspace_root=str(tmp_path),
+                ),
+            )
+        )
+        await fast_completed.wait()
+        await blocking_started.wait()
+        task.cancel()
+        return await task
+
+    events = asyncio.run(exercise())
+    snapshot = store.load("concurrent-cancelled")
+
+    assert isinstance(events[-1], RunStopped)
+    assert events[-1].transition.kind == "cancelled"
+    assert snapshot is not None
+    assert snapshot.state.capabilities.allowed_tools == {"echo"}
+    results = [
+        block
+        for message in snapshot.messages
+        for block in message.content
+        if isinstance(block, ToolResultBlock)
+    ]
+    assert [block.tool_use_id for block in results] == ["fast-1", "block-1"]
+    assert results[0].is_error is False
+    assert results[1].content["error"]["code"] == "TOOL_CANCELLED"
+
+
+def test_post_hook_failure_preserves_result_and_stops_before_later_tools(
+    tmp_path: Path,
+) -> None:
+    class CountingNarrowTool(NarrowTool):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def call(self, input: EchoInput, context: tool_context) -> ToolResult:
+            self.calls += 1
+            return await super().call(input, context)
+
+    class CountingEchoTool(EchoTool):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def call(self, input: EchoInput, context: tool_context) -> ToolResult:
+            self.calls += 1
+            return await super().call(input, context)
+
+    hooks = HookRegistry()
+
+    async def fail_post_hook(payload, context) -> None:
+        raise RuntimeError("post hook failed")
+
+    hooks.register_post_tool_use(fail_post_hook)
+    narrow = CountingNarrowTool()
+    echo = CountingEchoTool()
+    store = FileSessionStore(tmp_path / "sessions")
+    gateway = FakeGateway(
+        [[
+            ModelCompleted(
+                message=RuntimeMessage(
+                    role="assistant",
+                    content=[
+                        ToolUseBlock(id="narrow-1", name="narrow", input={"value": "x"}),
+                        ToolUseBlock(id="echo-1", name="echo", input={"value": "later"}),
+                    ],
+                ),
+                stop_reason="tool_use",
+            )
+        ]]
+    )
+    start = StartQueryParams(
+        session_id="post-hook-failure",
+        model="test",
+        messages=[RuntimeMessage(role="user", content=[TextBlock(text="start")])],
+        workspace_root=str(tmp_path),
+    )
+
+    events = asyncio.run(
+        collect(runtime(gateway, [narrow, echo], store, hooks), start)
+    )
+
+    assert narrow.calls == 1
+    assert echo.calls == 0
+    assert [event.type for event in events].count("tool_completed") == 1
+    assert isinstance(events[-1], RunStopped)
+    assert events[-1].transition.error_code == "POST_TOOL_HOOK_FAILED"
+
+    snapshot = store.load("post-hook-failure")
+    assert snapshot is not None
+    assert snapshot.state.last_status == "failed"
+    assert snapshot.state.capabilities.allowed_tools == {"echo"}
+    result_blocks = [
+        block
+        for message in snapshot.messages
+        for block in message.content
+        if isinstance(block, ToolResultBlock)
+    ]
+    assert [block.tool_use_id for block in result_blocks] == ["narrow-1", "echo-1"]
+    assert result_blocks[0].is_error is False
+    assert result_blocks[0].content["data"] == {"value": "x"}
+    assert result_blocks[1].content["error"]["code"] == "TOOL_NOT_EXECUTED"
+
+    resumed_gateway = FakeGateway(
+        [[
+            ModelCompleted(
+                message=RuntimeMessage(
+                    role="assistant",
+                    content=[TextBlock(text="resumed")],
+                ),
+                stop_reason="end_turn",
+            )
+        ]]
+    )
+    asyncio.run(
+        collect(
+            runtime(resumed_gateway, [narrow, echo], store),
+            ResumeQueryParams(
+                session_id="post-hook-failure",
+                workspace_root=str(tmp_path),
+            ),
+        )
+    )
+    resumed_results = [
+        block
+        for message in resumed_gateway.requests[0].messages
+        for block in message.content
+        if isinstance(block, ToolResultBlock)
+    ]
+    assert [block.tool_use_id for block in resumed_results] == [
+        "narrow-1",
+        "echo-1",
+    ]
+
+
+def test_unknown_model_event_fails_explicitly() -> None:
+    class UnknownEventGateway:
+        async def stream(self, request: ModelRequest):
+            yield object()
+
+    events = asyncio.run(collect(runtime(UnknownEventGateway()), params()))
+
+    assert isinstance(events[-1], RunStopped)
+    assert events[-1].transition.error_code == "MODEL_REQUEST_FAILED"
+    assert "unsupported model event" in events[-1].transition.reason
 
 
 def test_cancelled_model_request_marks_session_without_partial_message(
@@ -521,7 +1056,7 @@ def test_cancelled_model_request_marks_session_without_partial_message(
                 StartQueryParams(
                     session_id="model-cancelled",
                     model="test",
-                    repository_root=str(tmp_path),
+                    workspace_root=str(tmp_path),
                     messages=[
                         RuntimeMessage(
                             role="user",
@@ -540,5 +1075,5 @@ def test_cancelled_model_request_marks_session_without_partial_message(
     snapshot = store.load("model-cancelled")
 
     assert snapshot is not None
-    assert snapshot.runtime_state.last_status == "cancelled"
+    assert snapshot.state.last_status == "cancelled"
     assert len(snapshot.messages) == 1

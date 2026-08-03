@@ -6,7 +6,10 @@ from typing import Awaitable, Callable, Literal
 
 from pydantic import Field, JsonValue
 
-from osc_agent.runtime.models import ContractModel, RuntimeMessage, ToolResult, ToolUseContext
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.messages import RuntimeMessage
+from osc_agent.runtime.state import ToolContext
+from osc_agent.runtime.tool_models import ToolResult
 
 
 class PreToolUsePayload(ContractModel):
@@ -38,12 +41,12 @@ class HookBlock(ContractModel):
 
 
 PreToolHook = Callable[
-    [PreToolUsePayload, ToolUseContext],
+    [PreToolUsePayload, ToolContext],
     Awaitable[HookContinue | HookBlock],
 ]
-PostToolHook = Callable[[PostToolUsePayload, ToolUseContext], Awaitable[None]]
+PostToolHook = Callable[[PostToolUsePayload, ToolContext], Awaitable[None]]
 StopHook = Callable[
-    [StopHookPayload, ToolUseContext],
+    [StopHookPayload, ToolContext],
     Awaitable[StopHookResult],
 ]
 
@@ -66,7 +69,7 @@ class HookRegistry:
     async def run_pre_tool_use(
         self,
         payload: PreToolUsePayload,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> HookContinue | HookBlock:
         for hook in self._pre_tool_use:
             result = await hook(payload, context)
@@ -77,7 +80,7 @@ class HookRegistry:
     async def run_post_tool_use(
         self,
         payload: PostToolUsePayload,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> None:
         for hook in self._post_tool_use:
             await hook(payload, context)
@@ -85,7 +88,7 @@ class HookRegistry:
     async def run_stop(
         self,
         payload: StopHookPayload,
-        context: ToolUseContext,
+        context: ToolContext,
     ) -> StopHookResult:
         reasons: list[str] = []
         for hook in self._stop:

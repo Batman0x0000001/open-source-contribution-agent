@@ -28,7 +28,7 @@ from osc_agent.runtime.gateway import (
     ModelRequest,
     ModelTextDelta,
 )
-from osc_agent.runtime.models import RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
 
 
 class AnthropicModelGateway:

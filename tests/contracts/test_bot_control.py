@@ -8,10 +8,14 @@ from uuid import uuid4
 
 import pytest
 
-from osc_agent.bot.config import BotSettings
-from osc_agent.bot.control import BotControlService, parse_webhook_command
-from osc_agent.bot.models import IssuePlanArtifact, RepositoryBotCatalog, RepositoryBotConfig
-from osc_agent.bot.store import BotStore
+from osc_agent.bot.config import BotControlSettings
+from osc_agent.bot.control.commands import parse_webhook_command
+from osc_agent.bot.control.handler import BotControlService
+from osc_agent.bot.domain.artifacts import IssuePlanArtifact
+from osc_agent.bot.domain.jobs import BotJob
+from osc_agent.bot.domain.repositories import RepositoryBotCatalog, RepositoryBotConfig
+from osc_agent.bot.domain.state_machine import JobEvent
+from osc_agent.bot.persistence.store import BotStore
 
 
 IMAGE_ID = "sha256:" + "b" * 64
@@ -31,12 +35,12 @@ class FakeGitHub:
         return {"content_source": "github", "trust": "untrusted_external", "issue": {"title": "Bug"}, "comments": []}
 
 
-def _settings(tmp_path: Path) -> BotSettings:
+def _settings(tmp_path: Path) -> BotControlSettings:
     key = tmp_path / "app.pem"
     key.write_text("private", encoding="utf-8")
     repositories = tmp_path / "repositories.yml"
     repositories.write_text("repositories: {}\n", encoding="utf-8")
-    return BotSettings(
+    return BotControlSettings(
         github_app_id=1,
         github_app_private_key_path=key,
         github_webhook_secret="x" * 16,
@@ -45,8 +49,9 @@ def _settings(tmp_path: Path) -> BotSettings:
         workspace_root=tmp_path / "workspaces",
         repositories_config=repositories,
         worker_id="worker-1",
-        github_commit_name="OSA Bot",
+        github_commit_name="osc-agent",
         github_commit_email="bot@example.com",
+        model_id="model",
     )
 
 
@@ -62,12 +67,17 @@ def _payload(body: str) -> dict[str, object]:
 
 
 def test_webhook_command_uses_exact_input() -> None:
-    assert parse_webhook_command(" /osa plan\n").action == "plan"
+    assert parse_webhook_command(" /osc-agent plan\n").action == "plan"
     job_id = str(uuid4())
-    assert parse_webhook_command(f"/osa implement {job_id}").job_id == job_id
-    assert parse_webhook_command("/OSA plan") is None
-    assert parse_webhook_command("/osa plan now") is None
-    assert parse_webhook_command("text /osa plan") is None
+    assert parse_webhook_command(f"/osc-agent implement {job_id}").job_id == job_id
+    assert parse_webhook_command(f"/osc-agent cancel {job_id}").job_id == job_id
+    assert parse_webhook_command("/osc-agent status").action == "status"
+    assert parse_webhook_command("/osc-agent retry").action == "retry"
+    assert parse_webhook_command("/osc-agent reply more context").message == "more context"
+    assert parse_webhook_command("/OSC-AGENT plan") is None
+    assert parse_webhook_command("/osc-agent plan now") is None
+    assert parse_webhook_command("text /osc-agent plan") is None
+    assert parse_webhook_command("/osc plan") is None
 
 
 def test_control_creates_plan_and_bound_implementation_approval(tmp_path: Path) -> None:
@@ -87,11 +97,24 @@ def test_control_creates_plan_and_bound_implementation_approval(tmp_path: Path) 
         store=store,
         github=github,
     )
-    job_id = asyncio.run(control.handle_issue_comment(_payload("/osa plan")))
+    job_id = asyncio.run(control.handle_issue_comment(_payload("/osc-agent plan")))
     job = store.get_job(job_id)
     assert job is not None and job.status == "queued_plan"
     assert job.image_id == IMAGE_ID
+    contract = store.get_execution_contract(job.execution_contract_hash)
+    assert contract is not None and contract.model_id == settings.model_id
     assert store.get_job_input(job_id)["trust"] == "untrusted_external"
+    for comment_id in (41, 42):
+        status_payload = _payload("/osc-agent status")
+        status_payload["comment"] = {"id": comment_id, "body": "/osc-agent status"}
+        assert asyncio.run(control.handle_issue_comment(status_payload)) == "queued_plan"
+    with store.connect() as connection:
+        status_keys = connection.execute(
+            "SELECT idempotency_key FROM outbox_events "
+            "WHERE idempotency_key LIKE ? ORDER BY idempotency_key",
+            (f"comment:{job_id}:status:%",),
+        ).fetchall()
+    assert len(status_keys) == 2
     plan = IssuePlanArtifact(
         status="ready",
         base_sha=job.base_sha,
@@ -100,16 +123,16 @@ def test_control_creates_plan_and_bound_implementation_approval(tmp_path: Path) 
         plan_markdown="approved plan",
     )
     artifact_id = store.save_artifact(job_id, plan)
-    running = store.transition(
-        job_id=job_id, expected_version=job.version, status="running_plan"
+    running = store.apply_job_event(
+        job_id=job_id, expected_version=job.version, event=JobEvent.CLAIM_PLAN
     )
-    store.transition(
+    store.apply_job_event(
         job_id=job_id,
         expected_version=running.version,
-        status="waiting_approval",
+        event=JobEvent.PLAN_READY,
         plan_artifact_id=artifact_id,
     )
-    result = asyncio.run(control.handle_issue_comment(_payload(f"/osa implement {job_id}")))
+    result = asyncio.run(control.handle_issue_comment(_payload(f"/osc-agent implement {job_id}")))
     approved = store.get_job(result)
     assert approved is not None and approved.status == "queued_implementation"
     assert approved.approval_id is not None
@@ -135,4 +158,40 @@ def test_control_rejects_non_writer(tmp_path: Path) -> None:
         github=github,
     )
     with pytest.raises(PermissionError):
-        asyncio.run(control.handle_issue_comment(_payload("/osa plan")))
+        asyncio.run(control.handle_issue_comment(_payload("/osc-agent plan")))
+
+
+@pytest.mark.parametrize("status", ["completed", "stale", "dead_letter", "cancelled"])
+def test_cancel_is_idempotent_for_every_terminal_status(status: str) -> None:
+    control = object.__new__(BotControlService)
+    job = BotJob(
+        job_id=str(uuid4()),
+        repository_id=1,
+        repository_full_name="owner/repo",
+        installation_id=1,
+        issue_number=1,
+        issue_url="https://github.com/owner/repo/issues/1",
+        base_sha="a" * 40,
+        image_id=IMAGE_ID,
+        status=status,
+    )
+
+    assert control._cancel(job) == status
+
+
+def test_cancel_rejects_the_non_atomic_publishing_window() -> None:
+    control = object.__new__(BotControlService)
+    job = BotJob(
+        job_id=str(uuid4()),
+        repository_id=1,
+        repository_full_name="owner/repo",
+        installation_id=1,
+        issue_number=1,
+        issue_url="https://github.com/owner/repo/issues/1",
+        base_sha="a" * 40,
+        image_id=IMAGE_ID,
+        status="publishing",
+    )
+
+    with pytest.raises(ValueError, match="can no longer be cancelled"):
+        control._cancel(job)

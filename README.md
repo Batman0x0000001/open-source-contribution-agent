@@ -2,38 +2,43 @@
 
 一个采用统一 Runtime 设计的 Python Agent：入口 Skill、子 Agent 和 Tool 全部复用同一个 `AgentRuntime`，完整 Session transcript 是唯一恢复依据。
 
-> 当前项目与文档基线：`0.2.4`。
+> 当前项目与文档基线：`0.3.1`。
 
 > 当前版本定位为 Ubuntu Bot 优先、本地 CLI 仅用于调试。Bash 在 Linux Host 上执行，
 > 环境变量经过白名单过滤，但本地 CLI 没有 OS Sandbox；不要用它执行
 > 恶意或不可信仓库中的命令。
 
-`0.2.4` 提供可选的 GitHub App 服务端能力。它把 Webhook/发布凭据、Agent Worker 和无网络
+`0.3.1` 提供可选的 GitHub App 服务端能力。它把 Webhook/发布凭据、Agent Worker 和无网络
 Docker 仓库命令分成独立边界；该能力不会改变本地 CLI，也不会自动合并 PR。
 
 ## 架构
 
 ```text
-Typer CLI / SkillTool
+Typer CLI / Bot Worker
         ↓
-SkillCommandRunner → SkillExecutor
+AgentApplicationConfig → AgentApplication.open_session
         ↓
-AgentRuntime.query
+AgentConversation.start(AgentInput) / resume(UserPrompt | None)
+        ↓
+AgentRuntime.query → AgentRunState → ToolContext
         ├── AgentTool → code-only AgentRegistry → AgentRunner
         ↓
-ToolExecutor → Permission / Plan Mode → Hooks → Tool
+ToolExecutor → Permission / Plan Mode → Hooks → ToolResult.state_changes
         ↓
-Session JSONL / Git Worktree Isolation
+AgentRunState.apply → Session V6 / Git Workspace
 ```
 
 - Runtime 不知道 Contribution 阶段，也不存在固定 Workflow 状态机。
+- CLI 与 Bot 显式选择 Start/Resume；Runtime 在 Session lease 内验证创建或恢复条件。
+- V6 Session 固定创建时的模型、系统提示和有效 capability；V5 不兼容且不迁移。
+- 当前 Tool Schema 是能力展示的唯一权威，ToolExecutor 在权限策略之前执行 capability 硬门禁。
 - `open-source-contribution` 是一个 inline 入口 Skill，按需读取四份阶段资源。
 - Plan Mode 和 AskUserQuestion 提供方案审批与人工选择。
 - 仓库内 `AGENTS.md` 与 `CLAUDE.md` 会按目录层级注入；同层任务相关冲突由 Agent 询问用户。
 - `grep`、Read-before-write 文件观察和完整 Git snapshot 提供安全的代码理解与修改证据。
 - Contribution Skill 结束前必须有最终修改之后的成功测试和更晚的 Git snapshot；无测试只能由用户显式豁免。
 - Session、Plan、Tool Result 和 Worktree 保存在按仓库哈希隔离的用户数据目录，不污染目标仓库。
-- Git worktree 提供真实执行隔离；脏 worktree 不会被静默删除。
+- Git worktree 提供独立工作目录和分支；脏 worktree 不会被静默删除。
 - 进程 Tool 只提供非交互式 Bash；生产 Bot 在无网络 Linux 容器中执行，CLI 调试要求本机 Bash。
 - Tool 子进程只接收运行必需环境变量和用户显式允许的非敏感变量；API Key、Token、
   Secret、Password 等凭据名称始终被过滤。
@@ -91,9 +96,9 @@ CLI 默认把模型轮次、Tool、Agent、重试和 compact 状态以紧凑行�
 
 ## 扩展
 
-- 新 Tool：实现 `Tool` Protocol 并注册到 composition root。
+- 新 Tool：实现 `Tool` Protocol 并通过 `AgentApplicationConfig` 注册到 composition root。
 - 新 Skill：添加严格 frontmatter；正文和声明的资源均延迟读取。
-- 新内置 Agent：在代码中注册 `AgentRegistration`，并递归复用同一个 Runtime。
+- 新内置子 Agent：在代码中注册 `SubagentRegistration`，并递归复用同一个 Runtime。
 - 普通 `run` 与 Contribution 都可发现 AgentTool；当前代码注册的 Agent 是最多两个并行
   Explore 和一个串行 Verify。Agent 的 Tool、并发、预算和只读边界仍由 Registration 固定。
 - Agent Registry 不扫描项目、用户、Plugin 或 Markdown Agent 文件。
@@ -118,22 +123,22 @@ CLI 默认把模型轮次、Tool、Agent、重试和 compact 状态以紧凑行�
 
 ```bash
 python -m pip install -e ".[bot]"
-osc-agent bot doctor --control
-osc-agent bot doctor --worker
-osc-agent bot serve
-osc-agent bot worker
+osc-agent-bot doctor --control
+osc-agent-bot doctor --worker
+osc-agent-bot control
+osc-agent-bot worker
 ```
 
 Bot 是生产主入口；CLI 保留为本地调试入口。机器人只接受具有 `write`、`maintain` 或
 `admin` 权限用户在 Issue 下的精确命令：
 
 ```text
-/osa plan
-/osa implement
-/osa reply <补充信息>
-/osa status
-/osa retry
-/osa cancel
+/osc-agent plan
+/osc-agent implement
+/osc-agent reply <补充信息>
+/osc-agent status
+/osc-agent retry
+/osc-agent cancel
 ```
 
 每个 Issue 同时只允许一个活动 Job。Plan 是无 Docker 的只读 Session；Implementation 使用
@@ -153,6 +158,7 @@ Ubuntu 双用户、systemd、Nginx、权限与云服务器安全组配置见
 conda run --no-capture-output -n osc-agent python -m pytest
 conda run --no-capture-output -n osc-agent python -m osc_agent.cli --help
 conda run --no-capture-output -n osc-agent python -m osc_agent.cli skill list --repo .
+conda run --no-capture-output -n osc-agent python -m osc_agent.bot --help
 ```
 
 Bash 与 ripgrep 是源码运行环境的必需外部命令，`environment.yml` 会安装 ripgrep。

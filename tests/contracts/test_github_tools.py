@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import tool_context
+
 import asyncio
 from pathlib import Path
 import subprocess
 
 import osc_agent.tools.github as github_module
-from osc_agent.runtime.models import RuntimeMessage, ToolResultBlock, ToolUseBlock, ToolUseContext
+from osc_agent.runtime.messages import RuntimeMessage, ToolResultBlock, ToolUseBlock
 from osc_agent.runtime.tool_execution import ToolExecutor
 from tests.contracts.registry_factory import build_test_tool_registry
 from osc_agent.tools.github import GitHubGetIssueInput, GitHubListIssuesInput
@@ -24,8 +26,8 @@ ISSUE = {
 }
 
 
-def context(tmp_path: Path) -> ToolUseContext:
-    return ToolUseContext(session_id="session-1", working_directory=str(tmp_path), repository_root=str(tmp_path), state_directory=str(tmp_path / "state"))
+def context(tmp_path: Path) -> tool_context:
+    return tool_context(session_id="session-1", working_directory=str(tmp_path), state_directory=str(tmp_path / "state"))
 
 
 def test_github_tools_are_read_only_and_concurrency_safe() -> None:
@@ -117,6 +119,33 @@ def test_github_tool_rejects_non_github_url_before_network(monkeypatch, tmp_path
     assert called is False
 
 
+def test_github_tool_rejects_an_empty_repository_name_before_network(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def unexpected(*args, **kwargs):
+        nonlocal called
+        called = True
+        return {"ok": True, "issues": []}
+
+    monkeypatch.setattr(github_module, "fetch_issues", unexpected)
+    result = asyncio.run(
+        ToolExecutor(build_test_tool_registry()).execute(
+            ToolUseBlock(
+                id="list-empty",
+                name="github_list_issues",
+                input={"repo_url": "https://github.com/acme/.git"},
+            ),
+            context(tmp_path),
+        )
+    )
+
+    assert result.error and result.error.code == "TOOL_VALIDATION_FAILED"
+    assert called is False
+
+
 def test_github_read_failure_is_structured(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         github_module,
@@ -136,6 +165,27 @@ def test_github_read_failure_is_structured(monkeypatch, tmp_path: Path) -> None:
 
     assert result.error and result.error.code == "GITHUB_READ_FAILED"
     assert result.error.retryable is True
+
+
+def test_github_malformed_json_is_a_structured_read_failure(monkeypatch) -> None:
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return b"not-json"
+
+    monkeypatch.setattr(github_module, "urlopen", lambda *args, **kwargs: Response())
+
+    result = github_module._github_get_json(
+        "https://api.github.com/repos/acme/project/issues"
+    )
+
+    assert result["ok"] is False
+    assert "invalid JSON" in result["error"]
 
 
 def test_github_issue_comments_are_bounded_and_normalized(monkeypatch) -> None:

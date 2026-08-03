@@ -1,9 +1,9 @@
 server {
     listen 443 ssl http2;
-    server_name osa.example.com;
+    server_name osc.example.com;
 
-    ssl_certificate /etc/letsencrypt/live/osa.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/osa.example.com/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/osc-agent.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/osc-agent.example.com/privkey.pem;
     client_max_body_size 1m;
 
     location = /webhooks/github {

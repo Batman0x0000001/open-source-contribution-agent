@@ -5,18 +5,19 @@ from __future__ import annotations
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from osc_agent.runtime.models import (
+from osc_agent.completion.models import CompletionRequirements
+from osc_agent.runtime.state import AgentRunState, CapabilityScope
+from osc_agent.contracts import FrozenContractModel
+from osc_agent.runtime.query_models import QueryConfig
+from osc_agent.runtime.tool_models import (
     Allow,
-    CapabilityScope,
-    CompletionRequirements,
-    FrozenContractModel,
     PermissionDecision,
-    QueryConfig,
-    QueryState,
-    ToolExecutionUpdate,
     ToolResult,
-    ToolUseContext,
-    Transition,
+)
+from osc_agent.workspaces.models import (
+    FileObservation,
+    RepositoryInstructionState,
+    WorktreeSession,
 )
 
 
@@ -37,26 +38,12 @@ def test_frozen_contract_cannot_be_modified() -> None:
         config.max_rounds = 1
 
 
-def test_mutable_state_validates_assignment() -> None:
-    state = QueryState(session_id="session-1")
-
-    with pytest.raises(ValidationError, match="literal_error"):
-        state.status = "unknown"
-
-
 def test_permission_decision_uses_discriminator() -> None:
     adapter = TypeAdapter(PermissionDecision)
 
     assert adapter.validate_python({"decision": "allow"}) == Allow()
     with pytest.raises(ValidationError, match="union_tag_invalid"):
         adapter.validate_python({"decision": "maybe"})
-
-
-def test_transition_rejects_unknown_kind() -> None:
-    adapter = TypeAdapter(Transition)
-
-    with pytest.raises(ValidationError, match="union_tag_invalid"):
-        adapter.validate_python({"kind": "loop_again"})
 
 
 def test_tool_result_rejects_non_json_data() -> None:
@@ -72,11 +59,52 @@ def test_frozen_base_is_itself_strict() -> None:
         Sample.model_validate({"count": "1"})
 
 
-def test_tool_execution_update_requires_result_and_identity_together() -> None:
-    context = ToolUseContext(session_id="session-1", working_directory="C:/repo", repository_root="C:/repo", state_directory="C:/state")
+def test_tool_context_cannot_mutate_authoritative_workspace_state() -> None:
+    state = AgentRunState.start(
+        workspace_root="repository",
+        capabilities=CapabilityScope(),
+        completion_requirements=CompletionRequirements(),
+        instruction_state=RepositoryInstructionState(active_paths=("AGENTS.md",)),
+    )
+    state.workspace.file_observations["a.py"] = FileObservation(
+        path="a.py",
+        content_hash="before",
+        mtime_ns=1,
+        complete=True,
+    )
 
-    with pytest.raises(ValidationError, match="must either both be set or both be omitted"):
-        ToolExecutionUpdate(tool_use_id="call-1", context=context)
+    context = state.tool_context(session_id="session", state_directory="state")
+    context.workspace.file_observations["a.py"] = FileObservation(
+        path="a.py",
+        content_hash="after",
+        mtime_ns=2,
+        complete=True,
+    )
+
+    assert context.workspace is not state.workspace
+    assert state.workspace.file_observations["a.py"].content_hash == "before"
+    with pytest.raises(ValidationError, match="frozen_instance"):
+        context.workspace.instruction_state.active_paths = ("CLAUDE.md",)
+
+
+def test_workspace_value_records_are_frozen() -> None:
+    worktree = WorktreeSession(
+        path="worktree",
+        original_working_directory="repository",
+        branch="branch",
+        base_commit="commit",
+    )
+    observation = FileObservation(
+        path="a.py",
+        content_hash="hash",
+        mtime_ns=1,
+        complete=True,
+    )
+
+    with pytest.raises(ValidationError, match="frozen_instance"):
+        worktree.branch = "changed"
+    with pytest.raises(ValidationError, match="frozen_instance"):
+        observation.complete = False
 
 
 def test_child_capabilities_can_only_narrow_the_caller_scope() -> None:
@@ -104,3 +132,24 @@ def test_completion_requirements_tighten_without_adding_waiver_to_existing_rule(
         "git_change_snapshot",
     }
     assert tightened.waivable_evidence == frozenset()
+
+
+def test_completion_requirements_tighten_is_order_independent_and_idempotent() -> None:
+    waivable = CompletionRequirements(
+        required_evidence=frozenset({"successful_test", "git_change_snapshot"}),
+        waivable_evidence=frozenset({"successful_test"}),
+    )
+    strict = CompletionRequirements(
+        required_evidence=frozenset({"successful_test", "independent_verification"}),
+    )
+    delivery = CompletionRequirements(
+        required_evidence=frozenset({"delivery_draft"}),
+        waivable_evidence=frozenset({"delivery_draft"}),
+    )
+
+    assert waivable.tighten(strict) == strict.tighten(waivable)
+    assert waivable.tighten(waivable) == waivable
+    assert waivable.tighten(strict).tighten(delivery) == waivable.tighten(
+        strict.tighten(delivery)
+    )
+    assert "successful_test" not in waivable.tighten(strict).waivable_evidence

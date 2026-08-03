@@ -1,9 +1,23 @@
-"""导出 Skill 目录、执行器和命令运行器。"""
+"""导出 Skill 发现、准备和调用契约。"""
 
 from osc_agent.skills.catalog import SkillCatalog
-from osc_agent.skills.executor import SkillExecutor
 from osc_agent.skills.loader import SkillLoader
-from osc_agent.skills.models import SkillInvocation, SkillManifest, SkillResult
-from osc_agent.skills.runner import SkillCommandRunner
+from osc_agent.skills.models import (
+    PreparedSkill,
+    SkillDiagnostic,
+    SkillManifest,
+    SkillPreparationFailure,
+    SkillRequest,
+)
+from osc_agent.skills.preparer import SkillPreparer
 
-__all__ = ["SkillCatalog", "SkillCommandRunner", "SkillExecutor", "SkillInvocation", "SkillLoader", "SkillManifest", "SkillResult"]
+__all__ = [
+    "PreparedSkill",
+    "SkillCatalog",
+    "SkillDiagnostic",
+    "SkillLoader",
+    "SkillManifest",
+    "SkillPreparationFailure",
+    "SkillPreparer",
+    "SkillRequest",
+]

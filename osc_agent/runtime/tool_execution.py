@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import asyncio
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -13,32 +13,37 @@ from typing import Awaitable, Callable
 from pydantic import JsonValue, ValidationError
 
 from osc_agent.runtime.hooks import HookRegistry, PostToolUsePayload, PreToolUsePayload
-from osc_agent.runtime.models import (
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.messages import ToolUseBlock
+from osc_agent.runtime.tool_models import (
     Allow,
     ApprovalResponse,
     Ask,
-    ContractModel,
     Deny,
-    PermissionGrant,
     ToolError,
     ToolResult,
-    ToolUseBlock,
-    ToolUseContext,
     ValidationFailure,
 )
+from osc_agent.runtime.state import PermissionGrant, PermissionGranted, ToolContext
 from osc_agent.runtime.permissions import DefaultPermissionPolicy, PermissionPolicy
 from osc_agent.runtime.tool import Tool, ToolRegistry
-from osc_agent.tools.git import git_workspace_fingerprint
 
 
 ApprovalHandler = Callable[[Ask], Awaitable[ApprovalResponse]]
-QuestionHandler = Callable[[list[dict[str, JsonValue]]], Awaitable[dict[str, str]]]
+
+
+class PostToolUseHookError(Exception):
+    """Tool 已完成，但 PostToolUse Hook 失败，调用方必须保留真实结果。"""
+
+    def __init__(self, *, tool_use_id: str, result: ToolResult, message: str) -> None:
+        super().__init__(message)
+        self.tool_use_id = tool_use_id
+        self.result = result
 
 
 @dataclass(frozen=True)
 class ToolExecutionDependencies:
     approval_handler: ApprovalHandler | None = None
-    question_handler: QuestionHandler | None = None
 
 
 class ToolExecutor:
@@ -55,7 +60,8 @@ class ToolExecutor:
         self.hooks = hooks or HookRegistry()
         self.dependencies = dependencies or ToolExecutionDependencies()
 
-    async def execute(self, call: ToolUseBlock, context: ToolUseContext) -> ToolResult:
+    async def execute(self, call: ToolUseBlock, context: ToolContext) -> ToolResult:
+        granted: list[PermissionGranted] = []
         tool = self.registry.get(call.name)
         if tool is None:
             return _error("TOOL_NOT_FOUND", f"unknown or disabled tool: {call.name}")
@@ -64,121 +70,107 @@ class ToolExecutor:
         if isinstance(parsed, ToolResult):
             return parsed
 
-        validation = await tool.validate_input(parsed, context)
-        if isinstance(validation, ValidationFailure):
-            return _error("TOOL_VALIDATION_FAILED", validation.reason)
-
-        permission = await self.permission_policy.decide(tool, parsed, context)
-        generally_allowed_input = await self._resolve_permission(
-            permission,
-            parsed,
-            tool,
-            context,
-        )
-        if isinstance(generally_allowed_input, ToolResult):
-            return generally_allowed_input
-
-        tool_permission = await tool.check_permissions(generally_allowed_input, context)
-        allowed_input = await self._resolve_permission(
-            tool_permission,
-            generally_allowed_input,
-            tool,
-            context,
-        )
-        if isinstance(allowed_input, ToolResult):
-            return allowed_input
-
-        serialized_input: dict[str, JsonValue] = allowed_input.model_dump(mode="json")
-        hook_result = await self.hooks.run_pre_tool_use(
-            PreToolUsePayload(tool_name=tool.name, input=serialized_input),
-            context,
-        )
-        if not hook_result.allowed:
-            return _error("HOOK_BLOCKED", hook_result.reason)
-
         try:
-            if tool.name == "ask_user_question":
-                if self.dependencies.question_handler is None:
-                    result = _error("USER_INTERACTION_REQUIRED", "no question handler is configured")
-                else:
-                    questions = serialized_input.get("questions")
-                    if not isinstance(questions, list):
-                        result = _error("TOOL_INPUT_INVALID", "questions must be a list")
-                    else:
-                        raw_answers = await self.dependencies.question_handler(questions)
-                        answers = []
-                        for question in questions:
-                            if not isinstance(question, dict):
-                                continue
-                            question_id = str(question.get("id") or "")
-                            text = str(question.get("question") or "")
-                            raw = raw_answers.get(question_id, raw_answers.get(text))
-                            if raw is None:
-                                result = _error(
-                                    "USER_INTERACTION_INVALID",
-                                    f"no answer was returned for question {question_id or text}",
-                                )
-                                break
-                            options = question.get("options") or []
-                            selected = next(
-                                (
-                                    str(option.get("id"))
-                                    for option in options
-                                    if isinstance(option, dict)
-                                    and raw in {option.get("id"), option.get("label")}
-                                ),
-                                None,
-                            )
-                            answers.append(
-                                {
-                                    "question_id": question_id,
-                                    "selected_option_id": selected,
-                                    "custom_text": None if selected is not None else str(raw),
-                                }
-                            )
-                        else:
-                            try:
-                                fingerprint = await asyncio.to_thread(
-                                    git_workspace_fingerprint,
-                                    repo_root=Path(context.working_directory),
-                                )
-                            except (OSError, ValueError):
-                                fingerprint = None
-                            result = ToolResult(
-                                data={
-                                    "questions": questions,
-                                    "answers": answers,
-                                    "workspace_fingerprint": fingerprint,
-                                }
-                            )
-            else:
-                execution_context = context.model_copy(
-                    update={"tool_use_id": call.id},
-                    deep=True,
-                )
-                result = await tool.call(allowed_input, execution_context)
-        except Exception as exc:  # noqa: BLE001 - Tool 异常必须转换为结构化结果。
-            result = _error("TOOL_EXECUTION_FAILED", str(exc) or type(exc).__name__)
+            validation = await tool.validate_input(parsed, context)
+            if isinstance(validation, ValidationFailure):
+                return _error("TOOL_VALIDATION_FAILED", validation.reason)
 
-        result = _validate_output(tool, result)
-        await self.hooks.run_post_tool_use(
-            PostToolUsePayload(tool_name=tool.name, input=serialized_input, result=result),
-            context,
-        )
-        return result
+            if not context.capabilities.permits_tool(tool.name):
+                return _error(
+                    "PERMISSION_DENIED",
+                    f"tool {tool.name} is outside the current capability scope",
+                )
+
+            permission = await self.permission_policy.decide(tool, parsed, context)
+            generally_allowed_input = await self._resolve_permission(
+                permission,
+                parsed,
+                tool,
+                context,
+                granted,
+            )
+            if isinstance(generally_allowed_input, ToolResult):
+                return _with_grants(generally_allowed_input, granted)
+            if isinstance(permission, Ask) or generally_allowed_input != parsed:
+                validation_error = await _revalidate_input(
+                    tool,
+                    generally_allowed_input,
+                    context,
+                )
+                if validation_error is not None:
+                    return _with_grants(validation_error, granted)
+
+            tool_permission = await tool.check_permissions(generally_allowed_input, context)
+            allowed_input = await self._resolve_permission(
+                tool_permission,
+                generally_allowed_input,
+                tool,
+                context,
+                granted,
+            )
+            if isinstance(allowed_input, ToolResult):
+                return _with_grants(allowed_input, granted)
+            if isinstance(tool_permission, Ask) or allowed_input != generally_allowed_input:
+                validation_error = await _revalidate_input(tool, allowed_input, context)
+                if validation_error is not None:
+                    return _with_grants(validation_error, granted)
+
+            serialized_input: dict[str, JsonValue] = allowed_input.model_dump(mode="json")
+            hook_result = await self.hooks.run_pre_tool_use(
+                PreToolUsePayload(tool_name=tool.name, input=serialized_input),
+                context,
+            )
+            if not hook_result.allowed:
+                return _with_grants(_error("HOOK_BLOCKED", hook_result.reason), granted)
+
+            try:
+                result = await tool.call(allowed_input, context)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - Tool 异常必须转换为结构化结果。
+                result = _error("TOOL_EXECUTION_FAILED", str(exc) or type(exc).__name__)
+
+            result = _validate_output(tool, result)
+            result = _with_grants(result, granted)
+            try:
+                await self.hooks.run_post_tool_use(
+                    PostToolUsePayload(
+                        tool_name=tool.name,
+                        input=serialized_input,
+                        result=result.model_copy(deep=True),
+                    ),
+                    context,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - 已执行 Tool 的真实结果必须保留。
+                raise PostToolUseHookError(
+                    tool_use_id=call.id,
+                    result=result,
+                    message=str(exc) or type(exc).__name__,
+                ) from exc
+            return result
+        except (asyncio.CancelledError, PostToolUseHookError):
+            raise
+        except Exception as exc:  # noqa: BLE001 - Pipeline 异常必须转换为结构化结果。
+            return _with_grants(
+                _error("TOOL_PIPELINE_FAILED", str(exc) or type(exc).__name__),
+                granted,
+            )
 
     async def _resolve_permission(
         self,
         decision: Allow | Deny | Ask,
         input: ContractModel,
         tool: Tool[ContractModel, ContractModel],
-        context: ToolUseContext,
+        context: ToolContext,
+        granted: list[PermissionGranted],
     ) -> ContractModel | ToolResult:
         if isinstance(decision, Deny):
             return _error("PERMISSION_DENIED", decision.reason)
         if isinstance(decision, Ask):
             grant = _permission_grant(decision, input, context)
-            if grant is not None and grant in context.permission_grants:
+            if grant is not None and grant in context.permissions.grants:
                 return input
             if self.dependencies.approval_handler is None:
                 return _error("PERMISSION_REQUIRED", decision.prompt)
@@ -196,8 +188,10 @@ class ToolExecutor:
                         "PERMISSION_RESPONSE_INVALID",
                         "this permission risk cannot be remembered for the session",
                     )
-                if grant not in context.permission_grants:
-                    context.permission_grants.append(grant)
+                if grant not in context.permissions.grants and all(
+                    change.grant != grant for change in granted
+                ):
+                    granted.append(PermissionGranted(grant=grant))
             return input
         try:
             return tool.input_model.model_validate(decision.updated_input)
@@ -228,18 +222,41 @@ def _validate_output(
     return result.model_copy(update={"data": output.model_dump(mode="json")})
 
 
+async def _revalidate_input(
+    tool: Tool[ContractModel, ContractModel],
+    input: ContractModel,
+    context: ToolContext,
+) -> ToolResult | None:
+    """审批等待或权限改写后，重新确认即将执行的输入仍然有效。"""
+
+    validation = await tool.validate_input(input, context)
+    if isinstance(validation, ValidationFailure):
+        return _error("TOOL_VALIDATION_FAILED", validation.reason)
+    return None
+
+
 def _error(code: str, message: str) -> ToolResult:
     return ToolResult(error=ToolError(code=code, message=message))
+
+
+def _with_grants(result: ToolResult, granted: list[PermissionGranted]) -> ToolResult:
+    if not granted:
+        return result
+    return result.model_copy(
+        update={"state_changes": (*granted, *result.state_changes)}, deep=True
+    )
 
 
 def _permission_grant(
     decision: Ask,
     input: ContractModel,
-    context: ToolUseContext,
+    context: ToolContext,
 ) -> PermissionGrant | None:
     if decision.risk not in {"write", "process"}:
         return None
-    working_directory = os.path.normcase(str(Path(context.working_directory).resolve()))
+    working_directory = os.path.normcase(
+        str(Path(context.workspace.working_directory).resolve())
+    )
     canonical = json.dumps(
         input.model_dump(mode="json"),
         ensure_ascii=False,

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from pydantic import Field
 
-from osc_agent.runtime.models import ContractModel, ToolResult, ToolUseContext, ValidationFailure, ValidationResult, ValidationSuccess
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.state import ToolContext
+from osc_agent.runtime.tool_models import ToolResult, ValidationFailure, ValidationResult, ValidationSuccess
 from osc_agent.runtime.tool import BaseTool
 from osc_agent.skills.catalog import SkillCatalog
 
@@ -39,20 +42,33 @@ class ReadSkillResourceTool(BaseTool[ReadSkillResourceInput, ReadSkillResourceOu
     def is_concurrency_safe(self, input: ReadSkillResourceInput) -> bool:
         return True
 
-    async def validate_input(self, input: ReadSkillResourceInput, context: ToolUseContext) -> ValidationResult:
+    async def validate_input(self, input: ReadSkillResourceInput, context: ToolContext) -> ValidationResult:
         descriptor = self.catalog.get(input.skill)
         if descriptor is None:
             return ValidationFailure(reason="skill not found")
         if input.path not in descriptor.manifest.resources:
             return ValidationFailure(reason="resource is not declared by the skill manifest")
-        root = Path(descriptor.root).resolve()
-        target = (root / input.path).resolve()
-        if not target.is_relative_to(root) or not target.is_file():
+        try:
+            await asyncio.to_thread(_resolve_resource, descriptor.root, input.path)
+        except (OSError, ValueError):
             return ValidationFailure(reason="skill resource is missing or escapes the skill root")
         return ValidationSuccess()
 
-    async def call(self, input: ReadSkillResourceInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: ReadSkillResourceInput, context: ToolContext) -> ToolResult:
         descriptor = self.catalog.get(input.skill)
         assert descriptor is not None
-        target = (Path(descriptor.root) / input.path).resolve()
-        return ToolResult(data={"skill": input.skill, "path": input.path, "content": target.read_text(encoding="utf-8")})
+        content = await asyncio.to_thread(_read_resource, descriptor.root, input.path)
+        return ToolResult(data={"skill": input.skill, "path": input.path, "content": content})
+
+
+def _resolve_resource(root_value: str, relative_path: str) -> Path:
+    root = Path(root_value).resolve(strict=True)
+    target = (root / relative_path).resolve(strict=True)
+    if not target.is_relative_to(root) or not target.is_file():
+        raise ValueError("skill resource is missing or escapes the skill root")
+    return target
+
+
+def _read_resource(root_value: str, relative_path: str) -> str:
+    target = _resolve_resource(root_value, relative_path)
+    return target.read_text(encoding="utf-8")

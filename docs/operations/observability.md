@@ -1,6 +1,6 @@
 # Bot observability runbook
 
-本文适用于 Open Source Contribution Agent `0.2.4`。
+本文适用于 Open Source Contribution Agent `0.3.6`。
 
 Control and Worker emit structured JSON. The stable envelope is `timestamp`, `level`, `service`,
 `event`, `job_id`, `session_id`, `repository`, `issue_number`, state transition, phase, attempt,
@@ -8,6 +8,13 @@ duration, error code, GitHub delivery ID and execution-contract hash. Logs must 
 full prompts, Issue bodies, Tool inputs/outputs or repository file contents.
 Job 的 `last_progress_event` 只包含 phase 和 RuntimeEvent 类型，并最多每五秒更新一次（终态
 事件例外）；`last_progress_at` 可用于识别仍在运行但没有新事件的 Agent。
+主 Agent 在官方 Claude 端点命中默认输出上限时，先对同一请求做一次 64k 重试；兼容端点
+只有显式配置 `max_output_tokens_escalation` 才启用。随后最多注入三次持久化续写消息，耗尽
+后才以 `MODEL_MAX_TOKENS` 终止。Worker 失败评论的 Outbox 幂等键包含阶段和尝试次数。
+`read_file` 结果不会产生 `read_tool_result` 回读链；若 Plan 中同一 result ID 出现大量分页
+读取，应按运行版本不一致或其他大型工具结果循环排查。
+Implementation 的证据顺序固定为测试、独立验证、最终 Git snapshot、Delivery Draft；模型
+不再提交 workspace fingerprint。出现 `DELIVERY_FINGERPRINT_MISMATCH` 表示仍在运行旧版本。
 
 Prometheus exports Job counts/active/duration/retries, dispatcher up/heartbeat/iterations/failures/
 crashes/depth/oldest age, dead letters, Agent runs/duration, Tool calls, Worker active/heartbeat and
@@ -18,9 +25,9 @@ letters, ten-minute Outbox age, fifteen-minute queued jobs, two-minute Worker he
 Triage order:
 
 1. Check `/health/ready`; 503 identifies schema/database or dispatcher health failure.
-2. Check `osa_outbox_dispatcher_up`, heartbeat age and `osa_outbox_oldest_seconds`.
+2. Check `osc_outbox_dispatcher_up`, heartbeat age and `osc_outbox_oldest_seconds`.
 3. Inspect JSON events by `job_id` and `execution_contract_hash`; never paste raw prompts into logs.
-4. Use `/osa status` for active state. Use `/osa retry` only in `retry_wait`.
+4. Use `/osc-agent status` for active state. Use `/osc-agent retry` only in `retry_wait`.
 5. A dead letter is not user-retryable. An administrator must inspect the audit trail and use the
    maintenance CLI in a stopped-service window.
 

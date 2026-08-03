@@ -9,12 +9,9 @@ from typing import Annotated, AsyncIterator, Literal, Protocol, TypeAlias
 
 from pydantic import Field, JsonValue
 
-from osc_agent.runtime.models import (
-    ContractModel,
-    FrozenContractModel,
-    ModelRetryScheduled,
-    RuntimeMessage,
-)
+from osc_agent.contracts import ContractModel, FrozenContractModel
+from osc_agent.runtime.events import ModelRetryScheduled
+from osc_agent.runtime.messages import RuntimeMessage
 
 
 class ModelRequest(FrozenContractModel):

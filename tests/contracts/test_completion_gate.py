@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import tool_context
+
 import asyncio
 from pathlib import Path
 import subprocess
 
-from osc_agent.runtime.completion import CompletionEvidenceStopHook
+from osc_agent.completion.hooks import CompletionStopHook
+from osc_agent.completion.models import CompletionRequirements
 from osc_agent.runtime.hooks import StopHookPayload
-from osc_agent.runtime.models import (
-    CompletionRequirements,
-    RuntimeMessage,
-    ToolResultBlock,
-    ToolUseBlock,
-    ToolUseContext,
-)
-from osc_agent.tools.git import git_workspace_fingerprint
+from osc_agent.runtime.messages import RuntimeMessage, ToolResultBlock, ToolUseBlock
+from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
 def initialize_repository(root: Path) -> str:
@@ -40,11 +37,10 @@ def snapshot(root: Path) -> dict:
     )
 
 
-def context(root: Path) -> ToolUseContext:
-    return ToolUseContext(
+def context(root: Path) -> tool_context:
+    return tool_context(
         session_id="completion",
         working_directory=str(root),
-        repository_root=str(root),
         state_directory=str(root / "state"),
         completion_requirements=CompletionRequirements(
             required_evidence=frozenset(
@@ -55,7 +51,7 @@ def context(root: Path) -> ToolUseContext:
     )
 
 
-def independent_context(root: Path) -> ToolUseContext:
+def independent_context(root: Path) -> tool_context:
     return context(root).model_copy(
         update={
             "completion_requirements": CompletionRequirements(
@@ -94,7 +90,7 @@ def completed(call_id: str, name: str, input: dict, data: dict) -> list[RuntimeM
 
 def evaluate(messages: list[RuntimeMessage], root: Path):
     return asyncio.run(
-        CompletionEvidenceStopHook()(
+        CompletionStopHook()(
             StopHookPayload(messages=messages),
             context(root),
         )
@@ -103,7 +99,7 @@ def evaluate(messages: list[RuntimeMessage], root: Path):
 
 def evaluate_independent(messages: list[RuntimeMessage], root: Path):
     return asyncio.run(
-        CompletionEvidenceStopHook()(
+        CompletionStopHook()(
             StopHookPayload(messages=messages),
             independent_context(root),
         )
@@ -290,9 +286,11 @@ def test_independent_verification_requires_primary_test_then_pass_then_snapshot(
 
     stale_order = evaluate_independent([*edit, *verify, *test, *final_snapshot], tmp_path)
     assert any("independent verification PASS" in reason for reason in stale_order.blocking_reasons)
+    assert any("latest primary test invalidated" in reason for reason in stale_order.blocking_reasons)
 
     missing_final_snapshot = evaluate_independent([*edit, *test, *verify], tmp_path)
     assert any("final git_diff" in reason for reason in missing_final_snapshot.blocking_reasons)
+    assert any("Run git_diff now" in reason for reason in missing_final_snapshot.blocking_reasons)
 
     assert evaluate_independent([*edit, *test, *verify, *final_snapshot], tmp_path).blocking_reasons == []
 

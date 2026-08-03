@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "open-source-contribution-agent"
-version = "0.2.4"
+version = "0.3.6"
 description = "A local CLI harness for open source contribution agents."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,19 +23,20 @@ dependencies = [
 bot = [
   "fastapi>=0.115.0,<1",
   "uvicorn>=0.34.0,<1",
-  "httpx>=0.28.0,<1",
+  "httpx2>=2.7.0,<3",
   "PyJWT[crypto]>=2.10.0,<3",
   "prometheus-client>=0.21.0,<1",
 ]
 
 [project.scripts]
-osc-agent = "osc_agent.cli:app"
+osc-agent = "osc_agent.cli.app:app"
+osc-agent-bot = "osc_agent.bot.entrypoint:app"
 
 [tool.setuptools.packages.find]
 include = ["osc_agent*"]
 
 [tool.setuptools.package-data]
-osc_agent = ["skills/**/*.md", "runtime.yml"]
+osc_agent = ["skills/**/*.md", "configuration/runtime.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

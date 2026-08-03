@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from textwrap import indent
 
 import pytest
 from pydantic import ValidationError
 
-from osc_agent.config import Settings
+from osc_agent.configuration import AgentSettings, load_agent_settings
 from osc_agent.bot.config import load_repository_catalog
-from osc_agent.runtime_config import default_runtime_config_path, load_runtime_config
+from osc_agent.configuration.runtime import default_runtime_config_path, load_runtime_config
 
 
 def _runtime_yaml(*, verify_rounds: int = 16, extra: str = "") -> str:
@@ -67,10 +68,22 @@ def test_settings_loads_runtime_config_selected_by_environment(
     path.write_text(_runtime_yaml(verify_rounds=21), encoding="utf-8")
     monkeypatch.setenv("OSC_AGENT_RUNTIME_CONFIG", str(path))
 
-    settings = Settings()
+    settings = load_agent_settings()
 
     assert settings.runtime_config_path == path
     assert settings.runtime.agents.verify.max_rounds == 21
+
+
+def test_agent_settings_construction_does_not_read_runtime_file(tmp_path: Path) -> None:
+    runtime = load_runtime_config(default_runtime_config_path())
+
+    settings = AgentSettings(
+        model_id="test-model",
+        runtime_config_path=tmp_path / "missing.yml",
+        runtime=runtime,
+    )
+
+    assert settings.runtime is runtime
 
 
 @pytest.mark.parametrize(
@@ -92,3 +105,34 @@ def test_runtime_config_rejects_invalid_files(
 
     with pytest.raises((ValueError, ValidationError), match=error):
         load_runtime_config(path)
+
+
+@pytest.mark.parametrize(
+    ("loader", "error"),
+    [
+        (load_runtime_config, "unable to read runtime config"),
+        (load_repository_catalog, "unable to read bot repositories config"),
+    ],
+)
+def test_config_loaders_share_yaml_error_normalization(
+    tmp_path: Path,
+    loader,
+    error: str,
+) -> None:
+    path = tmp_path / "invalid.yml"
+    path.write_text("runtime: [", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=error):
+        loader(path)
+
+
+def test_combined_config_requires_the_requested_section(tmp_path: Path) -> None:
+    repositories_only = tmp_path / "repositories.yml"
+    repositories_only.write_text("repositories: {}\n", encoding="utf-8")
+    runtime_only = tmp_path / "runtime.yml"
+    runtime_only.write_text("runtime:\n" + indent(_runtime_yaml(), "  "), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="missing runtime section"):
+        load_runtime_config(repositories_only)
+    with pytest.raises(ValueError, match="missing repositories section"):
+        load_repository_catalog(runtime_only)

@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
-import yaml
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from osc_agent.bot.models import RepositoryBotCatalog
+from osc_agent.bot.domain.repositories import RepositoryBotCatalog
+from osc_agent.configuration.source import load_config_section
 
 
-class BotSettings(BaseSettings):
+class BotControlSettings(BaseSettings):
     """Bot 进程显式配置；本地 CLI 不加载这些必需项。"""
 
     model_config = SettingsConfigDict(extra="ignore", frozen=True, populate_by_name=True)
@@ -31,10 +30,10 @@ class BotSettings(BaseSettings):
     plan_approval_days: int = Field(default=7, ge=1, le=30, validation_alias="OSC_AGENT_BOT_PLAN_APPROVAL_DAYS")
     completed_workspace_hours: int = Field(default=24, ge=1, le=168, validation_alias="OSC_AGENT_BOT_WORKSPACE_RETENTION_HOURS")
     audit_retention_days: int = Field(default=30, ge=1, le=365, validation_alias="OSC_AGENT_BOT_AUDIT_RETENTION_DAYS")
-    model_id: str = Field(default="configured-by-worker", min_length=1, validation_alias="MODEL_ID")
+    model_id: str = Field(min_length=1, validation_alias="MODEL_ID")
 
     @model_validator(mode="after")
-    def protect_control_state_from_workspace_mounts(self) -> "BotSettings":
+    def protect_control_state_from_workspace_mounts(self) -> "BotControlSettings":
         workspace = self.workspace_root.resolve()
         for name, path in (
             ("GitHub App private key", self.github_app_private_key_path),
@@ -71,14 +70,60 @@ class BotWorkerSettings(BaseSettings):
         return self
 
 
+class BotMaintenanceSettings(BaseSettings):
+    """Bot 状态维护只加载所需路径和保留策略，不加载 GitHub 凭据。"""
+
+    model_config = SettingsConfigDict(extra="ignore", frozen=True, populate_by_name=True)
+
+    database_path: Path = Field(validation_alias="OSC_AGENT_BOT_DATABASE_PATH")
+    workspace_root: Path = Field(validation_alias="OSC_AGENT_BOT_WORKSPACE_ROOT")
+    bind_port: int = Field(default=8080, ge=1, le=65_535, validation_alias="OSC_AGENT_BOT_BIND_PORT")
+    completed_workspace_hours: int = Field(
+        default=24,
+        ge=1,
+        le=168,
+        validation_alias="OSC_AGENT_BOT_WORKSPACE_RETENTION_HOURS",
+    )
+    audit_retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=365,
+        validation_alias="OSC_AGENT_BOT_AUDIT_RETENTION_DAYS",
+    )
+
+    @model_validator(mode="after")
+    def protect_state_from_recursive_reset(self) -> "BotMaintenanceSettings":
+        workspace = self.workspace_root.resolve()
+        database = self.database_path.resolve()
+        if workspace == Path(workspace.anchor):
+            raise ValueError("Bot workspace root cannot be a filesystem root")
+        if database.is_relative_to(workspace):
+            raise ValueError("SQLite database must be outside the Bot workspace root")
+        return self
+
+
 def load_repository_catalog(path: Path) -> RepositoryBotCatalog:
-    try:
-        raw: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise ValueError(f"unable to read bot repositories config: {exc}") from exc
-    if isinstance(raw, dict) and "runtime" in raw:
-        unknown = set(raw) - {"runtime", "repositories"}
-        if unknown:
-            raise ValueError(f"unknown production config sections: {', '.join(sorted(unknown))}")
-        raw = {"repositories": raw.get("repositories")}
-    return RepositoryBotCatalog.model_validate(raw)
+    repositories = load_config_section(
+        path,
+        section="repositories",
+        source_name="bot repositories",
+    )
+    catalog = RepositoryBotCatalog.model_validate({"repositories": repositories})
+    _validate_execution_policy(catalog)
+    return catalog
+
+
+def _validate_execution_policy(catalog: RepositoryBotCatalog) -> None:
+    """在配置加载边界验证命令策略，避免 Domain 反向依赖进程实现。"""
+
+    from osc_agent.processes.contracts import CommandKind
+    from osc_agent.processes.policy import classify_command
+
+    for name, repository in catalog.repositories.items():
+        if not any(
+            classify_command(command) == CommandKind.TEST
+            for command in repository.validation_commands
+        ):
+            raise ValueError(
+                f"repository {name} validation commands must include a recognized test command"
+            )

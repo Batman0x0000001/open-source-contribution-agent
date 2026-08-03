@@ -1,0 +1,98 @@
+"""实现 Bot 状态清理、归档、重建和部署检查。"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import shutil
+import urllib.request
+
+from osc_agent.application.state_paths import ApplicationStatePaths
+from osc_agent.bot.config import BotMaintenanceSettings
+from osc_agent.bot.persistence.store import BotStore
+
+
+def cleanup_bot_state(settings: BotMaintenanceSettings) -> tuple[int, int]:
+    store = BotStore(settings.database_path)
+    store.initialize()
+    now = datetime.now(timezone.utc)
+    workspace_cutoff = now - timedelta(hours=settings.completed_workspace_hours)
+    audit_cutoff = now - timedelta(days=settings.audit_retention_days)
+    root = settings.workspace_root.resolve()
+    removed_workspaces = 0
+    for job in store.terminal_jobs_before(workspace_cutoff):
+        job_root = (root / job.job_id).resolve()
+        if not job_root.is_relative_to(root) or job_root == root:
+            raise ValueError("bot cleanup target escapes the configured workspace root")
+        if job_root.exists():
+            if job_root.is_symlink():
+                raise ValueError("bot cleanup refuses a symlinked job workspace")
+            shutil.rmtree(job_root)
+            removed_workspaces += 1
+        runtime_root = root.parent / "runtime-state"
+        for phase in ("plan", "implementation"):
+            state = ApplicationStatePaths.for_repository(
+                job_root / phase,
+                state_root=runtime_root,
+            ).repository
+            if state.exists():
+                if not state.resolve().is_relative_to(runtime_root.resolve()) or state.is_symlink():
+                    raise ValueError("bot cleanup refuses an unsafe runtime-state path")
+                shutil.rmtree(state)
+    removed_records = 0
+    for job in store.terminal_jobs_before(audit_cutoff):
+        store.delete_terminal_job(job.job_id, expected_version=job.version)
+        removed_records += 1
+    store.delete_deliveries_before(audit_cutoff)
+    return removed_workspaces, removed_records
+
+
+def check_schema(settings: BotMaintenanceSettings) -> None:
+    BotStore(settings.database_path).check_schema()
+
+
+def archive_state(settings: BotMaintenanceSettings) -> Path:
+    database = settings.database_path.resolve()
+    workspace = settings.workspace_root.resolve()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    destination = database.parent / "archive" / stamp
+    destination.mkdir(parents=True, exist_ok=False)
+    for candidate in _database_files(database):
+        if candidate.exists():
+            shutil.copy2(candidate, destination / candidate.name)
+    if workspace.exists():
+        shutil.copytree(workspace, destination / "workspaces")
+    return destination
+
+
+def reset_state(settings: BotMaintenanceSettings) -> Path:
+    destination = archive_state(settings)
+    database = settings.database_path.resolve()
+    workspace = settings.workspace_root.resolve()
+    for candidate in _database_files(database):
+        if candidate.exists():
+            candidate.unlink()
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True, exist_ok=True)
+    workspace.chmod(0o2770)
+    BotStore(database).initialize()
+    return destination
+
+
+def check_service_endpoints(settings: BotMaintenanceSettings) -> tuple[str, ...]:
+    base = f"http://127.0.0.1:{settings.bind_port}"
+    checked: list[str] = []
+    for endpoint in ("/health/live", "/health/ready", "/metrics"):
+        try:
+            with urllib.request.urlopen(base + endpoint, timeout=10) as response:
+                if response.status != 200:
+                    raise ValueError(f"HTTP {response.status}")
+        except Exception as exc:
+            raise ValueError(f"{endpoint}: {str(exc)[:300]}") from exc
+        checked.append(endpoint)
+    return tuple(checked)
+
+
+def _database_files(database: Path) -> tuple[Path, Path, Path]:
+    return database, Path(str(database) + "-wal"), Path(str(database) + "-shm")

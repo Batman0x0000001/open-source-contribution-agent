@@ -7,10 +7,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
-from osc_agent.bot.models import BotJob
-from osc_agent.bot.store import BotStore
-from osc_agent.bot.worker import BotWorker
-from osc_agent.runtime.models import (
+import pytest
+
+from osc_agent.bot.domain.jobs import BotJob
+from osc_agent.bot.persistence.store import BotStore
+from osc_agent.bot.worker.agent_jobs import (
+    BotJobLeaseLost,
+    BotModelContractMismatch,
+    ImplementationJobExecutor,
+    consume_runtime_events,
+)
+from osc_agent.bot.worker.coordinator import BotWorker
+from osc_agent.runtime.events import (
     AssistantDelta,
     Complete,
     ModelRequestStarted,
@@ -36,7 +44,7 @@ def _job(*, status: str = "running_implementation") -> BotJob:
 
 
 def test_runtime_progress_is_redacted_and_throttled() -> None:
-    job = _job(status="running_plan")
+    job = _job(status="running_plan").model_copy(update={"lease_owner": "worker"})
 
     class Store:
         progress: list[str] = []
@@ -44,7 +52,7 @@ def test_runtime_progress_is_redacted_and_throttled() -> None:
         def get_job(self, _job_id):
             return job
 
-        def record_progress(self, _job_id, event_type):
+        def record_progress(self, _job_id, _worker_id, event_type):
             self.progress.append(event_type)
             return job
 
@@ -56,25 +64,30 @@ def test_runtime_progress_is_redacted_and_throttled() -> None:
         yield AssistantDelta(text="sensitive model output must not be persisted")
         yield RunCompleted(transition=Complete(reason="done"))
 
-    worker = object.__new__(BotWorker)
-    worker.store = Store()  # type: ignore[assignment]
-    worker.bot_settings = SimpleNamespace(worker_id="worker")  # type: ignore[assignment]
-    completed = asyncio.run(worker._consume(events(), job.job_id, phase="plan"))
+    store = Store()
+    sessions = SimpleNamespace(renew_lease=lambda _session_id: None)
+    completed = asyncio.run(
+        consume_runtime_events(
+            events(), store=store, sessions=sessions, session_id="session",
+            worker_id="worker", job_id=job.job_id, phase="plan"
+        )
+    )
 
     assert completed is True
-    assert worker.store.progress == ["plan:model_request_started", "plan:run_completed"]
-    assert "sensitive" not in " ".join(worker.store.progress)
+    assert store.progress == ["plan:model_request_started", "plan:run_completed"]
+    assert "sensitive" not in " ".join(store.progress)
 
 
 def test_repository_policy_violation_immediately_terminates_job(tmp_path: Path) -> None:
     store = BotStore(tmp_path / "bot.sqlite3")
     store.initialize()
-    job = _job()
+    job = _job().model_copy(update={"lease_owner": "worker"})
     store.create_job(job)
-    worker = object.__new__(BotWorker)
-    worker.store = store  # type: ignore[assignment]
+    executor = object.__new__(ImplementationJobExecutor)
+    executor.store = store  # type: ignore[assignment]
+    executor.bot_settings = SimpleNamespace(worker_id="worker")  # type: ignore[assignment]
 
-    worker._terminate_repository_policy(job.job_id, "protected path")
+    executor._terminate_repository_policy(job.job_id, "protected path")
 
     terminated = store.get_job(job.job_id)
     assert terminated is not None
@@ -83,11 +96,145 @@ def test_repository_policy_violation_immediately_terminates_job(tmp_path: Path) 
     assert terminated.error_message == "protected path"
 
 
+def test_model_contract_mismatch_dead_letters_without_running_agent() -> None:
+    job = _job(status="running_plan").model_copy(update={"lease_owner": "worker"})
+    transitions: list[tuple[str, dict[str, object]]] = []
+
+    class Store:
+        def claim_job(self, _worker_id, phase=None):
+            return job
+
+        def get_job(self, _job_id):
+            return job
+
+        def apply_job_event_with_outbox(self, **changes):
+            transitions.append(("retry_wait", changes))
+            return job.model_copy(update={"status": "retry_wait", "version": job.version + 1})
+
+        def apply_job_event(self, **changes):
+            transitions.append(("dead_letter", changes))
+            return job.model_copy(update={"status": "dead_letter", "version": job.version + 2})
+
+    worker = object.__new__(BotWorker)
+    worker.store = Store()  # type: ignore[assignment]
+    worker.bot_settings = SimpleNamespace(worker_id="worker")  # type: ignore[assignment]
+
+    async def reject(_job):
+        raise BotModelContractMismatch("model mismatch")
+
+    worker.plan_executor = SimpleNamespace(execute=reject)  # type: ignore[assignment]
+
+    assert asyncio.run(worker.run_once("plan")) is True
+    assert [status for status, _ in transitions] == ["retry_wait", "dead_letter"]
+    assert transitions[0][1]["error_code"] == "BOT_MODEL_CONTRACT_MISMATCH"
+
+
+def test_reclaimed_worker_does_not_schedule_retry_or_complete() -> None:
+    claimed = _job(status="running_plan").model_copy(update={"lease_owner": "worker-1"})
+    reclaimed = claimed.model_copy(
+        update={"lease_owner": "worker-2", "version": claimed.version + 1}
+    )
+    transitions: list[dict[str, object]] = []
+
+    class Store:
+        def claim_job(self, _worker_id, phase=None):
+            return claimed
+
+        def get_job(self, _job_id):
+            return reclaimed
+
+        def apply_job_event_with_outbox(self, **changes):
+            transitions.append(changes)
+
+    worker = object.__new__(BotWorker)
+    worker.store = Store()  # type: ignore[assignment]
+    worker.bot_settings = SimpleNamespace(worker_id="worker-1")  # type: ignore[assignment]
+
+    async def fail(_job):
+        raise RuntimeError("old worker resumed after lease expiry")
+
+    worker.plan_executor = SimpleNamespace(execute=fail)  # type: ignore[assignment]
+
+    assert asyncio.run(worker.run_once("plan")) is True
+    assert transitions == []
+
+
+def test_worker_failure_comment_is_unique_per_phase_attempt(monkeypatch) -> None:
+    import osc_agent.bot.worker.coordinator as worker_module
+
+    base = _job().model_copy(update={"lease_owner": "worker"})
+    claimed = [
+        base.model_copy(update={"implementation_attempts": attempt, "version": attempt})
+        for attempt in (1, 2)
+    ]
+    current: BotJob | None = None
+    comments = []
+
+    class Store:
+        def claim_job(self, _worker_id, phase=None):
+            nonlocal current
+            current = claimed.pop(0)
+            return current
+
+        def get_job(self, _job_id):
+            return current
+
+        def apply_job_event_with_outbox(self, **changes):
+            comments.append(changes["outbox_event"])
+            assert current is not None
+            return current.model_copy(
+                update={"status": "retry_wait", "version": current.version + 1}
+            )
+
+    async def resolve(image_id: str) -> str:
+        return image_id
+
+    async def fail(_job):
+        raise RuntimeError("implementation failed")
+
+    monkeypatch.setattr(worker_module, "resolve_image_id", resolve)
+    worker = object.__new__(BotWorker)
+    worker.store = Store()  # type: ignore[assignment]
+    worker.bot_settings = SimpleNamespace(worker_id="worker")  # type: ignore[assignment]
+    worker.implementation_executor = SimpleNamespace(execute=fail)  # type: ignore[assignment]
+
+    assert asyncio.run(worker.run_once("implementation")) is True
+    assert asyncio.run(worker.run_once("implementation")) is True
+    assert [event.idempotency_key for event in comments] == [
+        f"comment:{base.job_id}:failed:implementation:1",
+        f"comment:{base.job_id}:failed:implementation:2",
+    ]
+
+
+def test_runtime_stream_stops_when_job_lease_is_reclaimed() -> None:
+    job = _job(status="running_plan").model_copy(update={"lease_owner": "worker-2"})
+
+    class Store:
+        def get_job(self, _job_id):
+            return job
+
+    async def events():
+        yield ModelRequestStarted(session_id="session", round_number=1)
+
+    with pytest.raises(BotJobLeaseLost, match="reclaimed"):
+        asyncio.run(
+            consume_runtime_events(
+                events(),
+                store=Store(),  # type: ignore[arg-type]
+                sessions=SimpleNamespace(renew_lease=lambda _session_id: None),
+                session_id="session",
+                worker_id="worker-1",
+                job_id=job.job_id,
+                phase="plan",
+            )
+        )
+
+
 def test_worker_uses_independent_phase_slots_and_graceful_shutdown(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    import osc_agent.bot.service_runner as server_module
+    import osc_agent.bot.worker.service as server_module
 
     started = asyncio.Event()
     slot_names: set[str] = set()
@@ -114,7 +261,7 @@ def test_worker_uses_independent_phase_slots_and_graceful_shutdown(
     monkeypatch.setattr(server_module, "BotStore", Store)
     monkeypatch.setattr(server_module, "BotWorker", Worker)
     monkeypatch.setattr(server_module, "load_repository_catalog", lambda _path: object())
-    monkeypatch.setattr(server_module, "load_settings", lambda: object())
+    monkeypatch.setattr(server_module, "load_agent_settings", lambda: object())
     settings = SimpleNamespace(
         database_path=tmp_path / "bot.sqlite3",
         repositories_config=tmp_path / "repositories.yml",

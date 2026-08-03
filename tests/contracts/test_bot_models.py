@@ -13,15 +13,14 @@ import pytest
 from pydantic import ValidationError
 
 from osc_agent.bot.config import load_repository_catalog
-from osc_agent.bot.models import (
+from osc_agent.bot.domain.artifacts import DeliveryDraft, IssuePlanArtifact
+from osc_agent.bot.domain.execution import (
     BotApproval,
-    DeliveryDraft,
     ExecutionContract,
-    IssuePlanArtifact,
-    RepositoryBotConfig,
     plan_evidence_hash,
     validate_implementation_approval,
 )
+from osc_agent.bot.domain.repositories import RepositoryBotConfig
 
 
 SHA = "a" * 40
@@ -41,9 +40,17 @@ def test_repository_config_requires_an_immutable_image_id(image: str) -> None:
         )
 
 
-def test_repository_config_requires_a_recognized_test() -> None:
-    with pytest.raises(ValidationError, match="recognized test"):
-        RepositoryBotConfig(image=IMAGE_ID, validation_commands=("python -m pip check",))
+def test_repository_config_requires_a_recognized_test_at_loading_boundary(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "repositories.yml"
+    path.write_text(
+        f"repositories:\n  owner/repo:\n    image: {IMAGE_ID}\n"
+        "    validation_commands: [python -m pip check]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="recognized test"):
+        load_repository_catalog(path)
     config = RepositoryBotConfig(
         image=IMAGE_ID,
         validation_commands=("python -m pytest", "python -m pip check"),
@@ -87,12 +94,13 @@ def test_execution_contract_hash_is_canonical_and_secret_free() -> None:
     first = ExecutionContract.model_validate(values)
     second = ExecutionContract.model_validate(dict(reversed(list(values.items()))))
     assert first.contract_hash == second.contract_hash
+    assert first.runtime_revision == "bot-runtime-session-v6"
     assert "secret" not in first.model_dump_json().lower()
 
 
 def test_execution_contract_hash_is_stable_across_process_hash_seeds() -> None:
     script = """
-from osc_agent.bot.models import ExecutionContract
+from osc_agent.bot.domain.execution import ExecutionContract
 
 contract = ExecutionContract(
     repository_id=1,

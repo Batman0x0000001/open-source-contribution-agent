@@ -8,35 +8,21 @@ from typing import Protocol
 
 from pydantic import Field
 
-from osc_agent.runtime.models import (
-    ContractModel,
-    QueryConfig,
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.gateway import ModelCompleted, ModelGateway, ModelRequest
+from osc_agent.runtime.messages import (
     RuntimeMessage,
     TextBlock,
     ToolResultBlock,
-    ToolUseContext,
+    ToolUseBlock,
 )
-from osc_agent.runtime.gateway import ModelCompleted, ModelGateway, ModelRequest
-from osc_agent.runtime.instructions import RepositoryInstructionResolver
-from osc_agent.runtime.session_store import ToolResultStore
+from osc_agent.runtime.query_models import QueryConfig
+from osc_agent.runtime.session_store import MemoryToolResultStore, ToolResultStore
+from osc_agent.runtime.state import ToolContext
+from osc_agent.workspaces.instructions import RepositoryInstructionResolver
 
 
-class MemoryToolResultStore:
-    """测试和未配置持久层时的进程内保底实现。"""
-
-    def __init__(self) -> None:
-        self._values: dict[tuple[str, str], str] = {}
-
-    def persist(self, *, session_id: str, tool_use_id: str, content: str) -> str:
-        result_id = tool_use_id
-        self._values[(session_id, result_id)] = content
-        return result_id
-
-    def read(self, *, session_id: str, result_id: str) -> str:
-        try:
-            return self._values[(session_id, result_id)]
-        except KeyError as exc:
-            raise ValueError("unknown tool result for this session") from exc
+_INLINE_BOUNDED_TOOL_NAMES = frozenset({"read_file"})
 
 
 class SessionTranscript(ContractModel):
@@ -137,22 +123,21 @@ class ContextPipeline:
         *,
         summarizer: ContextSummarizer | None = None,
         tool_result_store: ToolResultStore | None = None,
-        instruction_resolver: RepositoryInstructionResolver | None = None,
     ) -> None:
         self.summarizer = summarizer or DeterministicContextSummarizer()
         self.tool_result_store = tool_result_store or MemoryToolResultStore()
-        self.instruction_resolver = instruction_resolver or RepositoryInstructionResolver()
 
     async def project(
         self,
         transcript: SessionTranscript,
         *,
         config: QueryConfig,
-        working_directory: str,
-        runtime_context: ToolUseContext | None = None,
+        runtime_context: ToolContext | None = None,
+        instruction_resolver: RepositoryInstructionResolver | None = None,
         force_reason: str | None = None,
     ) -> ContextProjection:
-        messages = transcript.snapshot()
+        authoritative_messages = transcript.snapshot()
+        messages = [message.model_copy(deep=True) for message in authoritative_messages]
         reasons: list[str] = []
 
         if self._enforce_tool_result_budget(
@@ -167,12 +152,16 @@ class ContextPipeline:
         should_compact = force_reason is not None or _estimate_chars(messages) > config.auto_compact_chars
         if should_compact:
             reason = force_reason or "auto_compact"
-            messages, summary = await self._compact(messages, reason=reason)
+            messages, summary = await self._compact(
+                messages,
+                authoritative_messages=authoritative_messages,
+                reason=reason,
+            )
             reasons.append(reason)
         else:
             summary = ContextSummary(text="No summary generated")
 
-        reminder = _runtime_reminder(runtime_context, self.instruction_resolver)
+        reminder = _runtime_reminder(runtime_context, instruction_resolver)
 
         return ContextProjection(
             messages=messages,
@@ -192,30 +181,67 @@ class ContextPipeline:
         session_id: str,
     ) -> bool:
         results = _tool_results(messages)
-        total = sum(len(_json_text(block.content)) for block in results)
+        tool_names = {
+            block.id: block.name
+            for message in messages
+            for block in message.content
+            if isinstance(block, ToolUseBlock)
+        }
+        budgeted_results = [
+            block
+            for block in results
+            if tool_names.get(block.tool_use_id) not in _INLINE_BOUNDED_TOOL_NAMES
+        ]
+        total = sum(len(_json_text(block.content)) for block in budgeted_results)
         changed = False
-        for block in sorted(results, key=lambda item: len(_json_text(item.content)), reverse=True):
+        for block in sorted(
+            budgeted_results,
+            key=lambda item: len(_json_text(item.content)),
+            reverse=True,
+        ):
             if total <= max_chars:
                 break
             original = _json_text(block.content)
-            path = self.tool_result_store.persist(
-                session_id=session_id,
-                tool_use_id=block.tool_use_id,
-                content=original,
-            )
             preview = original[:1_000]
-            block.content = f"[Tool result persisted as {path}; use read_tool_result]\nPreview:\n{preview}"
-            total = sum(len(_json_text(item.content)) for item in results)
+            if tool_names.get(block.tool_use_id) == "read_tool_result":
+                # 原始结果已经持久化；再次保存读取页会形成无法终止的 result_id 链。
+                block.content = (
+                    "[Retrieved tool result page compacted; request a smaller page or "
+                    f"continue from its next_offset.]\nPreview:\n{preview}"
+                )
+            else:
+                path = self.tool_result_store.persist(
+                    session_id=session_id,
+                    tool_use_id=block.tool_use_id,
+                    content=original,
+                )
+                block.content = f"[Tool result persisted as {path}; use read_tool_result]\nPreview:\n{preview}"
+            total = sum(len(_json_text(item.content)) for item in budgeted_results)
             changed = True
         return changed
 
     @staticmethod
     def _micro_compact(messages: list[RuntimeMessage], *, keep_recent: int) -> bool:
         results = _tool_results(messages)
-        if len(results) <= keep_recent:
+        tool_names = {
+            block.id: block.name
+            for message in messages
+            for block in message.content
+            if isinstance(block, ToolUseBlock)
+        }
+        compactable_results = [
+            block
+            for block in results
+            if tool_names.get(block.tool_use_id) not in _INLINE_BOUNDED_TOOL_NAMES
+        ]
+        if len(compactable_results) <= keep_recent:
             return False
         changed = False
-        older = results if keep_recent == 0 else results[:-keep_recent]
+        older = (
+            compactable_results
+            if keep_recent == 0
+            else compactable_results[:-keep_recent]
+        )
         for block in older:
             content = _json_text(block.content)
             if len(content) > 200 and not content.startswith("[Tool result persisted"):
@@ -227,13 +253,19 @@ class ContextPipeline:
         self,
         messages: list[RuntimeMessage],
         *,
+        authoritative_messages: list[RuntimeMessage],
         reason: str,
     ) -> tuple[list[RuntimeMessage], ContextSummary]:
         groups = _group_by_api_round(messages)
+        authoritative_groups = _group_by_api_round(authoritative_messages)
         preserve_count = min(2, len(groups))
         if len(groups) <= preserve_count:
             preserve_count = max(0, len(groups) - 1)
-        summarized_groups = groups if preserve_count == 0 else groups[:-preserve_count]
+        summarized_groups = (
+            authoritative_groups
+            if preserve_count == 0
+            else authoritative_groups[:-preserve_count]
+        )
         preserved_groups = [] if preserve_count == 0 else groups[-preserve_count:]
         summarized = [message for group in summarized_groups for message in group]
         try:
@@ -246,32 +278,32 @@ class ContextPipeline:
 
 
 def _runtime_reminder(
-    context: ToolUseContext | None,
+    context: ToolContext | None,
     instruction_resolver: RepositoryInstructionResolver | None = None,
 ) -> str:
     if context is None:
         return ""
     lines = [
         "<session_runtime>",
-        f"permission_mode: {context.permission_mode}",
-        f"working_directory: {context.working_directory}",
+        f"permission_mode: {context.permissions.mode}",
+        f"working_directory: {context.workspace.working_directory}",
     ]
-    if context.plan_path:
-        plan = (Path(context.state_directory) / "plans" / context.plan_path).resolve()
+    if context.permissions.plan_path:
+        plan = (Path(context.state_directory) / "plans" / context.permissions.plan_path).resolve()
         plans_root = (Path(context.state_directory) / "plans").resolve()
         if plan.parent == plans_root and plan.is_file():
             lines.extend(["current_plan:", plan.read_text(encoding="utf-8")])
-    if context.worktree is not None:
+    if context.workspace.worktree is not None:
         lines.extend(
             [
-                f"worktree_path: {context.worktree.path}",
-                f"worktree_branch: {context.worktree.branch}",
-                f"worktree_base_commit: {context.worktree.base_commit}",
+                f"worktree_path: {context.workspace.worktree.path}",
+                f"worktree_branch: {context.workspace.worktree.branch}",
+                f"worktree_base_commit: {context.workspace.worktree.base_commit}",
             ]
         )
     documents = (instruction_resolver or RepositoryInstructionResolver()).load(
-        Path(context.working_directory),
-        context.instruction_state,
+        Path(context.workspace.working_directory),
+        context.workspace.instruction_state,
     )
     if documents:
         lines.append("<repository_instructions>")

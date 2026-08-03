@@ -4,43 +4,33 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
-from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from osc_agent.cli import app
-from osc_agent.cli_session import run_conversation
-from osc_agent.runtime.models import (
-    Complete,
-    QueryConfig,
-    RunCompleted,
-    RuntimeEvent,
-    RuntimeMessage,
-    SessionMetadata,
-    SessionRuntimeState,
-    TextBlock,
-)
+from osc_agent.application import UserSkillInput
+from osc_agent.cli.app import app
+from osc_agent.cli.agent import run_conversation
+from osc_agent.runtime.events import Complete, RunCompleted, RuntimeEvent
+from osc_agent.runtime.messages import RuntimeMessage, TextBlock
+from osc_agent.runtime.session import SessionMetadata
 from osc_agent.runtime.session_store import FileSessionStore
+from tests.runtime_factories import agent_run_state
 
 
 def _store_with_session(root: Path, *, session_id: str = "session-1") -> FileSessionStore:
     store = FileSessionStore(root)
     store.create(
         SessionMetadata(
-            schema_version=4,
+            schema_version=6,
             session_id=session_id,
-            repository_root=str(root),
-            initial_working_directory=str(root),
+            workspace_root=str(root),
             model="test-model",
-        )
+        ),
+        agent_run_state(str(root), status="completed"),
     )
     store.append_message(
         session_id,
         RuntimeMessage(role="user", content=[TextBlock(text="private goal")]),
-    )
-    store.save_state(
-        session_id,
-        SessionRuntimeState(last_status="completed", last_reason="end_turn"),
     )
     return store
 
@@ -48,17 +38,17 @@ def _store_with_session(root: Path, *, session_id: str = "session-1") -> FileSes
 def test_session_cli_hides_messages_by_default(monkeypatch, tmp_path: Path) -> None:
     state = tmp_path / "state"
     monkeypatch.setenv("OSC_AGENT_STATE_DIR", str(state))
-    from osc_agent.runtime.state_paths import ApplicationStatePaths
+    from osc_agent.application.state_paths import ApplicationStatePaths
 
     store = FileSessionStore(ApplicationStatePaths.for_repository(tmp_path).sessions)
     store.create(
         SessionMetadata(
-            schema_version=4,
+            schema_version=6,
             session_id="session-1",
-            repository_root=str(tmp_path),
-            initial_working_directory=str(tmp_path),
+            workspace_root=str(tmp_path),
             model="test-model",
-        )
+        ),
+        agent_run_state(str(tmp_path)),
     )
     store.append_message(
         "session-1",
@@ -98,47 +88,94 @@ def test_non_tty_run_requires_explicit_task(tmp_path: Path) -> None:
     assert "task is required when stdin is not a TTY" in result.output
 
 
+def test_skill_run_passes_user_skill_input_to_application(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured = {}
+
+    class Conversation:
+        def start(self, input):
+            captured["input"] = input
+            return _completed_events()
+
+    class AgentApplication:
+        def open_session(self, _session_id):
+            return Conversation()
+
+    async def _completed_events():
+        yield RunCompleted(transition=Complete(reason="done"))
+
+    def unexpected_catalog_build(*_args, **_kwargs):
+        raise AssertionError(
+            "skill run must delegate invocation validation to Application"
+        )
+
+    monkeypatch.setattr(
+        "osc_agent.cli.app.build_cli_application",
+        lambda *_args, **_kwargs: AgentApplication(),
+    )
+    monkeypatch.setattr(
+        "osc_agent.cli.app.build_skill_catalog",
+        unexpected_catalog_build,
+    )
+    monkeypatch.setattr("osc_agent.cli.app.run_conversation", lambda **_kwargs: None)
+
+    result = CliRunner().invoke(
+        app,
+        ["skill", "run", "open-source-contribution", "--repo", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert isinstance(captured["input"], UserSkillInput)
+
+
+def test_local_cli_has_no_bot_deploy_or_architecture_commands() -> None:
+    runner = CliRunner()
+
+    for command in ("bot", "deploy", "architecture"):
+        result = runner.invoke(app, [command])
+        assert result.exit_code != 0
+        assert "No such command" in result.output
+
+
 def test_conversation_driver_reuses_session_for_follow_up(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     store = _store_with_session(tmp_path / "sessions")
     prompts = iter(["follow up", "/exit"])
-    monkeypatch.setattr("osc_agent.cli_session.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("osc_agent.cli.agent.sys.stdin.isatty", lambda: True)
     monkeypatch.setattr(
-        "osc_agent.cli_session.typer.prompt",
+        "osc_agent.cli.agent.typer.prompt",
         lambda *_args, **_kwargs: next(prompts),
     )
     resumed = []
 
-    class AgentApplication:
-        def run(self, spec):
-            resumed.append(spec)
+    class Conversation:
+        def resume(self, input=None):
+            resumed.append(input)
+
             async def events() -> AsyncIterator[RuntimeEvent]:
                 yield RunCompleted(transition=Complete(reason="end_turn"))
+
             return events()
 
-    async def initial() -> AsyncIterator[RuntimeEvent]:
-        yield RunCompleted(transition=Complete(reason="end_turn"))
+        def snapshot(self):
+            return store.load("session-1")
 
-    services = SimpleNamespace(
-        session_store=store,
-        query_config=QueryConfig(),
-    )
-
+    conversation = Conversation()
     run_conversation(
-        services=services,
-        session_id="session-1",
+        conversation=conversation,  # type: ignore[arg-type]
         repository_root=tmp_path,
-        initial_events=initial(),
+        initial_events=conversation.resume(),
         once=False,
         quiet=True,
-        agent_application=AgentApplication(),  # type: ignore[arg-type]
     )
 
-    assert len(resumed) == 1
-    assert resumed[0].session_id == "session-1"
-    assert resumed[0].inbound_message.text == "follow up"
+    assert len(resumed) == 2
+    assert resumed[0] is None
+    assert resumed[1].text == "follow up"
 
 
 def test_resume_latest_resolves_repository_scoped_session(
@@ -147,35 +184,39 @@ def test_resume_latest_resolves_repository_scoped_session(
 ) -> None:
     state = tmp_path / "state"
     monkeypatch.setenv("OSC_AGENT_STATE_DIR", str(state))
-    from osc_agent.composition import build_session_store
+    from osc_agent.cli.sessions import session_store
 
-    store = build_session_store(tmp_path)
+    store = session_store(tmp_path)
     store.create(
         SessionMetadata(
-            schema_version=4,
+            schema_version=6,
             session_id="latest-session",
-            repository_root=str(tmp_path),
-            initial_working_directory=str(tmp_path),
+            workspace_root=str(tmp_path),
             model="test",
-        )
+        ),
+        agent_run_state(str(tmp_path)),
     )
     captured = {}
 
     class AgentApplication:
-        services = SimpleNamespace(query_config=QueryConfig())
+        def open_session(self, session_id):
+            captured["opened_session_id"] = session_id
+            return Conversation()
 
-        def run(self, spec):
-            captured["spec"] = spec
-            async def events():
-                if False:
-                    yield None
-            return events()
+    class Conversation:
+        def resume(self, input=None):
+            captured["resume_input"] = input
+            return _completed_events()
+
+    async def _completed_events():
+        yield RunCompleted(transition=Complete(reason="done"))
 
     monkeypatch.setattr(
-        "osc_agent.cli.build_agent_application", lambda **_kwargs: AgentApplication()
+        "osc_agent.cli.app.build_cli_application",
+        lambda *_args, **_kwargs: AgentApplication(),
     )
     monkeypatch.setattr(
-        "osc_agent.cli.run_conversation",
+        "osc_agent.cli.app.run_conversation",
         lambda **kwargs: captured.update(kwargs),
     )
 
@@ -185,4 +226,46 @@ def test_resume_latest_resolves_repository_scoped_session(
     )
 
     assert result.exit_code == 0
-    assert captured["session_id"] == "latest-session"
+    assert captured["opened_session_id"] == "latest-session"
+    assert captured["resume_input"] is None
+    assert "initial_events" in captured
+
+
+def test_explicit_resume_never_starts_an_unknown_session(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    class Conversation:
+        def start(self, _input):
+            calls.append("start")
+            raise AssertionError("resume command must not start a Session")
+
+        def resume(self, _input=None):
+            calls.append("resume")
+
+            async def events():
+                raise ValueError("unknown session: missing")
+                yield  # pragma: no cover
+
+            return events()
+
+        def snapshot(self):
+            return None
+
+    class AgentApplication:
+        def open_session(self, _session_id):
+            return Conversation()
+
+    monkeypatch.setattr(
+        "osc_agent.cli.app.build_cli_application",
+        lambda *_args, **_kwargs: AgentApplication(),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["resume", "--repo", str(tmp_path), "missing", "--prompt", "continue", "--once"],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ValueError)
+    assert "unknown session" in str(result.exception)
+    assert calls == ["resume"]

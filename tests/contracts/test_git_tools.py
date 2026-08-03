@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.runtime_factories import tool_context
+
 import asyncio
 from pathlib import Path
 import shutil
@@ -9,18 +11,19 @@ import subprocess
 
 import pytest
 
-from osc_agent.runtime.models import ToolUseBlock, ToolUseContext, WorktreeSession
+from osc_agent.runtime.messages import ToolUseBlock
+from osc_agent.workspaces.models import WorktreeSession
 from osc_agent.runtime.tool_execution import ToolExecutor
 from osc_agent.runtime.tool import ToolRegistry
-from osc_agent.runtime.context import MemoryToolResultStore
+from osc_agent.runtime.session_store import MemoryToolResultStore
 from tests.contracts.registry_factory import build_test_tool_registry
 from osc_agent.tools.git import (
     GitDiffInput,
     GitDiffTool,
     GitLogInput,
     GitStatusInput,
-    git_workspace_fingerprint,
 )
+from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
 def initialize_repository(root: Path) -> None:
@@ -32,8 +35,8 @@ def initialize_repository(root: Path) -> None:
     subprocess.run(["git", "commit", "--quiet", "-m", "initial"], cwd=root, check=True)
 
 
-def context(root: Path) -> ToolUseContext:
-    return ToolUseContext(session_id="session-1", working_directory=str(root), repository_root=str(root), state_directory=str(root / "state"))
+def context(root: Path) -> tool_context:
+    return tool_context(session_id="session-1", working_directory=str(root), state_directory=str(root / "state"))
 
 
 def test_git_tools_have_strict_contracts_and_read_only_concurrency() -> None:
@@ -134,15 +137,16 @@ def test_git_snapshot_includes_commits_staged_rename_and_untracked(
     )
     subprocess.run(["git", "mv", "tracked.txt", "renamed.txt"], cwd=tmp_path, check=True)
     (tmp_path / "untracked.txt").write_text("new text\n", encoding="utf-8")
-    tool_context = context(tmp_path).model_copy(
-        update={
+    tool_context = context(tmp_path)
+    tool_context = tool_context.model_copy(
+        update={"workspace": tool_context.workspace.model_copy(update={
             "worktree": WorktreeSession(
                 path=str(tmp_path),
                 original_working_directory=str(tmp_path),
                 branch="test",
                 base_commit=base,
             )
-        }
+        })}
     )
 
     result = asyncio.run(

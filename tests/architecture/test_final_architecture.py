@@ -24,6 +24,55 @@ def test_old_execution_architecture_is_absent() -> None:
         PACKAGE_ROOT / "agent_loop.py",
         PACKAGE_ROOT / "harness",
         PACKAGE_ROOT / "skills" / "registry.py",
+        PACKAGE_ROOT / "skills" / "runner.py",
+        PACKAGE_ROOT / "skills" / "executor.py",
+        PACKAGE_ROOT / "skills" / "tool.py",
+        PACKAGE_ROOT / "agent_service.py",
+        PACKAGE_ROOT / "composition.py",
+        PACKAGE_ROOT / "cli.py",
+        PACKAGE_ROOT / "cli_session.py",
+        PACKAGE_ROOT / "config.py",
+        PACKAGE_ROOT / "runtime_config.py",
+        PACKAGE_ROOT / "bot" / "service_runner.py",
+        PACKAGE_ROOT / "bot" / "models.py",
+        PACKAGE_ROOT / "bot" / "store.py",
+        PACKAGE_ROOT / "bot" / "state_machine.py",
+        PACKAGE_ROOT / "bot" / "control.py",
+        PACKAGE_ROOT / "bot" / "worker.py",
+        PACKAGE_ROOT / "bot" / "doctor.py",
+        PACKAGE_ROOT / "bot" / "sandbox.py",
+        PACKAGE_ROOT / "bot" / "policy.py",
+        PACKAGE_ROOT / "bot" / "application_factory.py",
+        PACKAGE_ROOT / "bot" / "agent_inputs.py",
+        PACKAGE_ROOT / "bot" / "artifact_tools.py",
+        PACKAGE_ROOT / "bot" / "control_service.py",
+        PACKAGE_ROOT / "bot" / "worker_service.py",
+        PACKAGE_ROOT / "bot" / "github_app.py",
+        PACKAGE_ROOT / "bot" / "job_workspace.py",
+        PACKAGE_ROOT / "bot" / "outbox.py",
+        PACKAGE_ROOT / "bot" / "publisher.py",
+        PACKAGE_ROOT / "bot" / "webhook.py",
+        PACKAGE_ROOT / "bot" / "cleanup.py",
+        PACKAGE_ROOT / "bot" / "operations.py",
+        PACKAGE_ROOT / "agents",
+        PACKAGE_ROOT / "runtime" / "models.py",
+        PACKAGE_ROOT / "runtime" / "completion.py",
+        PACKAGE_ROOT / "runtime" / "instructions.py",
+        PACKAGE_ROOT / "runtime" / "session_summary.py",
+        PACKAGE_ROOT / "runtime" / "state_paths.py",
+        PACKAGE_ROOT / "application" / "models.py",
+        PACKAGE_ROOT / "application" / "service.py",
+        PACKAGE_ROOT / "application" / "composition.py",
+        PACKAGE_ROOT / "cli" / "application.py",
+        PACKAGE_ROOT / "cli" / "config.py",
+        PACKAGE_ROOT / "cli" / "session.py",
+        PACKAGE_ROOT / "bot" / "validation.py",
+        PACKAGE_ROOT / "bot" / "worker" / "context.py",
+        PACKAGE_ROOT / "bot" / "worker" / "inputs.py",
+        PACKAGE_ROOT / "bot" / "worker" / "conversation.py",
+        PACKAGE_ROOT / "bot" / "worker" / "application.py",
+        PACKAGE_ROOT / "bot" / "worker" / "plan.py",
+        PACKAGE_ROOT / "bot" / "worker" / "implementation.py",
         PACKAGE_ROOT / "workflows" / "contribution" / "agents.py",
         PACKAGE_ROOT / "workflows" / "contribution" / "design.py",
         PACKAGE_ROOT / "workflows" / "contribution" / "discover.py",
@@ -37,7 +86,50 @@ def test_old_execution_architecture_is_absent() -> None:
 def test_query_and_tool_execution_have_one_authoritative_definition() -> None:
     assert _class_definitions("AgentRuntime") == [PACKAGE_ROOT / "runtime" / "query.py"]
     assert _class_definitions("ToolExecutor") == [PACKAGE_ROOT / "runtime" / "tool_execution.py"]
-    assert _class_definitions("SkillExecutor") == [PACKAGE_ROOT / "skills" / "executor.py"]
+    assert _class_definitions("SkillPreparer") == [PACKAGE_ROOT / "skills" / "preparer.py"]
+    assert not _class_definitions("SkillExecutor")
+    assert _class_definitions("BotStore") == [
+        PACKAGE_ROOT / "bot" / "persistence" / "store.py"
+    ]
+    assert _class_definitions("SqliteSessionStore") == [
+        PACKAGE_ROOT / "bot" / "persistence" / "session_store.py"
+    ]
+    assert _class_definitions("AgentRunState") == [PACKAGE_ROOT / "runtime" / "state.py"]
+    assert not _class_definitions("ApplicationGraph")
+    assert not _class_definitions("ContextUpdate")
+
+
+def test_reader_entrypoints_match_the_documented_vertical_paths() -> None:
+    for relative in (
+        "cli/app.py",
+        "cli/agent.py",
+        "cli/sessions.py",
+        "bot/worker/coordinator.py",
+        "bot/worker/agent_jobs.py",
+        "application/agent.py",
+        "runtime/query.py",
+        "runtime/state.py",
+        "completion/evaluator.py",
+    ):
+        assert (PACKAGE_ROOT / relative).is_file()
+
+
+def test_workspace_capabilities_have_explicit_names() -> None:
+    expected = [
+        PACKAGE_ROOT / "workspaces" / "git_worktree.py",
+        PACKAGE_ROOT / "tools" / "worktree.py",
+        PACKAGE_ROOT / "bot" / "control" / "job_workspace.py",
+    ]
+    forbidden = [
+        PACKAGE_ROOT / "isolation" / "worktree.py",
+        PACKAGE_ROOT / "tools" / "worktree_tools.py",
+        PACKAGE_ROOT / "bot" / "workspace.py",
+    ]
+
+    assert all(path.is_file() for path in expected)
+    assert not any(path.exists() for path in forbidden)
+    assert _class_definitions("GitWorktreeManager") == [expected[0]]
+    assert _class_definitions("BotJobWorkspacePreparer") == [expected[2]]
 
 
 def test_only_provider_calls_anthropic_sdk() -> None:
@@ -63,15 +155,17 @@ def test_removed_minimum_version_capabilities_are_absent() -> None:
     assert not (PACKAGE_ROOT / "tools" / "pr.py").exists()
     for name in ("docs", "python", "javascript", "tests"):
         assert not (PACKAGE_ROOT / "skills" / name / "SKILL.md").exists()
-    agent_sources = "\n".join(
-        path.read_text(encoding="utf-8") for path in (PACKAGE_ROOT / "agents").glob("*.py")
+    subagent_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (PACKAGE_ROOT / "subagents").rglob("*.py")
     )
-    assert "background" not in agent_sources
+    assert "background" not in subagent_sources
 
 
-def test_agent_registry_has_no_file_or_plugin_loading_path() -> None:
-    agent_sources = "\n".join(
-        path.read_text(encoding="utf-8") for path in (PACKAGE_ROOT / "agents").glob("*.py")
+def test_subagent_registry_has_no_file_or_plugin_loading_path() -> None:
+    subagent_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (PACKAGE_ROOT / "subagents").rglob("*.py")
     )
     for forbidden in (
         ".osc_agent/agents",
@@ -80,4 +174,4 @@ def test_agent_registry_has_no_file_or_plugin_loading_path() -> None:
         "plugin_agent",
         "AgentLoader",
     ):
-        assert forbidden not in agent_sources
+        assert forbidden not in subagent_sources

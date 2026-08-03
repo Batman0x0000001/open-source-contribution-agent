@@ -1,20 +1,15 @@
-"""对模型请求的多个工具调用进行分组和安全调度。"""
+"""按安全顺序调度 Tool，并将状态变化统一交给 AgentRunState。"""
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import AsyncIterator, TypeAlias
 
-from osc_agent.runtime.models import (
-    ContextUpdate,
-    ToolExecutionUpdate,
-    ToolResult,
-    ToolUseBlock,
-    ToolUseContext,
-)
-from osc_agent.runtime.tool import ToolRegistry
-from osc_agent.runtime.tool_execution import ToolExecutor
+from osc_agent.runtime.messages import RuntimeMessage, ToolUseBlock
+from osc_agent.runtime.state import AgentRunState
+from osc_agent.runtime.tool_execution import PostToolUseHookError, ToolExecutor
+from osc_agent.runtime.tool_models import ToolResult
 
 
 @dataclass(frozen=True)
@@ -23,13 +18,27 @@ class ToolBatch:
     calls: tuple[ToolUseBlock, ...]
 
 
+@dataclass(frozen=True)
+class ToolResultAvailable:
+    tool_use_id: str
+    result: ToolResult
+
+
+@dataclass(frozen=True)
+class ToolBatchStateCommitted:
+    agent_state: AgentRunState
+
+
+ToolExecutionEvent: TypeAlias = ToolResultAvailable | ToolBatchStateCommitted
+
+
 def partition_tool_calls(
     calls: list[ToolUseBlock],
-    registry: ToolRegistry,
+    executor: ToolExecutor,
 ) -> list[ToolBatch]:
     batches: list[ToolBatch] = []
     for call in calls:
-        concurrency_safe = _is_concurrency_safe(call, registry)
+        concurrency_safe = _is_concurrency_safe(call, executor)
         if concurrency_safe and batches and batches[-1].concurrency_safe:
             previous = batches[-1]
             batches[-1] = ToolBatch(True, (*previous.calls, call))
@@ -41,18 +50,33 @@ def partition_tool_calls(
 async def run_tools(
     calls: list[ToolUseBlock],
     *,
-    registry: ToolRegistry,
     executor: ToolExecutor,
-    context: ToolUseContext,
-) -> AsyncIterator[ToolExecutionUpdate]:
-    current_context = context.model_copy(deep=True)
-    for batch in partition_tool_calls(calls, registry):
+    state: AgentRunState,
+    session_id: str,
+    state_directory: str,
+    transcript_messages: list[RuntimeMessage],
+) -> AsyncIterator[ToolExecutionEvent]:
+    current_state = state
+    for batch in partition_tool_calls(calls, executor):
         if batch.concurrency_safe:
             results: dict[int, ToolResult] = {}
+            post_hook_failures: dict[int, PostToolUseHookError] = {}
+            emitted: set[int] = set()
 
-            async def execute_indexed(index: int, call: ToolUseBlock) -> tuple[int, ToolResult]:
-                isolated_context = current_context.model_copy(deep=True)
-                return index, await executor.execute(call, isolated_context)
+            async def execute_indexed(
+                index: int,
+                call: ToolUseBlock,
+            ) -> tuple[int, ToolResult, PostToolUseHookError | None]:
+                context = current_state.tool_context(
+                    session_id=session_id,
+                    tool_use_id=call.id,
+                    state_directory=state_directory,
+                    transcript_messages=transcript_messages,
+                )
+                try:
+                    return index, await executor.execute(call, context), None
+                except PostToolUseHookError as exc:
+                    return index, exc.result, exc
 
             tasks = [
                 asyncio.create_task(execute_indexed(index, call))
@@ -60,13 +84,41 @@ async def run_tools(
             ]
             try:
                 for completed in asyncio.as_completed(tasks):
-                    index, result = await completed
+                    index, result, post_hook_failure = await completed
                     results[index] = result
-                    yield ToolExecutionUpdate(
+                    if post_hook_failure is not None:
+                        post_hook_failures[index] = post_hook_failure
+                    emitted.add(index)
+                    yield ToolResultAvailable(
                         tool_use_id=batch.calls[index].id,
                         result=result,
-                        context=current_context,
                     )
+            except asyncio.CancelledError:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                settled = await asyncio.gather(*tasks, return_exceptions=True)
+                for outcome in settled:
+                    if not isinstance(outcome, tuple):
+                        continue
+                    index, result, post_hook_failure = outcome
+                    results[index] = result
+                    if post_hook_failure is not None:
+                        post_hook_failures[index] = post_hook_failure
+                    if index not in emitted:
+                        emitted.add(index)
+                        yield ToolResultAvailable(
+                            tool_use_id=batch.calls[index].id,
+                            result=result,
+                        )
+                for index in range(len(batch.calls)):
+                    if index in results:
+                        current_state = current_state.apply_all(
+                            results[index].state_changes
+                        )
+                if results:
+                    yield ToolBatchStateCommitted(agent_state=current_state)
+                raise
             finally:
                 for task in tasks:
                     if not task.done():
@@ -74,69 +126,41 @@ async def run_tools(
                 await asyncio.gather(*tasks, return_exceptions=True)
 
             for index in range(len(batch.calls)):
-                current_context = _apply_context_update(current_context, results[index].context_update)
-            yield ToolExecutionUpdate(context=current_context)
+                current_state = current_state.apply_all(results[index].state_changes)
+            yield ToolBatchStateCommitted(agent_state=current_state)
+            if post_hook_failures:
+                raise post_hook_failures[min(post_hook_failures)]
             continue
 
         call = batch.calls[0]
-        result = await executor.execute(call, current_context)
-        current_context = _apply_context_update(current_context, result.context_update)
-        yield ToolExecutionUpdate(
+        context = current_state.tool_context(
+            session_id=session_id,
+            tool_use_id=call.id,
+            state_directory=state_directory,
+            transcript_messages=transcript_messages,
+        )
+        post_hook_failure: PostToolUseHookError | None = None
+        try:
+            result = await executor.execute(call, context)
+        except PostToolUseHookError as exc:
+            result = exc.result
+            post_hook_failure = exc
+        current_state = current_state.apply_all(result.state_changes)
+        yield ToolBatchStateCommitted(agent_state=current_state)
+        yield ToolResultAvailable(
             tool_use_id=call.id,
             result=result,
-            context=current_context,
         )
+        if post_hook_failure is not None:
+            raise post_hook_failure
 
 
-def _is_concurrency_safe(call: ToolUseBlock, registry: ToolRegistry) -> bool:
-    tool = registry.get(call.name)
+def _is_concurrency_safe(call: ToolUseBlock, executor: ToolExecutor) -> bool:
+    tool = executor.registry.get(call.name)
     if tool is None:
         return False
     try:
         parsed = tool.input_model.model_validate(call.input)
         return bool(tool.is_concurrency_safe(parsed))
-    except Exception:  # noqa: BLE001 - 判断失败时必须保守地按不可并发处理。
+    except Exception:  # noqa: BLE001 - 判断失败时必须保守地串行处理。
         return False
-
-
-def _apply_context_update(
-    context: ToolUseContext,
-    update: ContextUpdate | None,
-) -> ToolUseContext:
-    if update is None:
-        return context
-    values = {}
-    if update.working_directory is not None:
-        values["working_directory"] = update.working_directory
-    if update.permission_mode is not None:
-        values["permission_mode"] = update.permission_mode
-    if update.plan_path is not None or update.clear_plan_path:
-        values["plan_path"] = update.plan_path
-    if update.worktree is not None or update.clear_worktree:
-        values["worktree"] = update.worktree
-    if update.capabilities is not None:
-        values["capabilities"] = context.capabilities.intersect(update.capabilities)
-    if update.instruction_state is not None:
-        values["instruction_state"] = (
-            update.instruction_state
-            if update.replace_instruction_state
-            else type(update.instruction_state)(
-                active_paths=sorted(
-                    set(context.instruction_state.active_paths)
-                    | set(update.instruction_state.active_paths)
-                )
-            )
-        )
-    if update.file_observations is not None:
-        values["file_observations"] = (
-            update.file_observations
-            if update.replace_file_observations
-            else {**context.file_observations, **update.file_observations}
-        )
-    elif update.replace_file_observations:
-        values["file_observations"] = {}
-    if update.completion_requirements is not None:
-        values["completion_requirements"] = context.completion_requirements.tighten(
-            update.completion_requirements
-        )
-    return context.model_copy(update=values, deep=True)

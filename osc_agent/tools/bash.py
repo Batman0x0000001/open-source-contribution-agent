@@ -11,31 +11,23 @@ from typing import Literal
 
 from pydantic import Field
 
-from osc_agent.runtime.models import (
-    Allow,
-    ContractModel,
-    PermissionDecision,
+from osc_agent.contracts import ContractModel
+from osc_agent.runtime.tool_models import (
     ToolError,
     ToolResult,
-    ToolUseContext,
     ValidationFailure,
     ValidationResult,
     ValidationSuccess,
 )
+from osc_agent.runtime.state import ToolContext
 from osc_agent.runtime.tool import BaseTool
-from osc_agent.tools.git import git_workspace_fingerprint
-from osc_agent.tools.process_runner import (
-    HostProcessRunner,
-    ProcessRunner,
-    ProcessRequest,
-    build_subprocess_environment,
-    classify_command,
-)
+from osc_agent.processes.contracts import ProcessRequest, ProcessRunner
+from osc_agent.processes.policy import build_subprocess_environment, classify_command
+from osc_agent.processes.runner import HostProcessRunner
+from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
 DEFAULT_TIMEOUT_SECONDS = 120
-READ_ONLY_COMMANDS = {"rg"}
-READ_ONLY_GIT_COMMANDS = {"diff", "log", "show", "status"}
 _HARD_DENY = (
     re.compile(r"(^|[;&|]\s*)\s*(sudo|su|mount|umount|shutdown|reboot|systemctl)\b", re.I),
     re.compile(r"\brm\s+(?:-[A-Za-z]*r[A-Za-z]*f|-[A-Za-z]*f[A-Za-z]*r)\s+/(?:\s|$)", re.I),
@@ -83,20 +75,20 @@ class BashTool(BaseTool[BashInput, BashOutput]):
     def is_concurrency_safe(self, input: BashInput) -> bool:
         return self.is_read_only(input)
 
-    def is_destructive(self, input: BashInput) -> bool:
+    def requires_approval(self, input: BashInput) -> bool:
         return not self.is_read_only(input)
 
     def permission_risk(self, input: BashInput) -> str:
         return "process"
 
-    def permission_preview(self, input: BashInput, context: ToolUseContext) -> dict[str, object]:
+    def permission_preview(self, input: BashInput, context: ToolContext) -> dict[str, object]:
         return {
             "command": input.command,
             "timeout_seconds": input.timeout_seconds,
             "command_kind": classify_command(input.command).value,
         }
 
-    async def validate_input(self, input: BashInput, context: ToolUseContext) -> ValidationResult:
+    async def validate_input(self, input: BashInput, context: ToolContext) -> ValidationResult:
         if "\x00" in input.command or any(pattern.search(input.command) for pattern in _HARD_DENY):
             return ValidationFailure(reason="Bash command violates the hard host-safety policy")
         try:
@@ -105,21 +97,16 @@ class BashTool(BaseTool[BashInput, BashOutput]):
             return ValidationFailure(reason=f"Bash parse failed: {exc}")
         return ValidationSuccess()
 
-    async def check_permissions(
-        self, input: BashInput, context: ToolUseContext
-    ) -> PermissionDecision:
-        return Allow(updated_input=input.model_dump(mode="json"))
-
-    async def call(self, input: BashInput, context: ToolUseContext) -> ToolResult:
+    async def call(self, input: BashInput, context: ToolContext) -> ToolResult:
         result = await self.process_runner.run(
             ProcessRequest(
+                invocation_id=context.tool_use_id or "process",
                 executable=self.executable,
                 command=input.command,
-                repo_root=context.working_directory,
+                repo_root=context.workspace.working_directory,
                 timeout_seconds=input.timeout_seconds,
                 environment=self.environment,
-            ),
-            context,
+            )
         )
         if result.termination_reason in {"timeout", "os_error", "cancelled"}:
             return ToolResult(error=ToolError(
@@ -133,7 +120,8 @@ class BashTool(BaseTool[BashInput, BashOutput]):
             ))
         try:
             fingerprint = await asyncio.to_thread(
-                git_workspace_fingerprint, repo_root=Path(context.working_directory)
+                git_workspace_fingerprint,
+                repo_root=Path(context.workspace.working_directory),
             )
         except (OSError, ValueError):
             fingerprint = None
@@ -162,4 +150,4 @@ def is_read_only_command(command: str) -> bool:
     executable = Path(tokens[0]).name.casefold()
     if executable == "rg":
         return not any(arg in {"--pre", "--follow", "-L"} or arg.startswith("--pre=") for arg in tokens[1:])
-    return executable == "git" and len(tokens) >= 2 and tokens[1].casefold() in READ_ONLY_GIT_COMMANDS
+    return False
