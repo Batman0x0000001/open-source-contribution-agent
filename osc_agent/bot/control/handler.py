@@ -127,7 +127,7 @@ class BotControlService:
             repository_id=int(parsed.repository_id), repository_full_name=str(parsed.repository),
             installation_id=int(parsed.installation_id), base_branch=branch, base_sha=base_sha,
             issue_number=int(parsed.issue_number), issue_input_hash=issue_hash, model_id=self.settings.model_id,
-            plan_allowed_tools=frozenset({"read_file","glob","grep","git_status","git_diff","git_log","read_tool_result","agent","submit_issue_plan"}),
+            plan_allowed_tools=frozenset({"read_file","glob","grep","git_status","git_diff","git_log","read_tool_result","agent","read_plan","write_plan","submit_issue_plan"}),
             implementation_allowed_tools=frozenset({"read_file","glob","grep","bash","git_status","git_diff","git_log","read_skill_resource","write_file","edit_file","read_tool_result","agent","submit_delivery_draft"}),
             validation_commands=config.validation_commands, denied_paths=config.denied_paths,
             max_changed_files=config.max_changed_files, max_patch_bytes=config.max_patch_bytes,

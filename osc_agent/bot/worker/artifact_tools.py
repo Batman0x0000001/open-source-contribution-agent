@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 
@@ -16,8 +17,9 @@ from osc_agent.runtime.tool import BaseTool
 from osc_agent.workspaces.git_state import git_workspace_fingerprint
 
 
-class SubmitIssuePlanInput(IssuePlanArtifact):
-    pass
+class SubmitIssuePlanInput(ContractModel):
+    status: Literal["ready", "blocked"]
+    unresolved_questions: list[str] = Field(default_factory=list, max_length=20)
 
 
 class SubmitIssuePlanOutput(ContractModel):
@@ -27,7 +29,10 @@ class SubmitIssuePlanOutput(ContractModel):
 
 class SubmitIssuePlanTool(BaseTool[SubmitIssuePlanInput, SubmitIssuePlanOutput]):
     name = "submit_issue_plan"
-    description = "Submit the strict final issue plan artifact for the current GitHub bot planning job."
+    description = (
+        "Finish the current Bot plan. The trusted worker reads the saved plan draft and "
+        "binds it to the job; write_plan must be called first."
+    )
     input_model = SubmitIssuePlanInput
     output_model = SubmitIssuePlanOutput
 
@@ -42,11 +47,33 @@ class SubmitIssuePlanTool(BaseTool[SubmitIssuePlanInput, SubmitIssuePlanOutput])
         return True
 
     async def call(self, input: SubmitIssuePlanInput, context: ToolContext) -> ToolResult:
-        if input.base_sha != self.base_sha:
-            return ToolResult(error=ToolError(code="PLAN_BASE_MISMATCH", message="plan base SHA differs from the job base SHA"))
-        if input.execution_contract_hash != self.execution_contract_hash:
-            return ToolResult(error=ToolError(code="PLAN_CONTRACT_MISMATCH", message="plan execution contract differs from the job"))
-        artifact = IssuePlanArtifact.model_validate(input.model_dump(mode="json"))
+        if input.status == "ready" and input.unresolved_questions:
+            return ToolResult(
+                error=ToolError(
+                    code="PLAN_STATUS_INVALID",
+                    message="ready plan cannot contain unresolved questions",
+                )
+            )
+        if input.status == "blocked" and not input.unresolved_questions:
+            return ToolResult(
+                error=ToolError(
+                    code="PLAN_STATUS_INVALID",
+                    message="blocked plan requires unresolved questions",
+                )
+            )
+        try:
+            plan_markdown = _saved_plan(context)
+            summary = _plan_summary(plan_markdown)
+            artifact = IssuePlanArtifact(
+                status=input.status,
+                base_sha=self.base_sha,
+                execution_contract_hash=self.execution_contract_hash,
+                summary=summary,
+                plan_markdown=plan_markdown,
+                unresolved_questions=input.unresolved_questions,
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            return ToolResult(error=ToolError(code="PLAN_DRAFT_INVALID", message=str(exc)))
         artifact_id = await asyncio.to_thread(
             self.store.save_artifact,
             self.job_id,
@@ -54,6 +81,32 @@ class SubmitIssuePlanTool(BaseTool[SubmitIssuePlanInput, SubmitIssuePlanOutput])
             required_lease_owner=self.worker_id,
         )
         return ToolResult(data={"artifact_id": artifact_id, "status": artifact.status})
+
+
+def _saved_plan(context: ToolContext) -> str:
+    expected = f"{context.session_id}.md"
+    if context.permissions.mode != "plan" or context.permissions.plan_path != expected:
+        raise ValueError("current session has no trusted plan draft")
+    root = (Path(context.state_directory) / "plans").resolve()
+    path = (root / expected).resolve()
+    if path.parent != root or not path.is_file():
+        raise ValueError("saved plan draft does not exist")
+    content = path.read_text(encoding="utf-8").strip()
+    if not content:
+        raise ValueError("saved plan draft is empty")
+    return content
+
+
+def _plan_summary(plan_markdown: str) -> str:
+    first = next(
+        (
+            line.strip().lstrip("#").strip()
+            for line in plan_markdown.splitlines()
+            if line.strip()
+        ),
+        "",
+    )
+    return first[:4_000] or "Issue implementation plan"
 
 
 class SubmitDeliveryDraftInput(DeliveryDraft):

@@ -185,6 +185,40 @@ def test_query_streams_text_and_completes() -> None:
     assert isinstance(events[-1], RunCompleted)
 
 
+def test_start_query_can_initialize_a_persistent_plan_draft(tmp_path: Path) -> None:
+    store = FileSessionStore(tmp_path / "sessions")
+    gateway = FakeGateway(
+        [[ModelCompleted(message=RuntimeMessage(role="assistant", content=[TextBlock(text="done")]), stop_reason="end_turn")]]
+    )
+    agent = AgentRuntime(
+        QueryDependencies(
+            model_gateway=gateway,
+            tool_executor=ToolExecutor(ToolRegistry([])),
+            state_directory=str(tmp_path / "state"),
+            session_store=store,
+        )
+    )
+
+    asyncio.run(
+        collect(
+            agent,
+            StartQueryParams(
+                session_id="plan-session",
+                model="test-model",
+                messages=[RuntimeMessage(role="user", content=[TextBlock(text="plan")])],
+                workspace_root=str(tmp_path),
+                start_in_plan_mode=True,
+            ),
+        )
+    )
+
+    snapshot = store.load("plan-session")
+    assert snapshot is not None
+    assert snapshot.state.permissions.mode == "plan"
+    assert snapshot.state.permissions.plan_path == "plan-session.md"
+    assert (tmp_path / "state" / "plans" / "plan-session.md").read_text(encoding="utf-8") == ""
+
+
 def test_completion_gate_blocks_three_identical_stop_attempts() -> None:
     final = ModelCompleted(
         message=RuntimeMessage(

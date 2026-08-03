@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from uuid import uuid4
 
 import pytest
@@ -25,6 +26,7 @@ from osc_agent.bot.domain.jobs import BotJob
 from osc_agent.bot.domain.repositories import RepositoryBotConfig
 from osc_agent.bot.persistence.session_store import SqliteSessionStore
 from osc_agent.bot.persistence.store import BotStore
+from osc_agent.bot.worker.artifact_tools import SubmitIssuePlanInput, SubmitIssuePlanTool
 from osc_agent.processes.runner import DisabledProcessRunner
 from tests.runtime_factories import tool_context
 from tests.settings_factory import make_agent_settings as Settings
@@ -40,7 +42,9 @@ def _contract() -> ExecutionContract:
         issue_number=3,
         issue_input_hash="b" * 64,
         model_id="test-model",
-        plan_allowed_tools=frozenset({"read_file", "submit_issue_plan"}),
+        plan_allowed_tools=frozenset(
+            {"read_file", "read_plan", "write_plan", "submit_issue_plan"}
+        ),
         implementation_allowed_tools=frozenset(
             {"read_file", "edit_file", "submit_delivery_draft"}
         ),
@@ -229,3 +233,42 @@ def test_bot_applications_expose_exact_contract_tool_schemas(tmp_path) -> None:
 
     assert schemas(plan) == contract.plan_allowed_tools
     assert schemas(implementation) == contract.implementation_allowed_tools
+    assert plan._profile.start_in_plan_mode is True
+
+
+def test_submit_issue_plan_binds_the_saved_draft_to_trusted_job_fields(tmp_path) -> None:
+    captured: list[IssuePlanArtifact] = []
+
+    class Store:
+        def save_artifact(self, job_id, artifact, *, required_lease_owner):
+            captured.append(artifact)
+            return "artifact-1"
+
+    plans = tmp_path / "state" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "plan-session.md").write_text(
+        "# Translate README\n\n1. Translate README.md.\n2. Verify links.",
+        encoding="utf-8",
+    )
+    tool = SubmitIssuePlanTool(
+        Store(),  # type: ignore[arg-type]
+        job_id="job-1",
+        worker_id="worker-1",
+        base_sha="a" * 40,
+        execution_contract_hash="b" * 64,
+    )
+    context = tool_context(
+        session_id="plan-session",
+        working_directory=str(tmp_path),
+        state_directory=str(tmp_path / "state"),
+        permission_mode="plan",
+        plan_path="plan-session.md",
+    )
+
+    result = asyncio.run(tool.call(SubmitIssuePlanInput(status="ready"), context))
+
+    assert result.data == {"artifact_id": "artifact-1", "status": "ready"}
+    assert captured[0].base_sha == "a" * 40
+    assert captured[0].execution_contract_hash == "b" * 64
+    assert captured[0].summary == "Translate README"
+    assert captured[0].plan_markdown.startswith("# Translate README")

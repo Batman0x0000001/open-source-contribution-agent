@@ -7,7 +7,7 @@ from tests.runtime_factories import apply_tool_result, tool_context
 import asyncio
 from pathlib import Path
 
-from osc_agent.runtime.messages import ToolUseBlock
+from osc_agent.runtime.messages import RuntimeMessage, ToolResultBlock, ToolUseBlock
 from osc_agent.runtime.tool_models import ApprovalResponse, Ask
 from osc_agent.runtime.tool_execution import ToolExecutionDependencies, ToolExecutor
 from tests.contracts.registry_factory import build_test_tool_registry
@@ -81,6 +81,77 @@ def test_read_file_is_input_sensitive_behavior_object(tmp_path: Path) -> None:
         "offset": 1,
         "complete": False,
     }
+
+
+def test_read_file_returns_unchanged_stub_for_an_exact_duplicate(tmp_path: Path) -> None:
+    target = tmp_path / "README.md"
+    target.write_text("abcdef", encoding="utf-8")
+    tool = ReadFileTool()
+    first_call = ToolUseBlock(
+        id="read-1",
+        name="read_file",
+        input={"path": "README.md", "offset": 1, "limit": 3},
+    )
+    first = asyncio.run(
+        tool.call(ReadFileInput.model_validate(first_call.input), context(tmp_path))
+    )
+    transcript = (
+        RuntimeMessage(role="assistant", content=[first_call]),
+        RuntimeMessage(
+            role="user",
+            content=[
+                ToolResultBlock(
+                    tool_use_id=first_call.id,
+                    content=first.model_dump(mode="json"),
+                )
+            ],
+        ),
+    )
+    duplicate_context = apply_tool_result(context(tmp_path), first).model_copy(
+        update={"transcript_messages": transcript}
+    )
+
+    duplicate = asyncio.run(
+        tool.call(
+            ReadFileInput(path="README.md", offset=1, limit=3),
+            duplicate_context,
+        )
+    )
+
+    assert duplicate.error is None
+    assert duplicate.data["content"].startswith("File unchanged since last exact read")
+    assert duplicate.data["offset"] == 1
+    assert duplicate.data["complete"] is False
+    assert duplicate.state_changes == ()
+
+
+def test_read_file_does_not_deduplicate_after_the_file_changes(tmp_path: Path) -> None:
+    target = tmp_path / "README.md"
+    target.write_text("first", encoding="utf-8")
+    call = ToolUseBlock(id="read-1", name="read_file", input={"path": "README.md"})
+    first = asyncio.run(ReadFileTool().call(ReadFileInput(path="README.md"), context(tmp_path)))
+    target.write_text("second", encoding="utf-8")
+    transcript = (
+        RuntimeMessage(role="assistant", content=[call]),
+        RuntimeMessage(
+            role="user",
+            content=[
+                ToolResultBlock(
+                    tool_use_id=call.id,
+                    content=first.model_dump(mode="json"),
+                )
+            ],
+        ),
+    )
+    changed_context = apply_tool_result(context(tmp_path), first).model_copy(
+        update={"transcript_messages": transcript}
+    )
+
+    result = asyncio.run(
+        ReadFileTool().call(ReadFileInput(path="README.md"), changed_context)
+    )
+
+    assert result.data["content"] == "second"
 
 
 def test_write_file_requires_permission_and_uses_atomic_write(tmp_path: Path) -> None:

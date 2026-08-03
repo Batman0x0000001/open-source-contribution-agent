@@ -218,6 +218,7 @@ def _build_plan_application(
                 allowed_tools=contract.plan_allowed_tools,
                 allowed_initial_skills=frozenset({contract.planning_skill_name}),
                 required_evidence=frozenset({"issue_plan"}),
+                start_in_plan_mode=True,
             ),
             model_gateway=model_gateway,
             session_store=sessions,

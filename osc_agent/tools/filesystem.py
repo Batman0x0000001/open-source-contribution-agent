@@ -14,6 +14,7 @@ from osc_agent.workspaces.path_policy import (
 )
 from osc_agent.workspaces.path_policy import safe_repo_path
 from osc_agent.contracts import ContractModel
+from osc_agent.runtime.messages import ToolResultBlock, ToolUseBlock
 from osc_agent.runtime.state import FilesObserved, InstructionsActivated, ToolContext
 from osc_agent.runtime.tool_models import (
     ToolError,
@@ -67,6 +68,18 @@ class ReadFileTool(BaseTool[ReadFileInput, ReadFileOutput]):
         root = Path(context.workspace.working_directory)
         try:
             target = safe_repo_path(root, input.path)
+            if await asyncio.to_thread(_is_exact_unchanged_read, target, input, context):
+                return ToolResult(
+                    data={
+                        "path": input.path,
+                        "content": (
+                            "File unchanged since last exact read. Refer to the earlier "
+                            "read_file result instead of reading this range again."
+                        ),
+                        "offset": input.offset,
+                        "complete": False,
+                    }
+                )
             text = await asyncio.to_thread(target.read_text, encoding="utf-8")
             stat = await asyncio.to_thread(target.stat)
             instruction_state = self.instructions.activate_for_path(
@@ -94,6 +107,51 @@ class ReadFileTool(BaseTool[ReadFileInput, ReadFileOutput]):
                 FilesObserved(observations={input.path: observation}),
             ),
         )
+
+
+def _is_exact_unchanged_read(
+    target: Path,
+    input: ReadFileInput,
+    context: ToolContext,
+) -> bool:
+    observation = context.workspace.file_observations.get(input.path)
+    if observation is None:
+        return False
+    try:
+        stat = target.stat()
+        text = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    if (
+        stat.st_mtime_ns != observation.mtime_ns
+        or sha256(text.encode("utf-8")).hexdigest() != observation.content_hash
+    ):
+        return False
+
+    calls: dict[str, ReadFileInput] = {}
+    exact_read_seen = False
+    for message in context.transcript_messages:
+        for block in message.content:
+            if isinstance(block, ToolUseBlock):
+                if (
+                    block.name in {"write_file", "edit_file"}
+                    and block.input.get("path") == input.path
+                ):
+                    exact_read_seen = False
+                if block.name == "read_file":
+                    try:
+                        calls[block.id] = ReadFileInput.model_validate(block.input)
+                    except ValueError:
+                        continue
+            elif isinstance(block, ToolResultBlock) and not block.is_error:
+                previous = calls.get(block.tool_use_id)
+                if (
+                    previous == input
+                    and isinstance(block.content, dict)
+                    and not block.content.get("error")
+                ):
+                    exact_read_seen = True
+    return exact_read_seen
 
 
 class WriteFileInput(ContractModel):

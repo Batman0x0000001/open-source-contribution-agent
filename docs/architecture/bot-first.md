@@ -1,6 +1,6 @@
 # Bot-first architecture
 
-本文描述 Open Source Contribution Agent `0.3.2` 的生产架构。
+本文描述 Open Source Contribution Agent `0.3.3` 的生产架构。
 
 The GitHub App is the production product. The local CLI is a debugging adapter. Both build an
 `AgentApplication`, open an `AgentConversation`, and submit typed input. The conversation facade
@@ -12,8 +12,11 @@ GitHub → Control → SQLite/Outbox → Worker ─┐
 Local debug CLI ───────────────────────────┘
 ```
 
-Plan and implementation are deliberately separate Sessions. Plan uses `issue-planning`, only
-read-only tools, Explore, and `DisabledProcessRunner`; it never resolves a Docker image.
+Plan and implementation are deliberately separate Sessions. Plan uses `issue-planning`,
+repository-read-only tools, Explore, and `DisabledProcessRunner`; its only write is the
+session-owned draft under trusted runtime state, and it never resolves a Docker image. The draft
+is reinjected after compaction or retry. `submit_issue_plan` reads that draft while the Worker
+binds the base SHA and ExecutionContract hash instead of accepting those fields from the model.
 Implementation uses the approved `open-source-contribution` Skill and a network-disabled Docker
 runner. An immutable ExecutionContract binds the Issue snapshot, base SHA, model/profile/Skill
 revisions, tools, validation, sandbox limits, repository policy, and publication mode.
@@ -38,8 +41,8 @@ false whenever the dispatcher is stopped or its heartbeat is stale.
 ## `/osc-agent reply`
 
 A reply is stored exactly once as untrusted evidence, moves a blocked Plan back to the Plan queue,
-and resumes the original Plan Session. The Plan profile remains read-only and cannot acquire
-Docker, Process, write, approval, or implementation capabilities.
+and resumes the original Plan Session. The Plan profile remains repository-read-only and cannot
+acquire Docker, Process, repository-write, approval, or implementation capabilities.
 
 ## Publication
 

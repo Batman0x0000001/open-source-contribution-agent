@@ -1,6 +1,6 @@
 # 项目架构不变量矩阵
 
-本文记录 Open Source Contribution Agent `0.3.2` 由自动化测试保护的核心设计约束。
+本文记录 Open Source Contribution Agent `0.3.3` 由自动化测试保护的核心设计约束。
 
 | 编号 | 最小机制 | Python 对应 | 硬验证 |
 |---|---|---|---|
@@ -16,6 +16,7 @@
 | S3 | Skill 只注入当前 Conversation，不创建子模型循环 | `SkillPreparer`、`AgentTool` | Skills 禁止导入 Subagents 与旧 fork 路径测试 |
 | S4 | 产品主动启动 Skill 必须由 Profile 显式授权 | `allowed_initial_skills`、`product_tools` | 隐藏 Skill、CLI 与 Bot 入口授权测试 |
 | P1 | Plan Mode 是 Permission 状态，不是 Workflow Gate | plan tools、`DefaultPermissionPolicy` | 禁止普通写、固定计划路径、批准退出 |
+| P2 | Bot Plan 从会话专属草稿生成 Artifact，任务绑定字段由 Worker 注入 | `write_plan`、`SubmitIssuePlanTool` | Plan 初始化、路径归属与可信字段测试 |
 | A1 | 子 Agent 递归复用 Query，且不能再次调用 AgentTool | `SubagentRunner`、`AgentTool` | Runtime 同一性、隔离与 capability 收窄测试 |
 | W1 | Git worktree 是工作区隔离 | `GitWorktreeManager`、enter/exit tools | 创建、上下文切换、脏状态保护 |
 | D1 | 无第二套执行架构 | `runtime/`、`subagents/`、`skills/`、`workspaces/` | 禁止 `support`、`workflows`、Todo、Task、Mock MCP 依赖 |

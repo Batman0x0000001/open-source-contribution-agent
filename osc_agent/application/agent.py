@@ -50,6 +50,7 @@ class AgentProfile(FrozenContractModel):
     allowed_tools: frozenset[str] | None = None
     allowed_initial_skills: frozenset[str] = frozenset()
     required_evidence: frozenset[str] = frozenset()
+    start_in_plan_mode: bool = False
 
 
 class UserPrompt(FrozenContractModel):
@@ -159,6 +160,7 @@ class AgentConversation:
                 workspace_root=str(app._repository_root),
                 capabilities=resolved.capabilities,
                 completion_requirements=resolved.completion_requirements,
+                start_in_plan_mode=app._profile.start_in_plan_mode,
                 config=app._query_config,
             )
         ):

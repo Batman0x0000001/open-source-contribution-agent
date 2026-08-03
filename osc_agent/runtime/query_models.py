@@ -33,6 +33,7 @@ class StartQueryParams(FrozenContractModel):
     workspace_root: str = Field(min_length=1)
     capabilities: CapabilityScope = Field(default_factory=CapabilityScope)
     completion_requirements: CompletionRequirements = Field(default_factory=CompletionRequirements)
+    start_in_plan_mode: bool = False
     config: QueryConfig = Field(default_factory=QueryConfig)
 
     @model_validator(mode="after")

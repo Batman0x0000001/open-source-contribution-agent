@@ -1,6 +1,6 @@
 # 项目文档
 
-本文档目录以 Open Source Contribution Agent `0.3.2` 为基准，只描述当前代码、当前部署方式和当前设计约束。
+本文档目录以 Open Source Contribution Agent `0.3.3` 为基准，只描述当前代码、当前部署方式和当前设计约束。
 
 ## 阅读顺序
 

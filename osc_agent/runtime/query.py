@@ -42,7 +42,12 @@ from osc_agent.runtime.query_models import (
 )
 from osc_agent.runtime.session import SessionMetadata
 from osc_agent.runtime.session_store import SessionStore
-from osc_agent.runtime.state import AgentRunState, InstructionsActivated
+from osc_agent.runtime.state import (
+    AgentRunState,
+    InstructionsActivated,
+    PlanModeEntered,
+    PlanSaved,
+)
 from osc_agent.runtime.tool_models import ToolError, ToolResult
 from osc_agent.runtime.tool_execution import PostToolUseHookError
 from osc_agent.runtime.tool_orchestration import (
@@ -447,6 +452,14 @@ class AgentRuntime:
             completion_requirements=params.completion_requirements,
             instruction_state=instruction_state,
         )
+        if params.start_in_plan_mode:
+            plan_name = _plan_name(params.session_id)
+            plan = Path(self.dependencies.state_directory) / "plans" / plan_name
+            plan.parent.mkdir(parents=True, exist_ok=True)
+            plan.touch(exist_ok=True)
+            agent_state = agent_state.apply_all(
+                (PlanModeEntered(), PlanSaved(path=plan_name))
+            )
         if store is not None:
             store.create(
                 SessionMetadata(
@@ -498,6 +511,16 @@ class AgentRuntime:
             system_prompt=snapshot.metadata.system_prompt,
             agent_state=agent_state,
         )
+
+
+def _plan_name(session_id: str) -> str:
+    if not session_id or any(
+        character
+        not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+        for character in session_id
+    ):
+        raise ValueError("plan session id contains unsafe path characters")
+    return f"{session_id}.md"
 
 
 def _stopped(
