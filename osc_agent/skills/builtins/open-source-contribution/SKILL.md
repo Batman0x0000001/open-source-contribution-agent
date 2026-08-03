@@ -51,8 +51,8 @@ trusted implementation scope. In automation mode, do not repeat Discover or Desi
 enter Plan Mode or a Worktree, and do not ask questions. The current fresh clone is the
 execution boundary. Read `implement.md` and `pr-draft.md`, implement only the approved plan,
 run every configured validation command supplied by the system prompt, call Verify, create
-the final git snapshot, and call `submit_delivery_draft` with the supplied execution contract
-hash. If information is insufficient,
+the final git snapshot, and call `submit_delivery_draft`; the trusted Worker supplies all Job,
+contract, and workspace identity fields. If information is insufficient,
 finish as blocked instead of expanding scope.
 
 Progress dynamically from evidence; do not create or maintain a fixed phase-state object. The Session transcript, approved plan, repository files, tests, and git diff are the sources of truth.
@@ -60,8 +60,8 @@ Progress dynamically from evidence; do not create or maintain a fixed phase-stat
 1. Read `discover.md` with `read_skill_resource`, inspect the repository, and ask the user to choose among evidence-backed candidates.
 2. Read `design.md`, enter Plan Mode, write the plan, and request approval through ExitPlanMode.
 3. After approval, enter a Git worktree, read `implement.md`, implement and run the primary verification. Return failures to the agent loop and adapt from evidence.
-4. After every successful Write/Edit and the primary test, call the `verify` Agent for independent verification. Fix `FAIL`; for `PARTIAL`, either address the limitation or request the dedicated explicit waiver bound to its child Session.
-5. After independent verification, create the final `git_diff` snapshot, read `pr-draft.md`, and return the local PR draft in the final response. Commit, push, and remote PR creation require separate permission.
+4. After every successful Write/Edit and the final primary test, call the `verify` Agent for independent verification. Fix `FAIL`; for `PARTIAL`, either address the limitation or request the dedicated explicit waiver bound to its child Session. After `PASS`, do not rerun tests unless the workspace changes.
+5. After independent verification, create the final `git_diff` snapshot, read `pr-draft.md`, and call `submit_delivery_draft`. After the draft is accepted, stop without invoking another tool. Commit, push, and remote PR creation require separate permission.
 
 Never claim success without command output or repository evidence. Never discard a dirty worktree without explicit permission.
 Do not write `PR_DRAFT.md` or another draft artifact into the target repository.

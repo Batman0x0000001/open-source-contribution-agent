@@ -203,10 +203,20 @@ class CompletionEvaluator:
                 or independent_fingerprint != current_fingerprint
             )
         ):
-            reasons.append(
-                "No independent verification PASS or explicit PARTIAL waiver is bound to the "
-                "current Git workspace after the primary test."
-            )
+            if (
+                independent_evidence is not None
+                and independent_index <= verification_index
+            ):
+                reasons.append(
+                    "The latest primary test invalidated the earlier independent verification "
+                    "PASS. Run Verify again now, then do not rerun tests unless the workspace "
+                    "changes."
+                )
+            else:
+                reasons.append(
+                    "No independent verification PASS or explicit PARTIAL waiver is bound to the "
+                    "current Git workspace after the primary test. Run Verify now."
+                )
         if (
             "git_change_snapshot" in required
             and (
@@ -218,7 +228,8 @@ class CompletionEvaluator:
         ):
             reasons.append(
                 "No non-empty final git_diff snapshot is bound to the current Git workspace after "
-                "the primary test and independent verification evidence."
+                "the primary test and independent verification evidence. Run git_diff now, then "
+                "do not test, Verify, or mutate the workspace."
             )
         if "issue_plan" in required and issue_plan is None:
             reasons.append("No strict IssuePlanArtifact has been submitted for this planning Session.")
@@ -232,7 +243,9 @@ class CompletionEvaluator:
             )
         ):
             reasons.append(
-                "No DeliveryDraft bound to the current workspace was submitted after the final git snapshot."
+                "No DeliveryDraft bound to the current workspace was submitted after the final "
+                "git snapshot. Call submit_delivery_draft with draft content only; the trusted "
+                "worker binds Job and workspace identity, then stop."
             )
         reasons.extend(
             await _configured_validation_reasons(

@@ -286,9 +286,11 @@ def test_independent_verification_requires_primary_test_then_pass_then_snapshot(
 
     stale_order = evaluate_independent([*edit, *verify, *test, *final_snapshot], tmp_path)
     assert any("independent verification PASS" in reason for reason in stale_order.blocking_reasons)
+    assert any("latest primary test invalidated" in reason for reason in stale_order.blocking_reasons)
 
     missing_final_snapshot = evaluate_independent([*edit, *test, *verify], tmp_path)
     assert any("final git_diff" in reason for reason in missing_final_snapshot.blocking_reasons)
+    assert any("Run git_diff now" in reason for reason in missing_final_snapshot.blocking_reasons)
 
     assert evaluate_independent([*edit, *test, *verify, *final_snapshot], tmp_path).blocking_reasons == []
 

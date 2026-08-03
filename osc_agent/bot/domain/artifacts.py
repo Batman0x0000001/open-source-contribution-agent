@@ -38,22 +38,25 @@ class IssuePlanArtifact(ContractModel):
         return self
 
 
-class DeliveryDraft(ContractModel):
-    evidence_type: Literal["delivery_draft"] = "delivery_draft"
+class DeliveryDraftContent(ContractModel):
     title: str = Field(min_length=1, max_length=72)
     body: str = Field(min_length=1, max_length=50_000)
     commit_message: str = Field(min_length=1, max_length=72)
-    issue_number: int = Field(gt=0)
-    base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
-    execution_contract_hash: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
-    snapshot_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     test_summary: str = Field(min_length=1, max_length=4_000)
     verification_summary: str = Field(min_length=1, max_length=4_000)
 
     @model_validator(mode="after")
-    def single_line_headers(self) -> "DeliveryDraft":
+    def single_line_headers(self) -> "DeliveryDraftContent":
         if any(character in self.title for character in "\r\n"):
             raise ValueError("delivery title must be a single line")
         if any(character in self.commit_message for character in "\r\n"):
             raise ValueError("commit message must be a single line")
         return self
+
+
+class DeliveryDraft(DeliveryDraftContent):
+    evidence_type: Literal["delivery_draft"] = "delivery_draft"
+    issue_number: int = Field(gt=0)
+    base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    execution_contract_hash: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
+    snapshot_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")

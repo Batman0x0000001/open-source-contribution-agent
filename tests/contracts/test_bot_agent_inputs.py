@@ -16,7 +16,7 @@ from osc_agent.bot.worker.agent_jobs import (
     build_planning_skill_input,
 )
 from osc_agent.bot.config import BotWorkerSettings
-from osc_agent.bot.domain.artifacts import IssuePlanArtifact
+from osc_agent.bot.domain.artifacts import DeliveryDraft, IssuePlanArtifact
 from osc_agent.bot.domain.execution import (
     ExecutionContract,
     repository_config_from_contract,
@@ -26,7 +26,13 @@ from osc_agent.bot.domain.jobs import BotJob
 from osc_agent.bot.domain.repositories import RepositoryBotConfig
 from osc_agent.bot.persistence.session_store import SqliteSessionStore
 from osc_agent.bot.persistence.store import BotStore
-from osc_agent.bot.worker.artifact_tools import SubmitIssuePlanInput, SubmitIssuePlanTool
+from osc_agent.bot.worker import artifact_tools as artifact_tools_module
+from osc_agent.bot.worker.artifact_tools import (
+    SubmitDeliveryDraftInput,
+    SubmitDeliveryDraftTool,
+    SubmitIssuePlanInput,
+    SubmitIssuePlanTool,
+)
 from osc_agent.processes.runner import DisabledProcessRunner
 from tests.runtime_factories import tool_context
 from tests.settings_factory import make_agent_settings as Settings
@@ -234,6 +240,10 @@ def test_bot_applications_expose_exact_contract_tool_schemas(tmp_path) -> None:
     assert schemas(plan) == contract.plan_allowed_tools
     assert schemas(implementation) == contract.implementation_allowed_tools
     assert plan._profile.start_in_plan_mode is True
+    assert (
+        "primary test -> independent Verify PASS -> final git_diff -> "
+        "submit_delivery_draft -> stop"
+    ) in implementation._profile.system_prompt
 
 
 def test_submit_issue_plan_binds_the_saved_draft_to_trusted_job_fields(tmp_path) -> None:
@@ -272,3 +282,80 @@ def test_submit_issue_plan_binds_the_saved_draft_to_trusted_job_fields(tmp_path)
     assert captured[0].execution_contract_hash == "b" * 64
     assert captured[0].summary == "Translate README"
     assert captured[0].plan_markdown.startswith("# Translate README")
+
+
+def test_submit_delivery_draft_binds_all_trusted_fields_in_the_worker(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    captured: list[DeliveryDraft] = []
+
+    class Store:
+        def save_artifact(self, job_id, artifact, *, required_lease_owner):
+            captured.append(artifact)
+            return "artifact-1"
+
+    monkeypatch.setattr(
+        artifact_tools_module,
+        "git_workspace_fingerprint",
+        lambda **_kwargs: "d" * 64,
+    )
+    tool = SubmitDeliveryDraftTool(
+        Store(),  # type: ignore[arg-type]
+        job_id="job-1",
+        worker_id="worker-1",
+        issue_number=3,
+        base_sha="a" * 40,
+        execution_contract_hash="b" * 64,
+    )
+    input = SubmitDeliveryDraftInput(
+        title="Translate README",
+        body="Translated the repository README.",
+        commit_message="Translate README to Chinese",
+        test_summary="pytest passed",
+        verification_summary="Verify PASS",
+    )
+
+    result = asyncio.run(
+        tool.call(
+            input,
+            tool_context(
+                session_id="implementation-session",
+                working_directory=str(tmp_path),
+                state_directory=str(tmp_path / "state"),
+            ),
+        )
+    )
+
+    assert set(SubmitDeliveryDraftInput.model_fields) == {
+        "title",
+        "body",
+        "commit_message",
+        "test_summary",
+        "verification_summary",
+    }
+    assert result.data == {
+        "artifact_id": "artifact-1",
+        "workspace_fingerprint": "d" * 64,
+    }
+    assert captured == [
+        DeliveryDraft(
+            title="Translate README",
+            body="Translated the repository README.",
+            commit_message="Translate README to Chinese",
+            issue_number=3,
+            base_sha="a" * 40,
+            execution_contract_hash="b" * 64,
+            snapshot_fingerprint="d" * 64,
+            test_summary="pytest passed",
+            verification_summary="Verify PASS",
+        )
+    ]
+    with pytest.raises(ValueError, match="single line"):
+        SubmitDeliveryDraftInput(
+            title="Invalid\ntitle",
+            body="body",
+            commit_message="message",
+            test_summary="tests passed",
+            verification_summary="Verify PASS",
+        )

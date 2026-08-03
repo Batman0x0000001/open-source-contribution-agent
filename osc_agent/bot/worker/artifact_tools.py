@@ -8,7 +8,11 @@ from typing import Literal
 
 from pydantic import Field
 
-from osc_agent.bot.domain.artifacts import DeliveryDraft, IssuePlanArtifact
+from osc_agent.bot.domain.artifacts import (
+    DeliveryDraft,
+    DeliveryDraftContent,
+    IssuePlanArtifact,
+)
 from osc_agent.bot.persistence.store import BotStore
 from osc_agent.contracts import ContractModel
 from osc_agent.runtime.state import ToolContext
@@ -109,7 +113,7 @@ def _plan_summary(plan_markdown: str) -> str:
     return first[:4_000] or "Issue implementation plan"
 
 
-class SubmitDeliveryDraftInput(DeliveryDraft):
+class SubmitDeliveryDraftInput(DeliveryDraftContent):
     pass
 
 
@@ -120,7 +124,10 @@ class SubmitDeliveryDraftOutput(ContractModel):
 
 class SubmitDeliveryDraftTool(BaseTool[SubmitDeliveryDraftInput, SubmitDeliveryDraftOutput]):
     name = "submit_delivery_draft"
-    description = "Submit a strict local delivery draft after tests, Verify, and the final Git snapshot."
+    description = (
+        "Submit a strict local delivery draft after the primary test, independent Verify PASS, "
+        "and final git_diff. The trusted worker binds all job and workspace identity fields."
+    )
     input_model = SubmitDeliveryDraftInput
     output_model = SubmitDeliveryDraftOutput
 
@@ -140,13 +147,13 @@ class SubmitDeliveryDraftTool(BaseTool[SubmitDeliveryDraftInput, SubmitDeliveryD
             git_workspace_fingerprint,
             repo_root=Path(context.workspace.working_directory),
         )
-        if input.issue_number != self.issue_number or input.base_sha != self.base_sha:
-            return ToolResult(error=ToolError(code="DELIVERY_JOB_MISMATCH", message="delivery draft does not belong to this job"))
-        if input.execution_contract_hash != self.execution_contract_hash:
-            return ToolResult(error=ToolError(code="DELIVERY_CONTRACT_MISMATCH", message="delivery draft execution contract differs from the job"))
-        if input.snapshot_fingerprint != fingerprint:
-            return ToolResult(error=ToolError(code="DELIVERY_FINGERPRINT_MISMATCH", message="delivery draft is not bound to the current workspace"))
-        artifact = DeliveryDraft.model_validate(input.model_dump(mode="json"))
+        artifact = DeliveryDraft(
+            **input.model_dump(mode="json"),
+            issue_number=self.issue_number,
+            base_sha=self.base_sha,
+            execution_contract_hash=self.execution_contract_hash,
+            snapshot_fingerprint=fingerprint,
+        )
         artifact_id = await asyncio.to_thread(
             self.store.save_artifact,
             self.job_id,

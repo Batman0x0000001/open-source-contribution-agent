@@ -1,6 +1,6 @@
 # Bot observability runbook
 
-本文适用于 Open Source Contribution Agent `0.3.5`。
+本文适用于 Open Source Contribution Agent `0.3.6`。
 
 Control and Worker emit structured JSON. The stable envelope is `timestamp`, `level`, `service`,
 `event`, `job_id`, `session_id`, `repository`, `issue_number`, state transition, phase, attempt,
@@ -13,6 +13,8 @@ Job 的 `last_progress_event` 只包含 phase 和 RuntimeEvent 类型，并最�
 后才以 `MODEL_MAX_TOKENS` 终止。Worker 失败评论的 Outbox 幂等键包含阶段和尝试次数。
 `read_file` 结果不会产生 `read_tool_result` 回读链；若 Plan 中同一 result ID 出现大量分页
 读取，应按运行版本不一致或其他大型工具结果循环排查。
+Implementation 的证据顺序固定为测试、独立验证、最终 Git snapshot、Delivery Draft；模型
+不再提交 workspace fingerprint。出现 `DELIVERY_FINGERPRINT_MISMATCH` 表示仍在运行旧版本。
 
 Prometheus exports Job counts/active/duration/retries, dispatcher up/heartbeat/iterations/failures/
 crashes/depth/oldest age, dead letters, Agent runs/duration, Tool calls, Worker active/heartbeat and

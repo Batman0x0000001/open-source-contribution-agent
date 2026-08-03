@@ -264,7 +264,13 @@ def _build_implementation_application(
         "process execution are allowed only through the provided tools; process commands "
         "run in a network-disabled Docker sandbox. Never ask questions, enter a worktree, "
         "commit, push, or access GitHub. Run every configured validation command exactly "
-        "as written after the final modification:\n- "
+        "as written after the final modification. The completion evidence order is mandatory: "
+        "primary test -> independent Verify PASS -> final git_diff -> "
+        "submit_delivery_draft -> stop. After Verify PASS, do not run tests again; after the "
+        "final git_diff, do not mutate the workspace, test, or Verify again. The trusted worker "
+        "binds the delivery draft to the current job and workspace, so do not calculate or "
+        "supply identity fields. Once submit_delivery_draft succeeds, stop immediately without "
+        "calling another tool. Configured validation commands:\n- "
         + "\n- ".join(repository.validation_commands)
     )
     return build_agent_application(
